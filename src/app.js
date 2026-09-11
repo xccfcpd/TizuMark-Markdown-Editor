@@ -1208,7 +1208,8 @@ class MarkdownEditor {
     this.applyViewMode();
     this.updateMaximizeIcon();
     this.updateWordCount();
-    setTimeout(() => this.checkUpdate(false), 5000);
+    // A：启动时的自动检查更新已停用（原先 5 秒后探测上游更新清单，会把用户带到上游版本）。
+    // 详见下方 checkUpdate 的说明；此处不再发起任何联网检查。
     this.updateSideButtons();
     this.initBackendHealth();
     this.applyLanguage();
@@ -11561,6 +11562,15 @@ input[type="checkbox"]:checked::after { display: none !important; }
   }
 
   async checkUpdate(showUpToDate = false) {
+    // B：更新检查已停用。
+    // 原因：本 fork 的 tauri.conf.json 里 updater 的 endpoints / pubkey 仍指向**上游**
+    // （gitee.com/tizu、github.com/tizuio），一旦发起检查就会提示并安装上游版本，
+    // 覆盖掉本分支新增的图表引擎；而自己发布的包无法通过上游公钥的签名校验，更新链
+    // 本质上不可用。因此这里直接短路：不弹窗、不发 IPC（菜单项也在 index.html 中隐藏）。
+    // 将来接入自己的更新服务（自有 endpoints + 自有公钥）时，删除本行 return 即可恢复。
+    return;
+
+    /* eslint-disable no-unreachable */
     const checkId = (this._updateCheckId || 0) + 1;
     this._updateCheckId = checkId;
     this._updateDismissed = false;

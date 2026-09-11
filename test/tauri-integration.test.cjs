@@ -96,26 +96,28 @@ test('tauri: 窗口控制 minimize/toggleMaximize 调用对应窗口 API', async
   } finally { cleanup(w); }
 });
 
-test('tauri: checkUpdate 无更新显示最新 / 有更新填充版本与说明', async () => {
-  let updateResult = null;
+test('tauri: updater 已停用 —— checkUpdate 不发起 IPC、不弹窗', async () => {
+  // 背景：本 fork 的 updater 端点/公钥指向上游，会被带到上游版本，故停用更新检查
+  // （app.js checkUpdate 直接短路；菜单项 #btn-check-update 在 index.html 中隐藏）。
+  // 即使用假的上游更新结果诱导，也必须什么都不做。
+  const calls = [];
   const { w, ed } = await makeEnv(async (cmd) => {
-    if (cmd === 'plugin:updater|check') return updateResult;
+    calls.push(cmd);
+    if (cmd === 'plugin:updater|check') return { version: '9.9.9', body: '修复了一些问题', rid: 42 };
     if (cmd === 'get_cli_args') return [];
     if (cmd === 'app_data_dir') return 'C:/tmp/tizumark-data';
     return undefined;
   });
   try {
-    // 无更新
     await ed.checkUpdate(true);
-    assert.strictEqual(ed.pendingUpdate ?? null, null, '无更新不应设置 pendingUpdate');
-    // 有更新
-    updateResult = { version: '9.9.9', body: '修复了一些问题', rid: 42 };
-    await ed.checkUpdate(true);
-    assert.strictEqual(w.document.getElementById('update-new-version').textContent, '9.9.9');
-    assert.strictEqual(ed.pendingUpdate.version, '9.9.9');
-    assert.strictEqual(ed.pendingUpdateRid, 42);
-    const btn = w.document.getElementById('update-action');
-    assert.strictEqual(btn.dataset.state, 'download', '按钮应处于下载状态');
+    assert.ok(!calls.includes('plugin:updater|check'), '停用后不得调用更新检查 IPC');
+    assert.strictEqual(ed.pendingUpdate ?? null, null, '不应设置 pendingUpdate');
+    assert.strictEqual(ed.pendingUpdateRid ?? null, null, '不应记录 update rid');
+    assert.ok(
+      w.document.getElementById('update-dialog').classList.contains('hidden'),
+      '不应弹出更新对话框'
+    );
+    assert.ok(w.document.getElementById('btn-check-update').hidden, '「检查更新」菜单项应隐藏');
   } finally { cleanup(w); }
 });
 
