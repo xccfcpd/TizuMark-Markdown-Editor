@@ -188,6 +188,17 @@ function isAtBlockStart(content, i) {
 
 // Guard math blocks: $$...$$ → <!--MATHBLOCK_N--> and $...$ → <!--MATHBLOCK_N-->
 
+// 围栏代码块的开始标记必须位于【行首】（CommonMark：最多允许 3 个空格缩进）。
+// 用途：把「行内代码/正文里出现的 3+ 反引号」与真正的围栏区分开 —— 前者若被当成
+// 围栏开始，inCodeBlock 会翻转，导致其后整段正文被跳过，数学公式/图表等后处理全部失效。
+function isFenceStart(content, i) {
+  const lineStart = content.lastIndexOf('\n', i - 1) + 1;
+  for (let j = lineStart; j < i; j++) {
+    if (content[j] !== ' ' && content[j] !== '\t' && content[j] !== '\r') return false;
+  }
+  return i - lineStart <= 3;
+}
+
 // 行内 $...$ 允许前后带空格，但前后都带空格时容易误把 "$ 100 $" "$ or $" 这类货币/短词当成数学。
 // 用简单启发式判断 inner 是否像数学：含反斜杠、下标/上标、花括号、运算符/关系符等。
 function looksLikeMath(inner) {
@@ -221,6 +232,15 @@ function guardMathBlocks(content) {
       while (i + btCount < len && content[i + btCount] === '`') btCount++;
       if (btCount >= 3) {
         if (!inCodeBlock) {
+          if (!isFenceStart(content, i)) {
+            // 行内出现的 3+ 反引号（如文档里讲解「三个反引号 + math」的写法）：
+            // 整段按普通文本消费，【不切换】代码状态。
+            // 否则会被误判为围栏开始 → 后续正文全被当代码块跳过 → 数学/图表等后处理静默失效。
+            // 2026-09-11 复现：正文里一句含 ` ```math ` 的说明，导致其后整篇的 $$ 公式全部只剩源码。
+            result += content.substring(i, i + btCount);
+            i += btCount;
+            continue;
+          }
           inCodeBlock = true;
           codeFenceCount = btCount;
           result += content.substring(i, i + btCount);

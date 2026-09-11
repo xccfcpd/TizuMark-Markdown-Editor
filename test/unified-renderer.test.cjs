@@ -488,3 +488,43 @@ test('Word/Excel 命名空间标签与 mso-* 样式被清洗，结构与 class �
 });
 
 
+
+// ===== 回归（2026-09-11）：正文里出现「行内代码中的三个反引号」不得带偏围栏状态机 =====
+
+test('行内代码里的三个反引号不得导致其后数学块失去识别', async () => {
+  // 复现现场：文档里写一句「用 ` ```math ` 围栏」，其中行内代码含 3 个连续反引号。
+  // 修复前 guardMathBlocks 会把它当围栏开始 → inCodeBlock 翻转 → 其后整篇的 $$ 公式
+  // 都不再被包成 .math-display，预览里只剩 $$ 源码（用户复现：整节数学公式不渲染）。
+  const BT = '`';
+  const md = [
+    '说明：写 ' + BT + ' ' + BT + BT + BT + 'math ' + BT + ' 围栏。',
+    '',
+    '$$',
+    'a^2 + b^2 = c^2',
+    '$$',
+    '',
+    '再来一个 $x+y$ 行内公式。',
+  ].join('\n');
+  const html = renderMarkdown(md, { softBreaks: false });
+
+  assert.strictEqual(
+    (html.match(/class="math-display"/g) || []).length,
+    1,
+    '块级 $$ 必须被识别并包成 .math-display（否则预览只剩源码）',
+  );
+  assert.ok(html.includes('$x+y$'), '其后的行内公式应保留给 KaTeX 渲染');
+  assert.ok(html.includes('math-placeholder') === false, '占位符应已全部还原');
+});
+
+test('真围栏内的 $ 仍被跳过，围栏之后的 $$ 仍被识别（修复不得放宽围栏识别）', async () => {
+  const md = ['```js', 'const p = 1; // $x$ 不是公式', '```', '', '$$a^2$$'].join('\n');
+  const html = renderMarkdown(md, { softBreaks: false });
+
+  assert.ok(html.includes('<code'), '围栏应正常渲染为代码块');
+  assert.ok(html.includes('$x$'), '围栏内的 $ 应原样留在代码块中');
+  assert.strictEqual(
+    (html.match(/class="math-display"/g) || []).length,
+    1,
+    '只应识别围栏之后的那一个块级公式',
+  );
+});
