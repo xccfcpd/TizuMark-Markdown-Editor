@@ -117,7 +117,11 @@ test('tauri: updater 已停用 —— checkUpdate 不发起 IPC、不弹窗', as
       w.document.getElementById('update-dialog').classList.contains('hidden'),
       '不应弹出更新对话框'
     );
-    assert.ok(w.document.getElementById('btn-check-update').hidden, '「检查更新」菜单项应隐藏');
+    const updItem = w.document.getElementById('btn-check-update');
+    assert.ok(
+      updItem.classList.contains('hidden'),
+      '「检查更新」菜单项应带 .hidden 类（HTML hidden 属性会被 .dropdown-item 的 display:flex 覆盖而失效）'
+    );
   } finally { cleanup(w); }
 });
 

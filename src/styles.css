@@ -809,6 +809,14 @@ body {
   display: none;
 }
 
+/* 停用的菜单项（如「检查更新」）：必须显式定义，原因有两条 ——
+   ① 应用【没有】全局 .hidden 规则，各组件各自声明自己的 .X.hidden；
+   ② .dropdown-item 自带 display:flex，作者样式优先级高于 UA 样式表的
+      [hidden]{display:none}，所以用 HTML hidden 属性会【静默失效】（元素照样显示）。 */
+.dropdown-item.hidden {
+  display: none;
+}
+
 .dropdown-item {
   display: flex;
   align-items: center;
@@ -5519,6 +5527,10 @@ select option {
 .update-notes .preview-content th,
 .update-notes .preview-content tbody tr:nth-child(even) { background-color: var(--bg-primary); }
 .update-progress { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+/* 进度区由 JS 增删 .hidden 控制显隐（app.js 的 update-progress-wrap）：
+   这里必须显式声明 .hidden 分支 —— 上面那条 display:flex 会让 .hidden 类失效，
+   缺这条时"发现新版本"对话框里会一直挂着 0% 进度条（2026-09-11 由护栏测试发现）。 */
+.update-progress.hidden { display: none; }
 .progress-bar { flex: 1; height: 6px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden; }
 .progress-fill { height: 100%; width: 0%; background: var(--accent-color); transition: width 0.3s; }
 #update-progress-text { font-size: calc(var(--ui-font-size) * 0.9231); color: var(--text-secondary); min-width: 40px; text-align: right; }

@@ -219,8 +219,10 @@
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
                 <span>使用说明</span>
               </div>
-              <!-- 更新检查已停用（见 app.js checkUpdate 说明）：保留节点以免监听器取空，仅隐藏 -->
-              <div class="dropdown-item" id="btn-check-update" hidden>
+              <!-- 更新检查已停用（见 app.js checkUpdate 说明）：保留节点以免监听器取空，用 .hidden 类隐藏。
+                   注意：不可用 HTML hidden 属性——应用无全局 .hidden 规则，且 .dropdown-item 的
+                   display:flex 会覆盖 UA 样式表的 [hidden]{display:none} 导致静默失效（见 styles.css）。 -->
+              <div class="dropdown-item hidden" id="btn-check-update">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
                 <span>检查更新</span>
               </div>

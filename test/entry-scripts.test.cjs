@@ -85,3 +85,78 @@ test('业务脚本（6 模块 + 2 lib）全部位于 app.js 之前', () => {
   // 生产 index.html 与 harness readdirSync 的字典序今天就已不同（N25），
   // 顺序不敏感由"新模块一律延迟求值"的设计保证，写进 ARCHITECTURE.md，不靠测试。
 });
+
+// —— 以下两条为「显隐约定」护栏（2026-09-11），防的是"测试全绿但真机 UI 不对"。
+//
+// 事件起因：停用「检查更新」菜单项时写了 HTML hidden 属性，jsdom 测试通过（属性确实为 true），
+// 但真机上该项【照旧显示】。根因有两层：
+//   ① 应用【没有】全局 .hidden 规则（styles.css 明确注明），各组件各自声明 .X.hidden{display:none}；
+//   ② .dropdown-item 自带 display:flex，作者样式优先级高于 UA 样式表的 [hidden]{display:none}，
+//      于是 hidden 属性【静默失效】。
+// jsdom 不解析样式表，所以这类失效【测试天然抓不到】——只能靠静态护栏兜住。
+
+const CSS = path.join(ROOT, 'src', 'styles.css');
+
+// 剔除 HTML 注释与所有引号内的属性值，避免把注释文字、class="x hidden"、aria-hidden 误判为属性
+function stripHtmlNoise(html) {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/"[^"]*"/g, '""')
+    .replace(/'[^']*'/g, "''");
+}
+
+// ⑤ index.html 禁用 HTML hidden 属性（一律改用 class="... hidden"）
+test('index.html 不使用会静默失效的 HTML hidden 属性（改用 .hidden 类）', () => {
+  const html = fs.readFileSync(INDEX, 'utf8');
+  const stripped = stripHtmlNoise(html);
+  const badTags = (stripped.match(/<[a-zA-Z][^>]*>/g) || [])
+    .filter((tag) => /\shidden(?=[\s/>])/.test(tag));
+
+  assert.deepStrictEqual(
+    badTags,
+    [],
+    'index.html 出现了 HTML hidden 属性：' + badTags.join(' | ') +
+      '。应用无全局 .hidden 规则，且组件自带的 display 会覆盖 [hidden]，该属性会静默失效（元素照样显示）。' +
+      '请改用 class="... hidden"，并在 styles.css 声明对应的 .组件.hidden{display:none}。',
+  );
+});
+
+// ⑥ index.html 中带 .hidden 类的元素，styles.css 必须有可命中的隐藏规则
+//    规则可写成 .组件.hidden（用类名命中）或 #id.hidden（用 id 命中）——两者都算数。
+//    2026-09-11 本测试复现#1：.update-progress 只有 display:flex 而无 .hidden 分支，
+//    导致 JS 里 classList.add('hidden') 全无效（"发现新版本"对话框一直挂着 0% 进度条）。
+test('index.html 带 .hidden 类的元素，在 styles.css 中都有对应的隐藏规则', () => {
+  const html = fs.readFileSync(INDEX, 'utf8');
+  const css = fs.readFileSync(CSS, 'utf8');
+  const escaped = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hasGlobalRule = /(^|[\s,{}])\s*\.hidden\s*(,|\{)/.test(css);
+
+  const missing = [];
+  if (!hasGlobalRule) {
+    const tagRe = /<[a-zA-Z][^>]*>/g;
+    let t;
+    while ((t = tagRe.exec(html)) !== null) {
+      const tag = t[0];
+      const clsMatch = /\bclass="([^"]*)"/.exec(tag);
+      if (!clsMatch) continue;
+      const classes = clsMatch[1].split(/\s+/).filter(Boolean);
+      if (!classes.includes('hidden')) continue;
+      const id = (/\bid="([^"]+)"/.exec(tag) || [])[1] || '';
+
+      const byClass = classes
+        .filter((c) => c !== 'hidden')
+        .some((c) => new RegExp('\\.' + escaped(c) + '\\.hidden\\b').test(css));
+      const byId = id ? new RegExp('#' + escaped(id) + '\\.hidden\\b').test(css) : false;
+
+      if (!byClass && !byId) missing.push(tag.replace(/\s+/g, ' ').slice(0, 140));
+    }
+  }
+
+  assert.deepStrictEqual(
+    missing,
+    [],
+    '以下元素用了 .hidden 类，但 styles.css 里既没有 .组件.hidden 也没有 #id.hidden 规则，' +
+      '真机上不会被隐藏：\n  ' + missing.join('\n  ') +
+      '\n（应用没有全局 .hidden 规则，每个组件必须自己声明隐藏分支）',
+  );
+});
