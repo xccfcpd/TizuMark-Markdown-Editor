@@ -188,15 +188,19 @@ function isAtBlockStart(content, i) {
 
 // Guard math blocks: $$...$$ → <!--MATHBLOCK_N--> and $...$ → <!--MATHBLOCK_N-->
 
-// 围栏代码块的开始标记必须位于【行首】（CommonMark：最多允许 3 个空格缩进）。
+// 围栏代码块的开始标记必须位于【行首】或【引用块前缀之后】：
+//   合法：```js / "   ```js"（≤3 空格缩进）/ "> ```js" / "> > ```js"
+//   非法：正文里的 "写 ```math 围栏" / 行内代码里的 "` ```math `"
 // 用途：把「行内代码/正文里出现的 3+ 反引号」与真正的围栏区分开 —— 前者若被当成
 // 围栏开始，inCodeBlock 会翻转，导致其后整段正文被跳过，数学公式/图表等后处理全部失效。
 function isFenceStart(content, i) {
   const lineStart = content.lastIndexOf('\n', i - 1) + 1;
   for (let j = lineStart; j < i; j++) {
-    if (content[j] !== ' ' && content[j] !== '\t' && content[j] !== '\r') return false;
+    const ch = content[j];
+    // 只允许空白与引用块标记；出现其它字符（文字、反引号、列表符等）即非围栏
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '>') return false;
   }
-  return i - lineStart <= 3;
+  return true;
 }
 
 // 行内 $...$ 允许前后带空格，但前后都带空格时容易误把 "$ 100 $" "$ or $" 这类货币/短词当成数学。

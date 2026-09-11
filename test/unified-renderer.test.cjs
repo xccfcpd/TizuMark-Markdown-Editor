@@ -528,3 +528,18 @@ test('真围栏内的 $ 仍被跳过，围栏之后的 $$ 仍被识别（修复�
     '只应识别围栏之后的那一个块级公式',
   );
 });
+
+test('引用块内的围栏仍被识别（修复不得误伤 > ``` 写法）', async () => {
+  // 回归护栏：上面那条"围栏必须在行首"的修复若写得太严，会把引用块里的
+  // "> ```shell" 误判为非围栏 → 引用块内的 $ 被当公式处理。此处锁死该行为。
+  const md = ['> ```shell', '> echo "$HOME"   # 这里的 $ 不应变成公式', '> ```', '', '$$e^2$$'].join('\n');
+  const html = renderMarkdown(md, { softBreaks: false });
+
+  assert.ok(html.includes('<blockquote'), '引用块应正常渲染');
+  assert.ok(html.includes('$HOME'), '引用块内代码里的 $ 应原样保留');
+  assert.strictEqual(
+    (html.match(/class="math-display"/g) || []).length,
+    1,
+    '只应识别引用块之后的那一个块级公式',
+  );
+});
