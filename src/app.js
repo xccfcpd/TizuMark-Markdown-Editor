@@ -3516,8 +3516,12 @@ class MarkdownEditor {
     } catch (e) { console.warn('[preview] Diagram re-render error:', e); }
 
     if (typeof mermaid === 'undefined') return;
-    // 只取 Mermaid 容器：其它引擎的容器不能交给 mermaid.run（会把源码当 Mermaid 语法报错）
-    const containers = this.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]');
+    // 只取 Mermaid 容器：其它引擎的容器不能交给 mermaid.run（会把源码当 Mermaid 语法报错）。
+    // 同时兼容「无 data-diagram-type」的容器（早期 DOM / 测试直接构造的节点），
+    // 因此用 :not([data-diagram-type]) 兜住而不是只匹配 ="mermaid"。
+    const containers = this.preview.querySelectorAll(
+      '.mermaid-container:not([data-diagram-type]), .mermaid-container[data-diagram-type="mermaid"]'
+    );
     if (containers.length === 0) return;
 
     // 保存代码并创建全新容器（避免复用旧容器的渲染状态）
@@ -3566,7 +3570,9 @@ class MarkdownEditor {
       // （layout 计算），图表多时阻塞主线程造成明显卡顿（含转圈动画被卡住）。
       // 分批渲染：每批【渲染前】先让出主线程一帧（保证转圈持续转动、不被阻塞），
       // 图表较多时再叠加预览区 loading 提示。
-      const nodes = Array.from(this.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]'));
+      const nodes = Array.from(this.preview.querySelectorAll(
+        '.mermaid-container:not([data-diagram-type]), .mermaid-container[data-diagram-type="mermaid"]'
+      ));
       const BATCH = 2;
       const showLoading = nodes.length > 6;
       if (showLoading) this._beginPaneLoad();
