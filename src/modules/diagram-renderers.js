@@ -1,4 +1,4 @@
-// 图表引擎适配器（Mermaid 之外的三种）：ECharts / WaveDrom / abcjs(五线谱)。
+// 图表引擎适配器（Mermaid 之外的四种）：ECharts / WaveDrom / abcjs(五线谱) / Graphviz。
 //
 // 设计要点：
 //   1. 与 processMermaid 一致的容器约定：渲染结果放进 div.mermaid-container.diagram-container，
@@ -14,6 +14,7 @@
 //   ```echarts   → ECharts（JSON option）
 //   ```wavedrom  → WaveDrom（JSON 波形/电路/寄存器图；wave 为别名）
 //   ```abc       → abcjs（ABC 记谱；abcjs 为别名）
+//   ```dot       → Graphviz（DOT 语言；graphviz / gv 为别名）
 
 // 语言标记 → 引擎类型（未列出的返回 null，由调用方忽略）
 const LANGUAGE_MAP = {
@@ -22,12 +23,16 @@ const LANGUAGE_MAP = {
   wave: 'wavedrom',
   abc: 'abcjs',
   abcjs: 'abcjs',
+  dot: 'graphviz',
+  graphviz: 'graphviz',
+  gv: 'graphviz',
 };
 
 const ENGINE_LABEL = {
   echarts: 'ECharts',
   wavedrom: 'WaveDrom',
   abcjs: 'abcjs',
+  graphviz: 'Graphviz',
 };
 
 // echarts canvas 默认高度（用户可在 option 里用 tizuHeight 覆盖，见 renderEcharts）
@@ -154,10 +159,47 @@ function renderAbc(container, code, opts) {
   return true;
 }
 
+// ---- Graphviz（DOT 语言） ----
+// 依赖 @hpcc-js/wasm（Emscripten 版 Graphviz）：wasm 以 base64 内联在 UMD 文件里，
+// 无独立 .wasm 资源；浏览器全局名带 @ 与 /：window["@hpcc-js/wasm/graphviz"]。
+// 渲染是异步的（首次要实例化 wasm），且出错时库内部会 unload()，所以每次都走
+// Graphviz.load()（内部缓清单例，出错后自动重建）。
+const GRAPHVIZ_ENGINES = ['dot', 'neato', 'fdp', 'sfdp', 'circo', 'twopi', 'osage', 'patchwork'];
+
+function hpccGraphvizModule() {
+  if (typeof window === 'undefined') return null;
+  return window['@hpcc-js/wasm/graphviz'] || null;
+}
+
+// 可选首行指令选择布局引擎（DOT 里 // 本就是注释，不写也不影响语法）：
+//   // engine: neato
+function extractDotEngine(code) {
+  const lines = String(code).split('\n');
+  const m = /^\s*(?:\/\/|#)\s*engine\s*[:=]\s*([A-Za-z0-9_]+)\s*$/.exec(lines[0] || '');
+  if (!m) return { source: code, engine: 'dot' };
+  const engine = m[1].toLowerCase();
+  if (!GRAPHVIZ_ENGINES.includes(engine)) return { source: code, engine: 'dot' };
+  return { source: lines.slice(1).join('\n'), engine };
+}
+
+async function renderGraphviz(container, code, opts) {
+  const mod = hpccGraphvizModule();
+  if (!mod || typeof mod.Graphviz !== 'function') throw new Error('Graphviz 未加载（lib/graphviz.min.js）');
+  const { source, engine } = extractDotEngine(code);
+  const gv = await mod.Graphviz.load();
+  const svg = gv.layout(source, 'svg', engine);
+  if (!svg) throw new Error('Graphviz 未产出 SVG（检查 DOT 语法，如 digraph { a -> b }）');
+  container.style.height = '';
+  container.innerHTML = svg; // 含 <?xml?> 声明与 DOCTYPE：HTML 解析器会忽略，<svg> 正常入树
+  if (!container.querySelector('svg')) throw new Error('Graphviz 渲染结果异常（未生成 <svg>）');
+  return true;
+}
+
 const RENDERERS = {
   echarts: renderEcharts,
   wavedrom: renderWavedrom,
   abcjs: renderAbc,
+  graphviz: renderGraphviz,
 };
 
 // 渲染失败提示：保留原始源码便于复制修改（与代码块观感一致）。
@@ -178,13 +220,14 @@ function renderError(container, type, code, err) {
   container.appendChild(pre);
 }
 
-// 对外：渲染单个容器。返回 true=成功，false=引擎缺失（不产生错误框，交由调用方决定）
-function renderInto(container, type, code, opts) {
+// 对外：渲染单个容器。返回 true=成功，false=引擎缺失/渲染失败（后者会写入错误框）。
+// 异步：Graphviz 需要 await 实例化 wasm；其余引擎同步返回，await 同样适用。
+async function renderInto(container, type, code, opts) {
   const renderer = RENDERERS[type];
   if (!renderer) return false;
   container.classList.remove('diagram-error');
   try {
-    return renderer(container, code, opts) !== false;
+    return (await renderer(container, code, opts)) !== false;
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[diagram] ' + type + ' render failed:', e);
     renderError(container, type, code, e);
@@ -195,14 +238,14 @@ function renderInto(container, type, code, opts) {
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
     diagramTypeFromLanguage, engineLabel, renderInto,
-    renderEcharts, renderWavedrom, renderAbc,
-    LANGUAGE_MAP, DEFAULT_ECHARTS_HEIGHT,
+    renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
   };
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     diagramTypeFromLanguage, engineLabel, renderInto,
-    renderEcharts, renderWavedrom, renderAbc,
-    LANGUAGE_MAP, DEFAULT_ECHARTS_HEIGHT,
+    renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
   };
 }

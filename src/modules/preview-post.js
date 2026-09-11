@@ -440,7 +440,7 @@ function collectDiagramBlocks(preview, typeOf) {
 
 // 哪些引擎的渲染结果可以通过 innerHTML 复用（SVG）。
 // ECharts 走 canvas，canvas 无法被 innerHTML 序列化保存，必须每次重绘。
-const DIAGRAM_HTML_CACHEABLE = { wavedrom: true, abcjs: true, echarts: false };
+const DIAGRAM_HTML_CACHEABLE = { wavedrom: true, abcjs: true, graphviz: true, echarts: false };
 
 function buildDiagramContainer(document, type, code, sourceLine, themeKey, idSuffix) {
   const container = document.createElement('div');
@@ -461,40 +461,42 @@ async function processDiagrams(preview, opts) {
   const cache = opt.mermaidCache || null;
   const typeOf = (lang) => DR.diagramTypeFromLanguage(lang);
 
-  // 命中缓存（仅 SVG 引擎）：直接复用上次渲染结果，跳过重新渲染
-  const paint = (container, type, code) => {
+  // 命中缓存（仅 SVG 引擎）：直接复用上次渲染结果，跳过重新渲染。
+  // 异步：Graphviz 需要 await wasm 实例化。
+  const paint = async (container, type, code) => {
     const key = cache ? type + '::' + themeKey + '::' + code : null;
     if (key && DIAGRAM_HTML_CACHEABLE[type] && cache.has(key)) {
       container.innerHTML = cache.get(key);
       return true;
     }
-    const ok = DR.renderInto(container, type, code, { isDark: !!opt.isDark });
+    const ok = await DR.renderInto(container, type, code, { isDark: !!opt.isDark });
     if (ok && key && DIAGRAM_HTML_CACHEABLE[type] && container.querySelector('svg')) {
       cache.set(key, container.innerHTML);
     }
     return ok;
   };
 
-  // 1) 首次渲染：围栏代码块 → 图表容器
+  // 1) 首次渲染：围栏代码块 → 图表容器（顺序 await：同一篇里的多个图只触发一次 wasm 初始化）
   const blocks = collectDiagramBlocks(preview, typeOf);
-  blocks.forEach((b, index) => {
-    const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, index);
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, i);
     b.pre.replaceWith(container);
-    paint(container, b.type, b.code);
-  });
+    await paint(container, b.type, b.code);
+  }
 
   // 2) 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
   const stale = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
     .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
     .filter((el) => el.getAttribute('data-theme') !== themeKey);
-  stale.forEach((container) => {
+  for (const container of stale) {
     const type = container.getAttribute('data-diagram-type');
     const code = container.getAttribute('data-code') || '';
     container.setAttribute('data-theme', themeKey);
     container.classList.remove('diagram-error');
     container.innerHTML = '';
-    paint(container, type, code);
-  });
+    await paint(container, type, code);
+  }
 }
 
 if (typeof window !== 'undefined' && typeof module === 'undefined') {

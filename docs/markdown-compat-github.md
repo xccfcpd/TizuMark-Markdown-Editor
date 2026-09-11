@@ -110,6 +110,7 @@ GitHub 官方文档（Writing mathematical expressions）确认：
 | ` ```echarts ` 图表 | ❌ | ✅ | ⚠️ TizuMark 增强（ECharts option JSON，GitHub 无此语言） |
 | ` ```wavedrom ` 数字波形图 | ❌ | ✅ | ⚠️ TizuMark 增强（WaveDrom source JSON） |
 | ` ```abc ` 五线谱 | ❌ | ✅ | ⚠️ TizuMark 增强（ABC 记谱） |
+| ` ```dot ` / ` ```graphviz ` 关系图 | ❌ | ✅ | ⚠️ TizuMark 增强（DOT 语言，Graphviz 自动布局；思源/vditor 亦支持） |
 | Mermaid 点击放大 / 灯箱 | ❌ | ✅（额外交互） | ⚠️ TizuMark 增强 |
 | ` ```math `/`latex`/`tex` 围栏 | ✅ | ✅（本次新增） | ✅ |
 

@@ -67,6 +67,10 @@ const MANIFEST = [
   //                  故 default/dark 两个皮肤必须随包内置（深色主题靠 dark 皮肤）
   ['echarts/dist/echarts.min.js', 'echarts.min.js'],
   ['abcjs/dist/abcjs-basic-min.js', 'abcjs.min.js'],
+  //   graphviz    -> @hpcc-js/wasm 的 UMD 构建（Emscripten 版 Graphviz；wasm 以 base64 内联在 js 里，
+  //                  无独立 .wasm 文件，故单文件拷贝即可）。浏览器全局名带 @ 与 /：
+  //                  window["@hpcc-js/wasm/graphviz"]
+  ['@hpcc-js/wasm/dist/graphviz.umd.js', 'graphviz.min.js'],
   ['wavedrom/wavedrom.unpkg.min.js', 'wavedrom/wavedrom.min.js'],
   ['wavedrom/skins/default.js', 'wavedrom/skins/default.js'],
   ['wavedrom/skins/dark.js', 'wavedrom/skins/dark.js'],

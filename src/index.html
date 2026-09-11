@@ -542,6 +542,8 @@
        wavedrom 的皮肤脚本给 window.WaveSkin 赋值，缺失时渲染会抛 "no skins found"，故必须随包内置。 -->
   <script src="lib/echarts.min.js"></script>
   <script src="lib/abcjs.min.js"></script>
+  <!-- Graphviz（DOT 语言）：WASM 以 base64 内联在文件内，无独立 .wasm 资源 -->
+  <script src="lib/graphviz.min.js"></script>
   <script src="lib/wavedrom/wavedrom.min.js"></script>
   <script src="lib/wavedrom/skins/default.js"></script>
   <script src="lib/wavedrom/skins/dark.js"></script>
@@ -679,6 +681,11 @@
                 <strong>abcjs</strong>
                 <span class="license-badge">MIT</span>
                 <p>五线谱渲染（```abc 代码块）</p>
+              </div>
+              <div class="dependency-item">
+                <strong>Graphviz (@hpcc-js/wasm)</strong>
+                <span class="license-badge">Apache-2.0 / EPL-1.0</span>
+                <p>DOT 图自动布局渲染（```dot 代码块）</p>
               </div>
               <div class="dependency-item">
                 <strong>WaveDrom</strong>

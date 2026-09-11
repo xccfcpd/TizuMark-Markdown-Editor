@@ -28,6 +28,9 @@ test('diagramTypeFromLanguage：语言标记映射与别名', () => {
   assert.strictEqual(DR.diagramTypeFromLanguage('wave'), 'wavedrom', 'wave 是 wavedrom 的别名');
   assert.strictEqual(DR.diagramTypeFromLanguage('abc'), 'abcjs');
   assert.strictEqual(DR.diagramTypeFromLanguage('abcjs'), 'abcjs');
+  assert.strictEqual(DR.diagramTypeFromLanguage('dot'), 'graphviz');
+  assert.strictEqual(DR.diagramTypeFromLanguage('graphviz'), 'graphviz');
+  assert.strictEqual(DR.diagramTypeFromLanguage('gv'), 'graphviz', 'gv 是 graphviz 的别名');
   // 大小写 / 空白容错
   assert.strictEqual(DR.diagramTypeFromLanguage('  ECharts '), 'echarts');
   // 非图表语言一律返回 null（不能误吞普通代码块）
@@ -38,7 +41,7 @@ test('diagramTypeFromLanguage：语言标记映射与别名', () => {
 
 // ---- ② 入口清单与 vendor 清单 ----
 
-test('index.html 加载三个引擎脚本与皮肤，且不含远程 CDN', () => {
+test('index.html 加载四个引擎脚本与皮肤，且不含远程 CDN', () => {
   const html = fs.readFileSync(INDEX, 'utf8');
   for (const src of [
     'lib/echarts.min.js',
@@ -46,6 +49,7 @@ test('index.html 加载三个引擎脚本与皮肤，且不含远程 CDN', () =>
     'lib/wavedrom/wavedrom.min.js',
     'lib/wavedrom/skins/default.js',
     'lib/wavedrom/skins/dark.js',
+    'lib/graphviz.min.js',
     'modules/diagram-renderers.js',
   ]) {
     assert.ok(html.includes(`src="${src}"`), `index.html 缺少 <script src="${src}">`);
@@ -54,7 +58,7 @@ test('index.html 加载三个引擎脚本与皮肤，且不含远程 CDN', () =>
   assert.ok(!/<script[^>]+src="https?:\/\//.test(html), 'index.html 不应引入远程脚本（离线要求）');
 });
 
-test('vendor 清单含三个引擎与 wavedrom 皮肤（含 wavedrom 无 dist 的特殊路径）', () => {
+test('vendor 清单含四个引擎与 wavedrom 皮肤（含 wavedrom 无 dist 的特殊路径）', () => {
   const src = fs.readFileSync(VENDOR, 'utf8');
   const expected = [
     /echarts\/dist\/echarts\.min\.js['"]\s*,\s*['"]echarts\.min\.js/,
@@ -62,15 +66,16 @@ test('vendor 清单含三个引擎与 wavedrom 皮肤（含 wavedrom 无 dist �
     /wavedrom\/wavedrom\.unpkg\.min\.js['"]\s*,\s*['"]wavedrom\/wavedrom\.min\.js/,
     /wavedrom\/skins\/default\.js/,
     /wavedrom\/skins\/dark\.js/,
+    /@hpcc-js\/wasm\/dist\/graphviz\.umd\.js['"]\s*,\s*['"]graphviz\.min\.js/,
   ];
   for (const re of expected) {
     assert.ok(re.test(src), `ensure-vendor.mjs 缺少映射：${re}`);
   }
 });
 
-test('package.json 声明三个引擎依赖（npm ci 需要 lock 同步）', () => {
+test('package.json 声明四个引擎依赖（npm ci 需要 lock 同步）', () => {
   const pkg = JSON.parse(fs.readFileSync(PKG, 'utf8'));
-  for (const name of ['echarts', 'abcjs', 'wavedrom']) {
+  for (const name of ['echarts', 'abcjs', 'wavedrom', '@hpcc-js/wasm']) {
     assert.ok(pkg.dependencies && pkg.dependencies[name], `package.json dependencies 缺少 ${name}`);
   }
 });
@@ -125,16 +130,38 @@ test('collectDiagramBlocks：只收图表语言，忽略普通代码块与行内
   assert.ok(blocks[0].pre && blocks[0].pre.tagName === 'PRE', '应带上 <pre> 以便原位替换');
 });
 
-test('renderInto：引擎缺失时报可读错误（不静默空白）', () => {
+test('renderInto：引擎缺失时报可读错误（不静默空白）', async () => {
   const env = makePreviewDom();
   if (!env) return; // 缺 jsdom 依赖则跳过
   const { window, document } = env;
   const container = document.createElement('div');
   // 该 jsdom 进程未加载 echarts 全局 → 渲染器应抛「未加载」并写入 .diagram-error
-  const ok = DR.renderInto(container, 'echarts', '{"series":[]}', { isDark: false });
+  const ok = await DR.renderInto(container, 'echarts', '{"series":[]}', { isDark: false });
   assert.strictEqual(ok, false, '引擎缺失时返回 false');
   assert.ok(container.classList.contains('diagram-error'), '应标记为 diagram-error');
   assert.ok(container.querySelector('.diagram-error-msg'), '应显示失败原因');
   assert.ok(container.querySelector('pre code').textContent.includes('series'), '应保留原始源码便于修改');
   assert.ok(window, 'jsdom window 保持可用');
+});
+
+test('renderInto：Graphviz 异步路径在引擎缺失时同样给出可读错误', async () => {
+  const env = makePreviewDom();
+  if (!env) return;
+  const { document } = env;
+  const container = document.createElement('div');
+  const ok = await DR.renderInto(container, 'graphviz', 'digraph G { a -> b }', { isDark: false });
+  assert.strictEqual(ok, false, 'Graphviz 未加载时返回 false');
+  assert.ok(container.querySelector('.diagram-error-msg').textContent.includes('Graphviz'), '错误信息应含引擎名');
+});
+
+test('extractDotEngine：首行 // engine: 指令选择布局引擎', () => {
+  assert.deepStrictEqual(DR.extractDotEngine('digraph G { a -> b }'), { source: 'digraph G { a -> b }', engine: 'dot' });
+  const withNeato = DR.extractDotEngine('// engine: neato\ngraph G { a -- b }');
+  assert.strictEqual(withNeato.engine, 'neato', '应识别 neato');
+  assert.ok(!withNeato.source.includes('engine:'), '指令行应从源码中移除');
+  assert.strictEqual(withNeato.source.trim(), 'graph G { a -- b }', '其余源码保持不变');
+  // 非法引擎名回退 dot，且不破坏源码（DOT 里 // 本就是注释）
+  const bogus = DR.extractDotEngine('// engine: nosuch\n digraph G {}');
+  assert.strictEqual(bogus.engine, 'dot');
+  assert.ok(bogus.source.includes('nosuch'), '非白名单引擎应原样保留（回退为注释）');
 });

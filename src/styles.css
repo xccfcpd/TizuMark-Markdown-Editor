@@ -2464,8 +2464,14 @@ body.is-resizing .side-btn {
   height: auto;
 }
 
-/* 通用图表容器（ECharts / WaveDrom / abcjs 共用 .mermaid-container 类） */
+/* 通用图表容器（ECharts / WaveDrom / abcjs / Graphviz 共用 .mermaid-container 类） */
 .diagram-container canvas { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+/* Graphviz 的 SVG 由它自己配色（默认黑线黑字，不宜强行改色）；深色主题下改用浅色底
+   保证线条与文字可读——与 GitHub 渲染图表的处理方式一致。 */
+.diagram-container[data-diagram-type="graphviz"][data-theme="dark"] {
+  background-color: #f6f7f9;
+  border-color: #d8dbe2;
+}
 /* 渲染失败：可读原因 + 原始源码（而不是空白），与「缺失即可见」原则一致 */
 .diagram-container.diagram-error { text-align: left; }
 .diagram-error-msg {
