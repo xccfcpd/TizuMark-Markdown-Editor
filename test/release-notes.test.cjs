@@ -138,3 +138,13 @@ test('summarize 去 Conventional Commits 前缀与代码描述元信息', () => 
   assert.ok(out.startsWith('修复文件树复制粘贴'), '应取主句: ' + out);
   assert.ok(!out.includes('需求名称'), '应去掉需求名称');
 });
+
+test('summarize 去除反引号（含 ``` 围栏标记），避免泄漏进 Release 正文', () => {
+  // 提交主题偶尔会带 ```math / ```dot 之类写法（如数学渲染修复、Graphviz 引擎提交）
+  const a = summarize('fix(renderer): 围栏识别兼容引用块内的 ``` （回归风险）');
+  const b = summarize('feat(diagram): 新增 Graphviz 引擎（```dot / ```graphviz / ```gv）');
+  assert.ok(!a.includes('`'), '不应含反引号: ' + a);
+  assert.ok(!b.includes('`'), '不应含反引号: ' + b);
+  assert.ok(a.includes('围栏识别'), '中文语义应保留: ' + a);
+  assert.ok(b.includes('Graphviz'), '中文语义应保留: ' + b);
+});
