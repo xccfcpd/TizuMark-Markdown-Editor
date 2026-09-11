@@ -54,6 +54,13 @@
       function isExternalModelNoise(m) {
         return /this model does not support image input/i.test(String(m));
       }
+      // 浏览器自身的良性提示（不是应用 bug）：ResizeObserver 在一次回调里改了布局，
+      // 同一帧内又产生通知时，Chrome/Edge 会以 window error 形式抛出
+      // 「ResizeObserver loop completed with undelivered notifications」（或 limit exceeded）。
+      // 主流框架（React 等）都按噪声忽略；这里同样过滤，否则用户会看到红色错误条误以为程序坏了。
+      function isBenignBrowserNotice(m) {
+        return /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/i.test(String(m));
+      }
       window.addEventListener('error', function (ev) {
         // 资源加载失败
         if (ev && ev.target && ev.target !== ev.currentTarget && ev.target.tagName) {
@@ -82,6 +89,7 @@
           return;
         }
         if (ev && ev.filename) msg += '  (' + ev.filename + ':' + (ev.lineno || '?') + ':' + (ev.colno || '?') + ')';
+        if (isBenignBrowserNotice(msg)) { console.warn('[P0-1] 已忽略浏览器良性提示：' + msg); return; }
         console.error('[P0-1] 运行时错误：' + msg, ev.error || '');
         if (isExternalModelNoise(msg)) { console.warn('[P0-1] 已忽略外部模型噪声错误：' + msg); return; }
         showErrorBar(msg, 'error');
@@ -89,6 +97,7 @@
       window.addEventListener('unhandledrejection', function (ev) {
         var r = ev && ev.reason;
         var msg = (r && r.stack) ? r.stack : (r ? String(r) : '(空 reason)');
+        if (isBenignBrowserNotice(msg)) { console.warn('[P0-1] 已忽略浏览器良性提示：' + msg); return; }
         console.error('[P0-1] 未处理的 Promise 拒绝：' + msg, r);
         if (isExternalModelNoise(msg)) { console.warn('[P0-1] 已忽略外部模型噪声错误：' + msg); return; }
         showErrorBar('未处理的 Promise 拒绝：' + msg, 'error');

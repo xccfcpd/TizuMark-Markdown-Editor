@@ -79,13 +79,24 @@ function renderEcharts(container, code, opts) {
   chart.setOption(option, true);
   chartRegistry.set(container, chart);
 
-  // 容器宽度随窗口变化时同步尺寸（窗口缩放、分屏比例调整）
+  // 容器宽度随窗口变化时同步尺寸（窗口缩放、分屏比例调整）。
+  // 必须在 rAF 里执行 resize：在 ResizeObserver 回调内同步改布局会触发浏览器
+  // 「ResizeObserver loop completed with undelivered notifications」告警，
+  // 而全局错误兜底会把它显示成红色错误条（用户会误以为程序出错）。
   if (!container._tizuResizeObserver && typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => {
+    let scheduled = false;
+    const applyResize = () => {
+      scheduled = false;
       const inst = chartRegistry.get(container);
       if (inst && !inst.isDisposed()) {
         try { inst.resize(); } catch (_) { /* 忽略瞬时错误 */ }
       }
+    };
+    const ro = new ResizeObserver(() => {
+      if (scheduled) return; // 同一帧内多次通知只跑一次
+      scheduled = true;
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(applyResize);
+      else setTimeout(applyResize, 0);
     });
     ro.observe(container);
     container._tizuResizeObserver = ro;

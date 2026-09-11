@@ -75,6 +75,18 @@ test('package.json 声明三个引擎依赖（npm ci 需要 lock 同步）', () 
   }
 });
 
+test('ResizeObserver 良性告警已处理（rAF 内 resize + 全局兜底过滤）', () => {
+  // 症状：ECharts 容器上的 ResizeObserver 在回调里同步 resize 会触发
+  // "ResizeObserver loop completed with undelivered notifications"，
+  // 被全局错误兜底显示成红色错误条。两道防线都要在：
+  const dr = fs.readFileSync(path.join(ROOT, 'src', 'modules', 'diagram-renderers.js'), 'utf8');
+  assert.ok(/requestAnimationFrame\(applyResize\)/.test(dr), 'ECharts resize 必须用 rAF 调度');
+  const html = fs.readFileSync(INDEX, 'utf8');
+  assert.ok(/isBenignBrowserNotice/.test(html), 'index.html 全局兜底应包含 isBenignBrowserNotice');
+  assert.ok(/ResizeObserver loop/.test(html), 'index.html 应过滤 ResizeObserver loop 提示');
+  assert.strictEqual((html.match(/isBenignBrowserNotice\(msg\)/g) || []).length, 2, 'error 与 unhandledrejection 两个入口都要过滤');
+});
+
 // ---- ③ 代码块收集（jsdom） ----
 
 function makePreviewDom() {
