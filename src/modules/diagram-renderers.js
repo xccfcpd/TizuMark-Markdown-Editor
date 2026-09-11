@@ -160,15 +160,18 @@ const RENDERERS = {
   abcjs: renderAbc,
 };
 
-// 渲染失败提示：保留原始源码便于复制修改（与代码块观感一致）
+// 渲染失败提示：保留原始源码便于复制修改（与代码块观感一致）。
+// 用 container.ownerDocument 而不是全局 document：单测（jsdom 未装全局）与多文档场景下同样可用。
 function renderError(container, type, code, err) {
-  container.classList.add('diagram-error');
+  if (container) container.classList.add('diagram-error');
+  const doc = (container && container.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+  if (!doc) return; // 无文档环境（纯 node）时只做标记，不构造 UI，也不抛错
   container.innerHTML = '';
-  const msg = document.createElement('div');
+  const msg = doc.createElement('div');
   msg.className = 'diagram-error-msg';
   msg.textContent = engineLabel(type) + ' 渲染失败：' + (err && err.message ? err.message : String(err));
-  const pre = document.createElement('pre');
-  const codeEl = document.createElement('code');
+  const pre = doc.createElement('pre');
+  const codeEl = doc.createElement('code');
   codeEl.textContent = code;
   pre.appendChild(codeEl);
   container.appendChild(msg);

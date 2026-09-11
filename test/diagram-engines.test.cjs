@@ -91,12 +91,17 @@ test('ResizeObserver 良性告警已处理（rAF 内 resize + 全局兜底过滤
 
 function makePreviewDom() {
   // 未安装依赖（无 jsdom）的环境返回 null，相关用例静默跳过，不阻断该文件的静态断言
-  let JSDOM;
-  try { ({ JSDOM } = require('jsdom')); } catch (_) { return null; }
+  let JSDOM, installGlobals;
+  try {
+    ({ JSDOM } = require('jsdom'));
+    ({ installGlobals } = require('./helpers/dom.js'));
+  } catch (_) { return null; }
   const dom = new JSDOM('<!DOCTYPE html><html><body><div class="preview-content"></div></body></html>', {
     runScripts: 'outside-only',
     pretendToBeVisual: true,
   });
+  // 装全局（document/window 等）：被测模块内部会读全局 document 构造 DOM
+  installGlobals(dom.window);
   return { window: dom.window, document: dom.window.document, preview: dom.window.document.querySelector('.preview-content') };
 }
 
