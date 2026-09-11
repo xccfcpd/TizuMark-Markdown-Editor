@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    # copied-master：fork 的工作分支，需要在本分支上直接跑 CI（原本只在 master/main 触发，
-    # 导致推送到 copied-master 时 workflow 不被调度）。
-    branches: [master, main, copied-master]
+    # copied-master / feat-diagram-engines：fork 的工作分支，需要在本分支上直接跑 CI
+    # （原本只在 master/main 触发，导致推送工作分支时 workflow 不被调度）。
+    branches: [master, main, copied-master, feat-diagram-engines]
   pull_request:
-    branches: [master, main, copied-master]
+    branches: [master, main, copied-master, feat-diagram-engines]
   # 手动触发入口（GitHub UI 的 Run workflow）；需该 workflow 已存在于默认分支才显示。
   workflow_dispatch:
 

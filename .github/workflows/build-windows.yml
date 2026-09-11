@@ -12,6 +12,9 @@ name: Build Windows
 
 on:
   push:
+    # 功能分支推送即出包（想省额度可去掉 branches，只用 tag 触发）
+    branches:
+      - feat-diagram-engines
     tags:
       - 'v*'
       - 'build-win-*'
