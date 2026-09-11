@@ -107,6 +107,9 @@ GitHub 官方文档（Writing mathematical expressions）确认：
 | 围栏代码块（通用语言） | ✅ | ✅ | ✅ |
 | 语法高亮（highlight.js） | ✅ | ✅ | ✅ |
 | ` ```mermaid ` 图表 | ✅（GitHub 2022 起支持） | ✅ | ✅ 语法一致 |
+| ` ```echarts ` 图表 | ❌ | ✅ | ⚠️ TizuMark 增强（ECharts option JSON，GitHub 无此语言） |
+| ` ```wavedrom ` 数字波形图 | ❌ | ✅ | ⚠️ TizuMark 增强（WaveDrom source JSON） |
+| ` ```abc ` 五线谱 | ❌ | ✅ | ⚠️ TizuMark 增强（ABC 记谱） |
 | Mermaid 点击放大 / 灯箱 | ❌ | ✅（额外交互） | ⚠️ TizuMark 增强 |
 | ` ```math `/`latex`/`tex` 围栏 | ✅ | ✅（本次新增） | ✅ |
 

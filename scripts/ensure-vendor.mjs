@@ -59,6 +59,17 @@ const MANIFEST = [
   ['katex/dist/fonts', 'katex/fonts'],
   // mermaid
   ['mermaid/dist/mermaid.min.js', 'mermaid/mermaid.min.js'],
+  // 图表引擎（Mermaid 之外，2026-09 引入）：
+  //   echarts     -> dist/echarts.min.js（canvas 渲染）
+  //   abcjs       -> dist/abcjs-basic-min.js（五线谱，SVG）
+  //   wavedrom    -> 无 dist 目录，构建产物在包根；浏览器入口用 wavedrom.unpkg.min.js（已内联 onml）
+  //   皮肤        -> 皮肤脚本给 window.WaveSkin 赋值；无皮肤时 renderWaveForm 会抛 "no skins found"，
+  //                  故 default/dark 两个皮肤必须随包内置（深色主题靠 dark 皮肤）
+  ['echarts/dist/echarts.min.js', 'echarts.min.js'],
+  ['abcjs/dist/abcjs-basic-min.js', 'abcjs.min.js'],
+  ['wavedrom/wavedrom.unpkg.min.js', 'wavedrom/wavedrom.min.js'],
+  ['wavedrom/skins/default.js', 'wavedrom/skins/default.js'],
+  ['wavedrom/skins/dark.js', 'wavedrom/skins/dark.js'],
   // html2canvas（单文件）
   ['html2canvas/dist/html2canvas.min.js', 'html2canvas.min.js'],
   // markdown-it（单文件）

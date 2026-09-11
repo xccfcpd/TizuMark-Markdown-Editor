@@ -1,0 +1,123 @@
+// 回归测试：Mermaid 之外的三种图表引擎（ECharts / WaveDrom / abcjs 五线谱）。
+//
+// 守卫三类失效点（与 mhchem 那次同一套路）：
+//   ① 模块清单漂移：新增 src/modules/diagram-renderers.js 却漏加 <script>（entry-scripts 也会查，
+//      这里再钉一次「lib 脚本 + 模块脚本」是否齐全）；
+//   ② vendor 再生清单漏拷：ensure-vendor 没把三个引擎/皮肤纳入，npm install 后 src/lib 缺文件，
+//      真机表现为代码块不渲染（且不报错）；
+//   ③ 分发逻辑退化：语言标记 → 引擎类型的映射、代码块收集规则被改坏。
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = path.resolve(__dirname, '..');
+const INDEX = path.join(ROOT, 'src', 'index.html');
+const VENDOR = path.join(ROOT, 'scripts', 'ensure-vendor.mjs');
+const PKG = path.join(ROOT, 'package.json');
+
+const DR = require('../src/modules/diagram-renderers.js');
+const PP = require('../src/modules/preview-post.js');
+
+// ---- ① 语言标记 → 引擎类型 ----
+
+test('diagramTypeFromLanguage：语言标记映射与别名', () => {
+  assert.strictEqual(DR.diagramTypeFromLanguage('echarts'), 'echarts');
+  assert.strictEqual(DR.diagramTypeFromLanguage('wavedrom'), 'wavedrom');
+  assert.strictEqual(DR.diagramTypeFromLanguage('wave'), 'wavedrom', 'wave 是 wavedrom 的别名');
+  assert.strictEqual(DR.diagramTypeFromLanguage('abc'), 'abcjs');
+  assert.strictEqual(DR.diagramTypeFromLanguage('abcjs'), 'abcjs');
+  // 大小写 / 空白容错
+  assert.strictEqual(DR.diagramTypeFromLanguage('  ECharts '), 'echarts');
+  // 非图表语言一律返回 null（不能误吞普通代码块）
+  for (const lang of ['js', 'python', 'mermaid', 'json', '', null, undefined]) {
+    assert.strictEqual(DR.diagramTypeFromLanguage(lang), null, `${lang} 不应被识别为图表引擎`);
+  }
+});
+
+// ---- ② 入口清单与 vendor 清单 ----
+
+test('index.html 加载三个引擎脚本与皮肤，且不含远程 CDN', () => {
+  const html = fs.readFileSync(INDEX, 'utf8');
+  for (const src of [
+    'lib/echarts.min.js',
+    'lib/abcjs.min.js',
+    'lib/wavedrom/wavedrom.min.js',
+    'lib/wavedrom/skins/default.js',
+    'lib/wavedrom/skins/dark.js',
+    'modules/diagram-renderers.js',
+  ]) {
+    assert.ok(html.includes(`src="${src}"`), `index.html 缺少 <script src="${src}">`);
+  }
+  // 完全离线：这些脚本必须是本地路径，不能出现外链
+  assert.ok(!/<script[^>]+src="https?:\/\//.test(html), 'index.html 不应引入远程脚本（离线要求）');
+});
+
+test('vendor 清单含三个引擎与 wavedrom 皮肤（含 wavedrom 无 dist 的特殊路径）', () => {
+  const src = fs.readFileSync(VENDOR, 'utf8');
+  const expected = [
+    /echarts\/dist\/echarts\.min\.js['"]\s*,\s*['"]echarts\.min\.js/,
+    /abcjs\/dist\/abcjs-basic-min\.js['"]\s*,\s*['"]abcjs\.min\.js/,
+    /wavedrom\/wavedrom\.unpkg\.min\.js['"]\s*,\s*['"]wavedrom\/wavedrom\.min\.js/,
+    /wavedrom\/skins\/default\.js/,
+    /wavedrom\/skins\/dark\.js/,
+  ];
+  for (const re of expected) {
+    assert.ok(re.test(src), `ensure-vendor.mjs 缺少映射：${re}`);
+  }
+});
+
+test('package.json 声明三个引擎依赖（npm ci 需要 lock 同步）', () => {
+  const pkg = JSON.parse(fs.readFileSync(PKG, 'utf8'));
+  for (const name of ['echarts', 'abcjs', 'wavedrom']) {
+    assert.ok(pkg.dependencies && pkg.dependencies[name], `package.json dependencies 缺少 ${name}`);
+  }
+});
+
+// ---- ③ 代码块收集（jsdom） ----
+
+function makePreviewDom() {
+  // 未安装依赖（无 jsdom）的环境返回 null，相关用例静默跳过，不阻断该文件的静态断言
+  let JSDOM;
+  try { ({ JSDOM } = require('jsdom')); } catch (_) { return null; }
+  const dom = new JSDOM('<!DOCTYPE html><html><body><div class="preview-content"></div></body></html>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+  });
+  return { window: dom.window, document: dom.window.document, preview: dom.window.document.querySelector('.preview-content') };
+}
+
+test('collectDiagramBlocks：只收图表语言，忽略普通代码块与行内 code', () => {
+  const env = makePreviewDom();
+  if (!env) return; // 缺 jsdom 依赖则跳过
+  const { window, preview } = env;
+  assert.ok(window.document, 'jsdom 环境应可用');
+  preview.innerHTML = [
+    '<pre><code class="language-echarts">{"series":[]}</code></pre>',
+    '<pre><code class="language-abc">X:1\nK:C\nCDEF</code></pre>',
+    '<pre><code class="language-wavedrom">{"signal":[]}</code></pre>',
+    '<pre><code class="language-javascript">const a = 1;</code></pre>',
+    '<p>行内 <code class="language-echarts">{"x":1}</code> 不算代码块</p>',
+  ].join('\n');
+
+  const blocks = PP.collectDiagramBlocks(preview, (lang) => DR.diagramTypeFromLanguage(lang));
+  assert.strictEqual(blocks.length, 3, '应只收 3 个图表代码块');
+  assert.deepStrictEqual(blocks.map((b) => b.type), ['echarts', 'abcjs', 'wavedrom']);
+  assert.ok(blocks[0].code.includes('series'), '代码内容应原样带出');
+  assert.ok(blocks[0].pre && blocks[0].pre.tagName === 'PRE', '应带上 <pre> 以便原位替换');
+});
+
+test('renderInto：引擎缺失时报可读错误（不静默空白）', () => {
+  const env = makePreviewDom();
+  if (!env) return; // 缺 jsdom 依赖则跳过
+  const { window, document } = env;
+  const container = document.createElement('div');
+  // 该 jsdom 进程未加载 echarts 全局 → 渲染器应抛「未加载」并写入 .diagram-error
+  const ok = DR.renderInto(container, 'echarts', '{"series":[]}', { isDark: false });
+  assert.strictEqual(ok, false, '引擎缺失时返回 false');
+  assert.ok(container.classList.contains('diagram-error'), '应标记为 diagram-error');
+  assert.ok(container.querySelector('.diagram-error-msg'), '应显示失败原因');
+  assert.ok(container.querySelector('pre code').textContent.includes('series'), '应保留原始源码便于修改');
+  assert.ok(window, 'jsdom window 保持可用');
+});

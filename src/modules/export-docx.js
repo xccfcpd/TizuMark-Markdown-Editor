@@ -190,7 +190,7 @@
         if (mathml) return [{ type: 'paragraph', runs: [{ mathml }] }];
       }
     }
-    if (tag === 'div' && /mermaid-container/.test(el.className || '')) {
+    if (tag === 'div' && /mermaid-container|diagram-container/.test(el.className || '')) {
       const img = el.querySelector('img');
       return img ? elementToNode(img) : [];
     }

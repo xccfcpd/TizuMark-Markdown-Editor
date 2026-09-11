@@ -209,6 +209,8 @@
         try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
         try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
         try { await PreviewPost.processMermaid(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Mermaid error:', e); }
+        // 图表引擎（ECharts / WaveDrom / abcjs）：与 Mermaid 共用容器与样式链路
+        try { await PreviewPost.processDiagrams(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Diagram error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
         try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
 

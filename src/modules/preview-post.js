@@ -298,8 +298,11 @@ async function processMermaid(preview, opts) {
     const cacheKey = themeKey + '::' + code;
 
     const container = document.createElement('div');
-    container.className = 'mermaid-container';
+    // 双类名：mermaid-container 沿用既有样式/导出/灯箱链路，diagram-container 标记「图表容器」
+    container.className = 'mermaid-container diagram-container';
     container.id = 'mermaid-' + Date.now() + '-' + index;
+    container.setAttribute('data-diagram-type', 'mermaid');
+    container.setAttribute('data-theme', themeKey);
     container.setAttribute('data-code', code);
     if (sourceLine) container.setAttribute('data-source-line', sourceLine);
 
@@ -405,16 +408,107 @@ function addCopyButtons(preview, opts) {
 }
 
 // 浏览器：作为独立 <script> 加载，挂到全局 PreviewPost
+// ---- 图表引擎（Mermaid 之外）：ECharts / WaveDrom / abcjs ----
+// 通过 DiagramRenderers 全局（浏览器）或 require（node 测试）拿到引擎适配器，惰性获取，
+// 因此模块加载顺序不影响；引擎未加载时本函数安全跳过。
+function getDiagramRenderers() {
+  if (typeof DiagramRenderers !== 'undefined') return DiagramRenderers;
+  if (typeof require === 'function') {
+    try { return require('./diagram-renderers.js'); } catch (_) { return null; }
+  }
+  return null;
+}
+
+// 收集「图表语言」代码块。typeOf(lang) 返回引擎类型或 null（便于单测注入）。
+// 只认 <pre><code class="language-X">（围栏代码块），行内 code 不算。
+function collectDiagramBlocks(preview, typeOf) {
+  const out = [];
+  preview.querySelectorAll('pre > code').forEach((block) => {
+    const m = /(?:^|\s)language-([\w-]+)/.exec(block.className || '');
+    if (!m) return;
+    const type = typeOf(m[1].toLowerCase());
+    if (!type) return;
+    out.push({
+      type,
+      code: block.textContent,
+      pre: block.parentElement,
+      sourceLine: (block.dataset && block.dataset.sourceLine) || undefined,
+    });
+  });
+  return out;
+}
+
+// 哪些引擎的渲染结果可以通过 innerHTML 复用（SVG）。
+// ECharts 走 canvas，canvas 无法被 innerHTML 序列化保存，必须每次重绘。
+const DIAGRAM_HTML_CACHEABLE = { wavedrom: true, abcjs: true, echarts: false };
+
+function buildDiagramContainer(document, type, code, sourceLine, themeKey, idSuffix) {
+  const container = document.createElement('div');
+  container.className = 'mermaid-container diagram-container';
+  container.id = 'diagram-' + type + '-' + Date.now() + '-' + idSuffix;
+  container.setAttribute('data-diagram-type', type);
+  container.setAttribute('data-theme', themeKey);
+  container.setAttribute('data-code', code);
+  if (sourceLine) container.setAttribute('data-source-line', sourceLine);
+  return container;
+}
+
+async function processDiagrams(preview, opts) {
+  const opt = opts || {};
+  const DR = getDiagramRenderers();
+  if (!DR) return;
+  const themeKey = opt.isDark ? 'dark' : 'light';
+  const cache = opt.mermaidCache || null;
+  const typeOf = (lang) => DR.diagramTypeFromLanguage(lang);
+
+  // 命中缓存（仅 SVG 引擎）：直接复用上次渲染结果，跳过重新渲染
+  const paint = (container, type, code) => {
+    const key = cache ? type + '::' + themeKey + '::' + code : null;
+    if (key && DIAGRAM_HTML_CACHEABLE[type] && cache.has(key)) {
+      container.innerHTML = cache.get(key);
+      return true;
+    }
+    const ok = DR.renderInto(container, type, code, { isDark: !!opt.isDark });
+    if (ok && key && DIAGRAM_HTML_CACHEABLE[type] && container.querySelector('svg')) {
+      cache.set(key, container.innerHTML);
+    }
+    return ok;
+  };
+
+  // 1) 首次渲染：围栏代码块 → 图表容器
+  const blocks = collectDiagramBlocks(preview, typeOf);
+  blocks.forEach((b, index) => {
+    const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, index);
+    b.pre.replaceWith(container);
+    paint(container, b.type, b.code);
+  });
+
+  // 2) 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
+  const stale = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
+    .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
+    .filter((el) => el.getAttribute('data-theme') !== themeKey);
+  stale.forEach((container) => {
+    const type = container.getAttribute('data-diagram-type');
+    const code = container.getAttribute('data-code') || '';
+    container.setAttribute('data-theme', themeKey);
+    container.classList.remove('diagram-error');
+    container.innerHTML = '';
+    paint(container, type, code);
+  });
+}
+
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.PreviewPost = {
     processEmojiShortcodes, processMath, processAbbreviations,
-    processHeadings, processMermaid, addCopyButtons, getRawCodeText,
+    processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
+    addCopyButtons, getRawCodeText,
   };
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     processEmojiShortcodes, processMath, processAbbreviations,
-    processHeadings, processMermaid, addCopyButtons, EMOJI_MAP,
+    processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
+    addCopyButtons, EMOJI_MAP,
     protectUnpairedDollar, getRawCodeText,
   };
 }

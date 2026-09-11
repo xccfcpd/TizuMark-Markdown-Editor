@@ -2464,6 +2464,17 @@ body.is-resizing .side-btn {
   height: auto;
 }
 
+/* 通用图表容器（ECharts / WaveDrom / abcjs 共用 .mermaid-container 类） */
+.diagram-container canvas { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+/* 渲染失败：可读原因 + 原始源码（而不是空白），与「缺失即可见」原则一致 */
+.diagram-container.diagram-error { text-align: left; }
+.diagram-error-msg {
+  color: var(--color-danger, #e5484d);
+  font-size: 0.9em;
+  margin-bottom: 8px;
+  font-family: var(--font-ui, inherit);
+}
+
 /* Alert / Notice Boxes */
 .alert {
   border-radius: 10px;

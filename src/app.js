@@ -3502,11 +3502,22 @@ class MarkdownEditor {
   }
 
   async rerenderMermaid() {
-    if (typeof mermaid === 'undefined') return;
-    // 主题切换：旧主题的 SVG 缓存失效，清空后让下次 updatePreview / 本函数按新主题重渲染
+    // 主题切换：旧主题的图表缓存失效（Mermaid 与 ECharts/WaveDrom/abcjs 共用同一缓存 Map）
     this._mermaidCache.clear();
     const gen = ++this._mermaidGeneration;
-    const containers = this.preview.querySelectorAll('.mermaid-container');
+    // 非 Mermaid 图表交给统一管线按 data-theme 重画。注意必须放在下方 early return 之前：
+    // 文档里可能一个 Mermaid 块都没有，但仍有 ECharts/WaveDrom/abcjs 需要跟随主题重绘。
+    try {
+      await PreviewPost.processDiagrams(this.preview, {
+        isDark: this.isDark,
+        mermaidCache: this._mermaidCache,
+        t: (k) => this.t(k),
+      });
+    } catch (e) { console.warn('[preview] Diagram re-render error:', e); }
+
+    if (typeof mermaid === 'undefined') return;
+    // 只取 Mermaid 容器：其它引擎的容器不能交给 mermaid.run（会把源码当 Mermaid 语法报错）
+    const containers = this.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]');
     if (containers.length === 0) return;
 
     // 保存代码并创建全新容器（避免复用旧容器的渲染状态）
@@ -3525,8 +3536,10 @@ class MarkdownEditor {
     // 重建容器
     containerData.forEach((data, i) => {
       const newContainer = document.createElement('div');
-      newContainer.className = 'mermaid-container';
+      newContainer.className = 'mermaid-container diagram-container';
       newContainer.id = 'mermaid-' + Date.now() + '-' + i;
+      newContainer.setAttribute('data-diagram-type', 'mermaid');
+      newContainer.setAttribute('data-theme', this.isDark ? 'dark' : 'light');
       newContainer.setAttribute('data-code', data.code);
       if (data.sourceLine) newContainer.setAttribute('data-source-line', data.sourceLine);
       newContainer.textContent = data.code;
@@ -3553,7 +3566,7 @@ class MarkdownEditor {
       // （layout 计算），图表多时阻塞主线程造成明显卡顿（含转圈动画被卡住）。
       // 分批渲染：每批【渲染前】先让出主线程一帧（保证转圈持续转动、不被阻塞），
       // 图表较多时再叠加预览区 loading 提示。
-      const nodes = Array.from(this.preview.querySelectorAll('.mermaid-container'));
+      const nodes = Array.from(this.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]'));
       const BATCH = 2;
       const showLoading = nodes.length > 6;
       if (showLoading) this._beginPaneLoad();
@@ -6938,16 +6951,21 @@ class MarkdownEditor {
         return;
       }
 
-      const mermaidContainer = e.target.closest('.mermaid-container');
-      if (mermaidContainer) {
+      const diagramContainer = e.target.closest('.mermaid-container, .diagram-container');
+      if (diagramContainer) {
         e.preventDefault();
         e.stopPropagation();
         // 锚点必须是容器而非 svg：closest('.mermaid-container svg') 只匹配「自身是 svg 且
         // 祖先有 container」的节点——点击 svg 内部（rect/text 等）能向上命中 svg，但点击
         // 容器内边距（两侧灰色区，target 是 div 本身）匹配不到，lightbox 打不开。
         // 改为容器锚点 + 内部取 svg：中央与空白区点击都能打开图表查看器。
-        const svg = mermaidContainer.querySelector('svg');
-        if (svg) this.showLightbox(svg, 'svg');
+        const svg = diagramContainer.querySelector('svg');
+        if (svg) { this.showLightbox(svg, 'svg'); return; }
+        // ECharts 是 canvas：先转 PNG 再复用图片查看器（canvas 无法直接放进 SVG 查看器）
+        const canvas = diagramContainer.querySelector('canvas');
+        if (canvas && typeof canvas.toDataURL === 'function') {
+          this.showImageLightbox(canvas.toDataURL('image/png'));
+        }
         return;
       }
 
@@ -9168,7 +9186,11 @@ input[type="checkbox"]:checked { background: #16a34a url("data:image/svg+xml;bas
     for (let mi = 0; mi < mermaidContainers.length; mi++) {
       const container = mermaidContainers[mi];
       // 重渲染确保 SVG 就绪
-      if (typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
+      // 仅 Mermaid 容器需要「按 data-code 重渲染」；ECharts/WaveDrom/abcjs 的容器直接截图
+      // （它们的源码不是 Mermaid 语法，交给 mermaid.render 会抛错并污染容器内容）
+      const diagramType = container.getAttribute('data-diagram-type');
+      const isMermaidContainer = !diagramType || diagramType === 'mermaid';
+      if (typeof mermaid !== 'undefined' && isMermaidContainer && container.getAttribute('data-code')) {
         try {
           const code = (container.getAttribute('data-code') || '').trim();
           if (code) {

@@ -210,6 +210,20 @@ The toolbar below the top bar provides quick formatting buttons (collapsible via
 
 > **Chemistry (KaTeX mhchem extension)**: write formulas and reactions with `$\ce{...}$`, and physical units with `$\pu{...}$` — e.g. `$\ce{2H2 + O2 -> 2H2O}$`, `$\ce{H2SO4}$`, `$\pu{123 kJ//mol}$`. Reaction arrows, subscripts, isotopes and ion charges (`$\ce{SO4^2-}$`) all work; for multi-line reactions use a `$$` display block with `\\` line breaks.
 
+### Diagrams & Visualization
+
+Fenced code blocks render diagrams — no plugins needed, fully offline, theme-aware, click to zoom:
+
+| Fence | Engine | Content |
+|-------|--------|---------|
+| ```` ```mermaid ```` | Mermaid | Flowchart / sequence / gantt / class / state / pie / **mindmap** |
+| ```` ```echarts ```` | ECharts | ECharts option JSON (optional top-level `tizuHeight` for canvas height, default 360) |
+| ```` ```wavedrom ```` | WaveDrom | WaveDrom source JSON (`signal` / `assign` / `reg`; `wave` is an alias) |
+| ```` ```abc ```` | abcjs | ABC notation (music staff; `abcjs` is an alias) |
+
+> Long-image / PDF / DOCX export converts these diagrams to images automatically.
+> Invalid syntax is never silently blank: the failure reason plus the original source are shown in place.
+
 ### Text Formatting
 
 | Format | Syntax | Result |

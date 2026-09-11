@@ -529,6 +529,13 @@
   <script src="lib/katex/mhchem.min.js"></script>
   <script src="lib/katex/auto-render.min.js"></script>
   <script src="lib/mermaid/mermaid.min.js"></script>
+  <!-- 图表引擎（Mermaid 之外）：ECharts 图表 / abcjs 五线谱 / WaveDrom 数字波形图。
+       wavedrom 的皮肤脚本给 window.WaveSkin 赋值，缺失时渲染会抛 "no skins found"，故必须随包内置。 -->
+  <script src="lib/echarts.min.js"></script>
+  <script src="lib/abcjs.min.js"></script>
+  <script src="lib/wavedrom/wavedrom.min.js"></script>
+  <script src="lib/wavedrom/skins/default.js"></script>
+  <script src="lib/wavedrom/skins/dark.js"></script>
   <script src="lib/html2canvas.min.js"></script>
   <script src="lib/markdown-it.min.js"></script>
   <script src="lib/html-docx.min.js"></script>
@@ -652,7 +659,22 @@
               <div class="dependency-item">
                 <strong>Mermaid</strong>
                 <span class="license-badge">MIT</span>
-                <p>图表绘制库</p>
+                <p>图表绘制库（流程图 / 时序图 / 甘特图 / 脑图等）</p>
+              </div>
+              <div class="dependency-item">
+                <strong>ECharts</strong>
+                <span class="license-badge">Apache-2.0</span>
+                <p>数据图表渲染（```echarts 代码块）</p>
+              </div>
+              <div class="dependency-item">
+                <strong>abcjs</strong>
+                <span class="license-badge">MIT</span>
+                <p>五线谱渲染（```abc 代码块）</p>
+              </div>
+              <div class="dependency-item">
+                <strong>WaveDrom</strong>
+                <span class="license-badge">MIT</span>
+                <p>数字波形图渲染（```wavedrom 代码块）</p>
               </div>
               <div class="dependency-item">
                 <strong>html2canvas</strong>
@@ -1427,6 +1449,7 @@
 <script src="lib/mathml2omml.min.js"></script>
 <script src="modules/code-block.js"></script>
 <script src="modules/preview-post.js"></script>
+<script src="modules/diagram-renderers.js"></script>
 <script src="modules/word-count.js"></script>
 <script src="modules/outline.js"></script>
 <script src="modules/dialogs.js"></script>
