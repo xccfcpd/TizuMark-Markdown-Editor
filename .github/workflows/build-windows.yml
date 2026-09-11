@@ -1,0 +1,84 @@
+name: Build Windows
+
+# Windows 安装包构建（NSIS 安装器 .exe + WiX .msi + 便携 exe），产物上传为 Artifacts。
+#
+# 触发方式：
+#   1) 推送 tag：v* （正式版本）或 build-win-* （临时构建，用于不想占用正式 tag 时）
+#   2) Actions 页面手动 Run workflow —— 注意 workflow_dispatch 的按钮只在该文件
+#      已存在于【默认分支】时显示；仅在特性分支上时请用 tag 触发。
+#
+# 设计：本 workflow【不跑测试】（测试见 ci.yml），保证打包链路独立于测试状态，
+#       测试红的时候也能出包。产物路径见 tauri.conf.json（bundle.targets = all）。
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'build-win-*'
+  workflow_dispatch:
+
+# 同一 ref 上重复触发时取消旧运行
+concurrency:
+  group: build-win-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Tauri build (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node 22 (LTS)
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # 完整安装（devDeps 含 esbuild / @tauri-apps/cli，打包都要用）
+      - name: Install dependencies (npm ci, full)
+        run: npm ci
+
+      - name: Install Rust (stable, msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-build-${{ github.repository }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ github.repository }}-
+
+      # npm run build = build:renderer + `tauri build`，
+      # 结束后 package.json 的 postbuild 会再输出 TizuMark_<version>_x64.exe（便携版）。
+      # tauri.conf.json 的 beforeBuildCommand 会自动跑 build:renderer && build:frontend。
+      # 未配置代码签名证书，产物为未签名 exe（SmartScreen 会提示未知发布者，属预期）。
+      - name: Build (tauri build)
+        run: npm run build
+
+      - name: List bundles
+        shell: pwsh
+        run: |
+          Write-Host '=== bundle ==='
+          Get-ChildItem -Recurse 'src-tauri/target/release/bundle' -File -ErrorAction SilentlyContinue |
+            Select-Object FullName, @{n='MB';e={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize
+          Write-Host '=== portable exe ==='
+          Get-ChildItem 'src-tauri/target/release/*.exe' -File -ErrorAction SilentlyContinue |
+            Select-Object FullName, @{n='MB';e={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TizuMark-windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/TizuMark_*_x64.exe
