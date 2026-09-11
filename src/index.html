@@ -524,6 +524,9 @@
   <script src="lib/codemirror/addon/selection/active-line.js"></script>
   <script src="lib/highlight.js/highlight.min.js"></script>
   <script src="lib/katex/katex.min.js"></script>
+  <!-- mhchem 化学扩展（\ce{...} / \pu{...}）：必须位于 katex.min.js 之后、
+       auto-render.min.js 之前，否则 auto-render 渲染时拿不到 \ce 宏。 -->
+  <script src="lib/katex/mhchem.min.js"></script>
   <script src="lib/katex/auto-render.min.js"></script>
   <script src="lib/mermaid/mermaid.min.js"></script>
   <script src="lib/html2canvas.min.js"></script>
@@ -640,6 +643,11 @@
                 <strong>KaTeX</strong>
                 <span class="license-badge">MIT</span>
                 <p>数学公式渲染</p>
+              </div>
+              <div class="dependency-item">
+                <strong>KaTeX mhchem 扩展</strong>
+                <span class="license-badge">MIT / Apache-2.0</span>
+                <p>化学式与化学方程式渲染（\ce / \pu，源自 mhchem / MathJax）</p>
               </div>
               <div class="dependency-item">
                 <strong>Mermaid</strong>

@@ -208,6 +208,8 @@ The toolbar below the top bar provides quick formatting buttons (collapsible via
 
 > Inline math uses `$...$`, display math uses `$$...$$`. Formulas with `&` are auto-escaped.
 
+> **Chemistry (KaTeX mhchem extension)**: write formulas and reactions with `$\ce{...}$`, and physical units with `$\pu{...}$` — e.g. `$\ce{2H2 + O2 -> 2H2O}$`, `$\ce{H2SO4}$`, `$\pu{123 kJ//mol}$`. Reaction arrows, subscripts, isotopes and ion charges (`$\ce{SO4^2-}$`) all work; for multi-line reactions use a `$$` display block with `\\` line breaks.
+
 ### Text Formatting
 
 | Format | Syntax | Result |

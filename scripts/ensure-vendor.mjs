@@ -53,6 +53,9 @@ const MANIFEST = [
   ['katex/dist/katex.min.js', 'katex/katex.min.js'],
   ['katex/dist/katex.min.css', 'katex/katex.min.css'],
   ['katex/dist/contrib/auto-render.min.js', 'katex/auto-render.min.js'],
+  // mhchem 化学扩展（\ce / \pu）：非 KaTeX 核心，单独打包；必须夹在
+  // katex.min.js 与 auto-render.min.js 之间加载（见 index.html 的脚本顺序）。
+  ['katex/dist/contrib/mhchem.min.js', 'katex/mhchem.min.js'],
   ['katex/dist/fonts', 'katex/fonts'],
   // mermaid
   ['mermaid/dist/mermaid.min.js', 'mermaid/mermaid.min.js'],

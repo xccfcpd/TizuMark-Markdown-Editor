@@ -41,6 +41,7 @@ GitHub 官方文档（Writing mathematical expressions）确认：
 | ` ```tex ` 围栏 | ✅ | ✅ | ✅ | 本次新增，`tex` 与 `math` 同义 |
 | 围栏内 `$$` 包裹 | 不需要 | 不需要（但内部自动加） | ✅ | GitHub 文档明确无需 `$$`；TizuMark 归一化时自动补 `$$`，用户写作时同样**不要**写 `$$` |
 | 美元转义 `\$` | ✅ | ✅ | ✅ | 均按字面量显示 `$` |
+| 化学式 `$\ce{H2O}$` / 单位 `$\pu{123 kJ//mol}$` | ⚠️ 取决于平台是否启用 mhchem 扩展 | ✅ | ⚠️ | TizuMark 已内置 KaTeX mhchem 扩展（mhchem 3.3.0 移植版），`\ce` / `\pu` 与 MathJax 版语法一致 |
 | 引擎差异（高级命令） | MathJax | KaTeX | ⚠️ | 见第七节，少数命令两边结果不同 |
 
 \* GitHub 文档只正式列出 `$`...`$`` 这一种反引号形式；实践中 `` `$...$` `` 与 `` `$$...$$` `` 也常被渲染为数学。TizuMark 选择将后两者统一处理为**行内** `$...$`，保证写在同一行时不会换行。
@@ -154,6 +155,7 @@ GitHub 用 **MathJax**，TizuMark 用 **KaTeX**。两者都支持标准 LaTeX �
 | `\label` + `\ref` 交叉引用 | ✅ | ⚠️ 有限支持 | 含交叉引用的论文类公式可能不同 |
 | 部分 AMS 扩展命令（`\DeclareMathOperator`、`\xRightarrow` 等） | ✅ | ⚠️ 子集 | 少数命令 KaTeX 不支持，会原样显示 |
 | 自定义宏 `\newcommand`（复杂定义） | ✅ | ⚠️ 有限 | 复杂宏定义可能失效 |
+| 化学式 `\ce` / 单位 `\pu`（mhchem） | ✅（启用 mhchem 扩展时） | ✅（已内置扩展） | TizuMark 内置 KaTeX mhchem 扩展，语法与 MathJax 版一致 |
 | 渲染速度 | 较慢（按需加载） | 更快（静态） | 体验差异，非正确性 |
 
 **实践建议**：若同一份含数学的文档需同时发布到 Gitee/GitHub 与 TizuMark，
