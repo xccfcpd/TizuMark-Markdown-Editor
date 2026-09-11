@@ -116,7 +116,11 @@ test('行内化学式 $\\ce{2H2 + O2 -> 2H2O}$ 渲染为 KaTeX（非红色报错
 
   assert.ok(preview.querySelector('.katex'), '化学式应渲染出 .katex 元素');
   assert.strictEqual(preview.querySelectorAll('.katex-error').length, 0, '不应出现 .katex-error（\\ce 未定义）');
-  assert.ok(!preview.textContent.includes('\\ce'), '不应残留 \\ce 字面量');
+  // 注意：KaTeX 的隐藏 MathML 里带 <annotation encoding="application/x-tex">，按设计保留 LaTeX 原文，
+  // 因此 preview.textContent 一定包含 \ce —— 只能校验【可见层】.katex-html 不残留源码。
+  const visible = preview.querySelector('.katex-html');
+  assert.ok(visible, '应产出 KaTeX 可见层 .katex-html');
+  assert.ok(!visible.textContent.includes('\\ce'), '可见层不应残留 \\ce 字面量');
   assert.ok(preview.querySelector('.katex-mathml'), '应产出 KaTeX 隐藏 MathML（供 docx 转 OMML）');
 });
 
