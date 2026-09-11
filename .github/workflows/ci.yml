@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    # copied-master：fork 的工作分支，需要在本分支上直接跑 CI（原本只在 master/main 触发，
+    # 导致推送到 copied-master 时 workflow 不被调度）。
+    branches: [master, main, copied-master]
   pull_request:
-    branches: [master, main]
+    branches: [master, main, copied-master]
+  # 手动触发入口（GitHub UI 的 Run workflow）；需该 workflow 已存在于默认分支才显示。
+  workflow_dispatch:
 
 # 取消同一 ref 上的旧运行，节省资源
 concurrency:
