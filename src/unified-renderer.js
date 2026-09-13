@@ -1202,7 +1202,7 @@ function extractFootnotes(content) {
 
 // --- Footnote rendering (post-processing) ---
 // Replaces [^id] references with superscript links and appends footnote section.
-function renderFootnotes(html, definitions) {
+function renderFootnotes(html, definitions, mathPlaceholders) {
   if (definitions.length === 0) return html;
 
   // Build ID map with collision avoidance
@@ -1273,7 +1273,13 @@ function renderFootnotes(html, definitions) {
     // 定义走最小管线渲染 + sanitize（修复：原实现把 raw 源文本直接拼入 <p>，
     // `[^1]: <img onerror=...>` 可注入未净化 HTML 造成 XSS；顺带让定义内的
     // **bold** / [链接](url) 等 markdown 语法正常渲染而非显示为字面量）。
-    let defHtml = unifiedToHtml(fn.definition);
+    // 脚注定义在 guardMathBlocks（第 2 步）之后被抽出、在第 11 步才拼回 HTML，
+    // 因此定义里的数学占位符错过了第 7 步的统一还原：行内公式会以注释节点形态
+    // 静默消失、块级公式只剩一个空 div（2026-09-13 同类审计）。就地补还原。
+    const defSource = mathPlaceholders && mathPlaceholders.length
+      ? restoreMathBlocks(fn.definition, mathPlaceholders)
+      : fn.definition;
+    let defHtml = unifiedToHtml(defSource);
     const backref = ' <a href="#fnref-' + fn.elementId + '" class="footnote-backref" title="返回文中">↩</a>';
     if (defHtml.startsWith('<p') && defHtml.endsWith('</p>')) {
       // 段落级输出：backref 挂在段落末尾内，保持与旧结构一致
@@ -1563,11 +1569,24 @@ function renderMarkdown(content, options) {
     return '<pre>' + escapeHTML(content) + '</pre>';
   }
 
-  // 7. Restore math blocks
-  html = restoreMathBlocks(html, placeholders);
-
-  // 8. Restore alert blocks
+  // 7. Restore alert blocks
+  // 必须排在数学还原之前：提示块的自定义标题（"> [!NOTE] 标题 $x$"）是在这一步
+  // 由 getAlertTitleHTML 按纯文本转义后拼进 HTML 的，标题里的占位符会变成
+  // &lt;!--MATHBLOCK_n--&gt;。若先还原数学，标题就没人再处理，预览里会原样显示
+  // 占位符源码（2026-09-13 同类审计）。
   html = restoreAlerts(html, alertBlocks);
+
+  // 7.5 ==highlight== → <mark>（可由 extendedSyntax 关闭；原第 10 步前移到这里）
+  // 必须排在数学还原（第 8 步）之前：公式还原后是一段纯文本 $...$，高亮处理会把
+  // 公式内部的成对 == 当成高亮切碎（$a == b == c$ → $a <mark> b </mark> c$），
+  // 公式因此再也渲染不出来（2026-09-13 同类审计）。在占位符阶段处理天然免疫。
+  // 排在第 7 步之后，是为了让提示块标题（第 7 步才拼入）依然能吃到高亮。
+  if (extendedSyntax) {
+    html = convertHighlights(html);
+  }
+
+  // 8. Restore math blocks
+  html = restoreMathBlocks(html, placeholders);
 
   // 9. Sanitize
   html = sanitizeHTML(html);
@@ -1579,13 +1598,9 @@ function renderMarkdown(content, options) {
   // 保留未知属性，故不会被剥除；rehype-sanitize 已在管线内早于此处执行，不再二次净化。
   html = html.replace(/<img([^>]*)>/g, '<img$1 referrerpolicy="no-referrer">');
 
-  // 10. Convert ==highlight== to <mark>（可由 extendedSyntax 关闭）
-  if (extendedSyntax) {
-    html = convertHighlights(html);
-  }
-
   // 11. Render footnotes (references + definition section)
-  html = renderFootnotes(html, footnoteDefs);
+  // 传入 placeholders：脚注定义是在数学保护之后抽出的，需要用它补还原定义里的公式。
+  html = renderFootnotes(html, footnoteDefs, placeholders);
 
   // 12. Embed abbreviation data
   html = embedAbbrData(html, abbreviations);

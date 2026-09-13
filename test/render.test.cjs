@@ -63,10 +63,56 @@ test('render: 脚注定义内 markdown 语法正常渲染', async () => {
   assert.ok(html.includes('href="https://x.com"'), '脚注定义内链接应渲染');
 });
 
+test('render: 脚注定义内的行内公式不丢占位符（同类审计修复）', async () => {
+  // 脚注定义在数学保护之后被抽出、脚注段在数学还原之后才拼回 HTML，
+  // 历史行为是占位符以注释节点形态静默消失 → 预览里公式整段不见。
+  const html = render('正文[^1]\n\n[^1]: 质能方程 $E = mc^2$ 与勾股 $a^2+b^2=c^2$');
+  assert.ok(!html.includes('MATHBLOCK'), '脚注定义内不应残留 MATHBLOCK 占位符');
+  assert.ok(html.includes('$E = mc^2$'), '定义内公式应还原为字面量供 KaTeX 渲染');
+  assert.ok(html.includes('$a^2+b^2=c^2$'), '同一行第二个公式也应还原');
+});
+
+test('render: 脚注定义内的块级公式占位符不残留', async () => {
+  const html = render('正文[^1]\n\n[^1]: 推导如下\n  $$x^2 + y^2$$');
+  assert.ok(!html.includes('math-placeholder'), '块级占位符应已还原');
+  assert.ok(html.includes('$$x^2 + y^2$$'), '定义内块级公式应可见（供 KaTeX 渲染）');
+});
+
 test('render: 定义列表', async () => {
   const html = render('术语\n: 解释');
   assert.ok(html.includes('<dl') || html.includes('<dt') || html.includes('<dd'),
     '定义列表应渲染 dl/dt/dd');
+});
+
+test('render: 公式内的成对 == 不被高亮处理器切碎（同类审计修复）', async () => {
+  // ==高亮== 原本在数学还原之后执行，会把公式里的成对 == 换成 <mark>，
+  // 公式被切碎后 KaTeX 再也认不出来。现在高亮先于数学还原执行。
+  const html = render('行内公式 $x == y == z$ 与 ==高亮== 文本');
+  assert.ok(html.includes('$x == y == z$'), '公式应完整保留');
+  assert.ok(html.includes('<mark>高亮</mark>'), '公式外的 ==高亮== 仍应转换');
+});
+
+test('render: 块级公式内的成对 == 不被切碎', async () => {
+  const html = render('$$\na == b == c\n$$');
+  assert.ok(html.includes('math-display'), '应生成块级公式占位');
+  assert.ok(!html.includes('<mark>'), '公式内容不应被高亮处理');
+});
+
+test('render: 提示块自定义标题内的行内公式不残留占位符（同类审计修复）', async () => {
+  // 标题在 restoreAlerts 阶段才拼进 HTML 且按纯文本转义，占位符会变成
+  // &lt;!--MATHBLOCK_n--&gt;：还原顺序必须是「先恢复提示块、再恢复数学」。
+  const html = render('> [!NOTE] 公式 $\\alpha$ 的取值\n> 正文说明');
+  assert.ok(html.includes('alert-title'), '应渲染提示块标题');
+  assert.ok(!html.includes('MATHBLOCK'), '标题内不应残留 MATHBLOCK 占位符');
+  assert.ok(html.includes('$\\alpha$'), '标题内公式应还原为字面量供 KaTeX 渲染');
+  assert.ok(html.includes('正文说明'), '提示块正文应保留');
+});
+
+test('render: 定义列表内的行内公式不残留占位符', async () => {
+  const html = render('黏聚力\n: 符号 $c$ 的取值');
+  assert.ok(html.includes('<dt') && html.includes('<dd'), '应渲染 dt/dd');
+  assert.ok(!html.includes('MATHBLOCK'), '定义列表内不应残留占位符');
+  assert.ok(html.includes('$c$'), '定义内公式应还原为字面量');
 });
 
 test('render: 围栏代码带语言类', async () => {
