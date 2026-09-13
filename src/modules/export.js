@@ -725,7 +725,10 @@
 
           const shellCSS = `
     :root { ${rootVarsCSS} }
-    html, body { margin: 0; padding: 0; background: ${customBg ? 'var(--custom-bg)' : 'var(--preview-bg, #f8f7f4)'} !important; }
+    /* 关键：styles.css 里 html{overflow:hidden;height:100%} / body{height:100vh;overflow:hidden}
+       是应用外壳写法（页面不滚动、由内部面板滚动）。导出为独立文档必须解除，
+       否则页面无滚动条、超出视口的内容看不到。同时恢复文本可选（外壳默认 user-select:none）。 */
+    html, body { margin: 0; padding: 0; height: auto !important; overflow: visible !important; -webkit-user-select: text; user-select: text; background: ${customBg ? 'var(--custom-bg)' : 'var(--preview-bg, #f8f7f4)'} !important; }
     #preview { height: auto !important; min-height: 0 !important; overflow: visible !important; }
     .code-scroll { max-height: none !important; overflow: visible !important; }
     input[type="checkbox"] { -webkit-appearance: none; appearance: none; margin-right: 8px; width: 16px; height: 16px; border: 1.5px solid var(--border-color, #d4d4d8); border-radius: 3px; vertical-align: middle; position: relative; top: -1px; cursor: default; }
@@ -1381,7 +1384,7 @@
 
           const printCSS = `
     @page { margin: 1.5cm; }
-    html, body { margin: 0 !important; padding: 0 !important; background: var(--preview-bg, #ffffff) !important; }
+    html, body { margin: 0 !important; padding: 0 !important; height: auto !important; overflow: visible !important; background: var(--preview-bg, #ffffff) !important; }
     .preview-content { max-width: 680px !important; margin: 0 auto !important; padding: 16px 24px !important; font-family: ${this._exportPdfFontStack()} !important; }
     .preview-content pre { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; overflow: visible !important; }
     .preview-content pre code { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; }
