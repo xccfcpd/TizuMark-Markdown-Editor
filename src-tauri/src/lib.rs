@@ -1183,7 +1183,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 本 fork 已彻底停用更新器：不再注册 updater 插件。
+        // 原因：tauri-plugin-updater 的 Config 要求 pubkey 必填，而本项目已把
+        // tauri.conf.json 的 updater 配置清空（endpoints 为空且无 pubkey）。若仍注册插件，
+        // Tauri 核心在启动时会反序列化 plugins.updater 失败并 panic，导致应用静默无法启动
+        // （windows_subsystem="windows" 下无控制台，错误不可见）。停用则不注册，配置无需 pubkey。
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 show_window(&window);
