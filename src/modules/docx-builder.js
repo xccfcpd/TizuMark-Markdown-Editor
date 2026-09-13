@@ -22,12 +22,15 @@
     const colCount = (node.rows && node.rows[0] && node.rows[0].cells) ? node.rows[0].cells.length : 1;
     const colW = Math.floor(100 / Math.max(1, colCount));
     const borderColor = (theme && theme.border) || 'D4D4D8';
+    // 表格单元格行距跟随预览「行高」（theme 即 page 配置），与正文 docDefaults 保持一致；
+    // 之前硬编码 line:276（≈1.15 倍），导致表格内行距比正文（1.7）明显更紧。
+    const tableLineH = (theme && Number(theme.lineHeight)) ? Number(theme.lineHeight) : 1.7;
     const rows = (node.rows || []).map(row => new D.TableRow({
       children: row.cells.map(cell => new D.TableCell({
         children: (cell.paragraphs || []).map(p => new D.Paragraph({
           text: p.text || '',
           // 行高调高：before/after 由 20 提升到 60 让表格每行更舒展（用户反馈"每行高度调高一点"）
-          spacing: { before: 60, after: 60, line: 276, lineRule: 'auto' },
+          spacing: { before: 60, after: 60, line: Math.round(tableLineH * 240), lineRule: 'auto' },
         })),
         width: { size: (cell.width && cell.width > 0) ? cell.width : colW, type: D.WidthType.PERCENTAGE },
       }))
