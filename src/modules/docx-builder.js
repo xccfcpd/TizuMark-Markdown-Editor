@@ -69,7 +69,10 @@
       const bold = (opts && typeof opts.bold !== 'undefined') ? opts.bold : (r && r.bold);
       // 行内代码（<code>）：docx 无原生 code 样式，显式套等宽字体以与正文区分
       const font = (r && r.codeStyle) ? { name: 'Consolas' } : undefined;
-      return new TextRun({ text: (r && r.text) || '', bold, italics: r && r.italics, strike: r && r.strike, color: r && r.color, font });
+      // <mark> 高亮：collectRuns 标了 runBase.highlight，此前 runToChild 直接丢弃，
+      // 导致预览里的黄底高亮在 Word 里变成普通文字。这里落到 TextRun 的 highlight。
+      const highlight = (r && r.highlight) ? 'yellow' : undefined;
+      return new TextRun({ text: (r && r.text) || '', bold, italics: r && r.italics, strike: r && r.strike, color: r && r.color, font, highlight });
     };
     const children = [];
     for (const node of structure || []) {
@@ -81,12 +84,26 @@
         if (node.align) opts.alignment = AlignmentType[node.align];
         if (node.quote) {
           opts.indent = { left: 360 }; // 0.25 英寸
-          opts.border = { left: { style: D.BorderStyle.SINGLE, size: 24, color: (page && page.accent) || '2563EB', space: 8 } };
+          opts.border = { left: { style: D.BorderStyle.SINGLE, size: 24, color: node.quoteColor || (page && page.accent) || '2563EB', space: 8 } };
           opts.spacing = { before: 80, after: 80 };
+          // 引用块/提示框底色：预览里是灰底或彩色底，此前只加左边框 → Word 里"底没了"
+          if (node.quoteBg) opts.shading = { type: D.ShadingType.CLEAR, fill: node.quoteBg };
         }
         children.push(new Paragraph(opts));
       } else if (node.type === 'bullet') {
-        children.push(new Paragraph({ text: (node.runs && node.runs[0] && node.runs[0].text) || '', bullet: { level: node.level || 0 } }));
+        const bulletText = (node.runs && node.runs[0] && node.runs[0].text) || '';
+        const level = node.level || 0;
+        if (node.ordered) {
+          // 有序列表：docx 的 bullet 只有圆点、无内置编号样式，故用「序号 + 悬挂缩进」呈现，
+          // 视觉与预览的 1. 2. 3. 一致（不参与 Word 自动重新编号，改条目需重新导出）。
+          children.push(new Paragraph({
+            text: `${node.marker || ''} ${bulletText}`.trim(),
+            indent: { left: 360 + level * 360, hanging: 240 },
+            spacing: { before: 20, after: 20 },
+          }));
+        } else {
+          children.push(new Paragraph({ text: bulletText, bullet: { level } }));
+        }
       } else if (node.type === 'table') {
         children.push(buildTable(D, node, page));
       } else if (node.type === 'code') {
@@ -133,7 +150,10 @@
     const docRun = {};
     if (fontName) docRun.font = fontName;
     if (page && page.baseSize) docRun.size = page.baseSize;
-    const docDefaults = { paragraph: { spacing: { before: 40, after: 40, line: 276, lineRule: 'auto' } } };
+    // 行距跟随预览的「行高」设置（page.lineHeight，默认 1.7）；OOXML 里 1 倍行距 = 240。
+    // 之前固定 line:276（≈1.15 倍），所以 Word 里行距明显比预览紧。
+    const lineH = (page && Number(page.lineHeight)) ? Number(page.lineHeight) : 1.7;
+    const docDefaults = { paragraph: { spacing: { before: 40, after: 40, line: Math.round(lineH * 240), lineRule: 'auto' } } };
     if (Object.keys(docRun).length) docDefaults.run = docRun;
 
     // 标题样式：覆盖 Word 内置的蓝色 Calibri Light，改用预览字体 + 主题标题色 + 加粗，

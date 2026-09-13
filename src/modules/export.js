@@ -961,6 +961,8 @@
           baseSize: toHalfPt(basePx),
           headingSizes: sizeEm.map(m => toHalfPt(basePx * m)),
           baseFont,
+          // 预览「行高」设置 → docx 全局行距（docx-builder 换算成 w:spacing/@w:line）
+          lineHeight: Number(this.settings.lineHeight) || 1.7,
         };
       },
       // 确保 lib/docx.min.js 已加载（定义 window.DocxLib）。
@@ -1421,9 +1423,26 @@
           const themeMode = document.documentElement.getAttribute('data-theme')
             || (this.isDark ? 'dark' : 'light');
 
+          // 打印帧是【独立文档】：<html> 上的运行时内联变量（--preview-weight / --preview-bold-weight /
+          // --custom-bg / --custom-fg 等，由 applySettings / applyCustomBg 写入）不会被继承；
+          // 不复制过去，PDF 里正文字重会回落 400、加粗回落 700，自定义底色也会失效。
+          // （data-color-scheme / data-theme 已复制到 <html> 属性上，这里只补 CSS 变量。）
+          const rootInline = (document.documentElement.getAttribute('style') || '').trim();
+          const previewElStyle = getComputedStyle(this.preview);
+          const pdfFontVar = previewElStyle.fontFamily || '';
+          const pdfCodeFontVar = (previewElStyle.getPropertyValue('--font-code-preview') || '').trim();
+          const pdfCustomBg = !!this.settings.customBgEnabled;
+          const rootVarsCSS = [
+            pdfFontVar ? `--font-preview: ${pdfFontVar};` : '',
+            rootInline,
+            pdfCodeFontVar ? `--font-code-preview: ${pdfCodeFontVar};` : '',
+          ].filter(Boolean).join(' ');
+
           const printCSS = `
+    :root { ${rootVarsCSS} }
     @page { margin: 1.5cm; }
-    html, body { margin: 0 !important; padding: 0 !important; height: auto !important; overflow: visible !important; background: var(--preview-bg, #ffffff) !important; }
+    html, body { margin: 0 !important; padding: 0 !important; height: auto !important; overflow: visible !important; background: ${pdfCustomBg ? 'var(--custom-bg)' : 'var(--preview-bg, #ffffff)'} !important; }
+    ${pdfCustomBg ? '.preview-content { background: var(--custom-bg) !important; color: var(--custom-fg) !important; }' : ''}
     .preview-content { max-width: 680px !important; margin: 0 auto !important; padding: 16px 24px !important; font-family: ${this._exportPdfFontStack()} !important; }
     .preview-content pre { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; overflow: visible !important; }
     .preview-content pre code { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; }

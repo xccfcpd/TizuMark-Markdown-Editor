@@ -20,6 +20,20 @@
     return 'png';
   }
 
+  // CSS 颜色（#hex / rgb() / rgba()）→ docx 需要的 6 位大写 HEX（不带 #）；取不到返回 ''。
+  // 用途：blockquote / alert 在 _prepareWordDOM 里被写成内联 background / borderLeft，
+  // 这里转成 docx 段落的 shading / 左边框色，避免「预览有底色，Word 里只剩一条竖线」。
+  function cssColorToHex(v) {
+    const s = String(v || '').trim();
+    let m = /^#([0-9a-fA-F]{6})$/.exec(s);
+    if (m) return m[1].toUpperCase();
+    m = /^#([0-9a-fA-F]{3})$/.exec(s);
+    if (m) return m[1].split('').map((c) => c + c).join('').toUpperCase();
+    m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(s);
+    if (m) return ((1 << 24) + (parseInt(m[1], 10) << 16) + (parseInt(m[2], 10) << 8) + parseInt(m[3], 10)).toString(16).slice(1).toUpperCase();
+    return '';
+  }
+
   function imageToNode(el) {
     const dataUrl = el.getAttribute('src') || '';
     const data = dataUrlToBytes(dataUrl);
@@ -123,7 +137,13 @@
       // 若块内无 <p>（纯文本/列表），退化到 collectRuns 整块
       if (runs.length === 0) runs.push(...collectRuns(el));
       const nodes = [];
-      if (runs.length) nodes.push({ type: 'paragraph', runs, quote: true });
+      // _prepareWordDOM 已把底色/左边框写成内联样式；取出来带给 docx，
+      // 否则预览里的灰底引用在 Word 里只剩一条竖线。
+      if (runs.length) nodes.push({
+        type: 'paragraph', runs, quote: true,
+        quoteBg: cssColorToHex(el.style.backgroundColor || el.style.background) || 'F6F5F4',
+        quoteColor: cssColorToHex(el.style.borderLeftColor) || '',
+      });
       nodes.push(...collectBlockImages(el));
       return nodes;
     }
@@ -134,8 +154,13 @@
       return [{ type: 'code', lines }];
     }
     if (tag === 'ul' || tag === 'ol') {
+      // 有序（ol）与无序（ul）必须区分：此前两者都产出 {type:'bullet'}，
+      // 导致预览里的 "1. 2. 3." 在 Word 里全变成圆点。这里带上 ordered + 序号文本。
+      const ordered = tag === 'ol';
       const nodes = [];
+      let idx = 0;
       for (const li of el.querySelectorAll(':scope > li')) {
+        idx += 1;
         let prefix = '';
         const cb = li.querySelector('input[type="checkbox"]');
         if (cb) prefix = cb.checked ? '☑ ' : '☐ ';
@@ -143,11 +168,17 @@
         const cbIn = inner.querySelector('input[type="checkbox"]');
         if (cbIn) inner.removeChild(cbIn);
         const text = prefix + (inner.textContent || '').replace(/\s+/g, ' ').trim();
-        nodes.push({ type: 'bullet', level: 0, runs: [{ text }] });
+        nodes.push({ type: 'bullet', ordered, marker: ordered ? `${idx}.` : '', level: 0, runs: [{ text }] });
         const nestedUl = li.querySelector(':scope > ul, :scope > ol');
         if (nestedUl) {
+          const nOrdered = nestedUl.tagName.toLowerCase() === 'ol';
+          let nidx = 0;
           for (const nli of nestedUl.querySelectorAll(':scope > li')) {
-            nodes.push({ type: 'bullet', level: 1, runs: [{ text: (nli.textContent || '').replace(/\s+/g, ' ').trim() }] });
+            nidx += 1;
+            nodes.push({
+              type: 'bullet', ordered: nOrdered, marker: nOrdered ? `${nidx}.` : '', level: 1,
+              runs: [{ text: (nli.textContent || '').replace(/\s+/g, ' ').trim() }],
+            });
           }
         }
       }
@@ -202,7 +233,12 @@
       if (title) runs.push({ text: (title.textContent || '').trim() + '\n', bold: true });
       if (content) runs.push(...(collectRuns(content, undefined, imgs)));
       const nodes = [];
-      if (runs.length) nodes.push({ type: 'paragraph', runs, quote: true });
+      // 提示框同理：把 _prepareWordDOM 内联的彩色底/左边框色带进 docx（此前底纹全丢）
+      if (runs.length) nodes.push({
+        type: 'paragraph', runs, quote: true,
+        quoteBg: cssColorToHex(el.style.backgroundColor || el.style.background) || '',
+        quoteColor: cssColorToHex(el.style.borderLeftColor) || '',
+      });
       nodes.push(...imgs);
       return nodes;
     }
