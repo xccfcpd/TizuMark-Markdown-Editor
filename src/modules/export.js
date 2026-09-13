@@ -680,18 +680,66 @@
           } catch (e) { /* skip */ }
   
           const escapedTitle = this.activeTab.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+          // 复用与 PDF 一致的真实 styles.css（而非手写精简 CSS），使导出 HTML 与软件预览外观一致：
+          // 主题色/代码块底色/强调色/字体均来自 CSS 变量，由 <html> 上的 data-color-scheme /
+          // data-theme 属性驱动。复制当前属性即可 1:1 还原当前主题（含深色模式）。
+          const appCSS = await this._loadStylesheetText('styles.css');
+          const customFontStyleEl = document.getElementById('custom-fonts-style');
+          const customFontCSS = customFontStyleEl ? (customFontStyleEl.textContent || '') : '';
+          const colorScheme = document.documentElement.getAttribute('data-color-scheme') || 'default';
+          const themeMode = document.documentElement.getAttribute('data-theme')
+            || (this.isDark ? 'dark' : 'light');
+          // === 100% 还原软件预览 ===
+          // styles.css 已内联、主题属性已复制，但以下「运行时」才生效、不在静态 CSS 里的
+          // 样式必须显式带过去，否则和界面有偏差：
+          //   - documentElement 内联 style：--preview-weight / --preview-bold-weight /
+          //     --custom-bg / --custom-fg 等（applySettings / applyCustomBg 写入）；
+          //   - #preview 实算字体：正文 font-family（previewFont 写到元素 style 上）、
+          //     代码块 --font-code-preview（codeFont 写到元素 style 上）；
+          //   - 设置项：预览字号 / 行高 / 最大宽度 / 行号类。
+          const rootInline = (document.documentElement.getAttribute('style') || '').trim();
+          const previewFontFamily = getComputedStyle(this.preview).fontFamily || '';
+          const codeFontVar = (getComputedStyle(this.preview).getPropertyValue('--font-code-preview') || '').trim();
+          const s = this.settings;
+          const customBg = !!s.customBgEnabled;
+          const rootVarsCSS = [
+            `color-scheme: ${themeMode};`,
+            `--font-preview: ${previewFontFamily};`,
+            rootInline,
+            codeFontVar ? `--font-code-preview: ${codeFontVar};` : '',
+          ].filter(Boolean).join(' ');
+
+          // 屏幕浏览外壳：居中阅读列 + 套用预览字体/字号/行高/最大宽度；不强制白底，保留深色主题观感。
+          const shellCSS = `
+    :root { ${rootVarsCSS} }
+    html, body { margin: 0; padding: 0; background: ${customBg ? 'var(--custom-bg)' : 'var(--preview-bg, #f8f7f4)'} !important; }
+    ${customBg ? 'body.custom-bg-active .preview-content, .preview-content { background: var(--custom-bg) !important; color: var(--custom-fg) !important; }' : ''}
+    .preview-content { max-width: ${s.maxWidth ? s.maxWidth + 'px' : '860px'}; margin: 0 auto; padding: 40px 32px; box-sizing: border-box; font-family: ${previewFontFamily}; font-size: ${s.previewFontSize}px; line-height: ${s.lineHeight}; }
+    .code-scroll { max-height: none !important; overflow: visible !important; }
+    .code-line { display: flex !important; line-height: 1.8 !important; min-width: 0 !important; }
+    .code-line-num { flex-shrink: 0; width: 3em; text-align: right; padding-right: 0.8em; color: #888; user-select: none; display: none; }
+    .preview-content.code-line-numbers .code-line-num { display: inline !important; }
+    .code-line-text { white-space: pre-wrap; word-wrap: break-word; word-break: break-word; flex: 1 1 auto; min-width: 0 !important; }
+    input[type="checkbox"] { -webkit-appearance: none; appearance: none; margin-right: 8px; width: 16px; height: 16px; border: 1.5px solid var(--border-color, #d4d4d8); border-radius: 3px; vertical-align: middle; position: relative; top: -1px; cursor: default; }
+    input[type="checkbox"]:checked { background: #16a34a url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIzIiBmaWxsPSJub25lIj48cGF0aCBkPSJNNSAxM2w0IDRMMTkgNyIvPjwvc3ZnPg==") center / 14px no-repeat; border-color: #16a34a; }
+    input[type="checkbox"]:checked::after { display: none !important; }
+    .mermaid-container { margin: 8px 0; max-width: 100%; overflow: hidden; }
+    .mermaid-container svg { width: auto; max-width: 100%; height: auto; display: block; margin: 0 auto; }
+    `;
+
+          const bodyClass = customBg ? ' class="custom-bg-active"' : '';
+          const wrapperClass = `preview-content${s.codeLineNumbers ? ' code-line-numbers' : ''}`;
+
           const fullHTML = `<!DOCTYPE html>
-    <html lang="zh-CN">
+    <html lang="zh-CN" data-color-scheme="${colorScheme}" data-theme="${themeMode}">
     <head>
       <meta charset="UTF-8">
       <title>${escapedTitle}</title>
-      <style>
-        ${this._documentExportCSS()}
-    ${katexCSS ? katexCSS + '\n' : ''}${hljsCSS ? hljsCSS : ''}
-      </style>
+      <style>${customFontCSS}${appCSS}${hljsCSS}${katexCSS}${shellCSS}</style>
     </head>
-    <body>
-    ${clone.innerHTML}
+    <body${bodyClass}>
+    <div class="${wrapperClass}">${clone.innerHTML}</div>
     </body>
     </html>`;
   
@@ -766,7 +814,11 @@
         const repairTextEscaping = (xml) => String(xml).replace(
           /(<m:t(?:\s[^>]*)?>)([\s\S]*?)(<\/m:t>)/g,
           (_, open, text, close) => open
-            + text.replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;').replace(/</g, '&lt;')
+            // DOM 序列化会把 U+00A0 写成 &nbsp; 实体；mml2omml 不还原，最终被下面的 & 转义
+            // 修成字面文本 "&nbsp;"（用户实测公式里出现 p&nbsp;prime）。这里先还原成普通空格。
+            + text
+              .replace(/&nbsp;/gi, ' ').replace(/&#0*160;/gi, ' ').replace(/&#x0*a0;/gi, ' ')
+              .replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;').replace(/</g, '&lt;')
             + close
         );
         let sawMath = false;
@@ -827,10 +879,37 @@
       _docxPageConfig() {
         const pageSize = this._docxPageSize('A4', 'portrait');
         const margins = this._docxMargins('normal');
+        // 读取当前主题的语义色，让导出的 docx 在代码块底色/引用左边框/表格边框/正文
+        // 字体上贴近软件预览（DOCX 无法 1:1 还原 CSS，但能对齐关键主题色）。
+        const cs = getComputedStyle(document.documentElement);
+        const hex = (name, fallback) => {
+          const v = (cs.getPropertyValue(name) || '').trim().replace(/^#/, '').toUpperCase();
+          return /^[0-9A-Fa-f]{6}$/.test(v) ? v : fallback;
+        };
+        // DOCX 只能指定单一字体名（不像 CSS 可给字体链）：优先用户选的预览字体，
+        // 否则用中文字体（与预览的中文回退一致）。自定义导入字体无法嵌入 docx，故跳过，
+        // 避免把 -apple-system 这类 CSS 系统关键字直接当成 Word 字体名导致回退异常。
+        const userFont = (this._fontFamilyFor(this.settings.previewFont) || '').replace(/^["']|["']$/g, '');
+        const baseFont = (userFont && !userFont.startsWith('tizumark-custom-'))
+          ? userFont.slice(0, 32)
+          : 'Microsoft YaHei';
+        // 预览正文字号（px）→ Word 半点（half-point）：1px = 0.75pt = 1.5 half-point。
+        // 标题字号沿用 styles.css 里 h1–h6 相对正文的 em 倍率，保证与预览的层次一致。
+        const basePx = Number(this.settings.previewFontSize) || 16;
+        const toHalfPt = (px) => Math.max(16, Math.round(px * 0.75 * 2));
+        const sizeEm = [2, 1.5, 1.25, 1.1, 1, 0.9];
         return {
           pageWidth: pageSize.width, pageHeight: pageSize.height,
           marginTop: margins.top, marginBottom: margins.bottom,
           marginLeft: margins.left, marginRight: margins.right,
+          codeBg: hex('--code-bg', 'F6F5F4'),
+          accent: hex('--accent-color', '2563EB'),
+          border: hex('--border-color', 'D4D4D8'),
+          headingColor: hex('--text-primary', '2C2C2E'),
+          textSecondary: hex('--text-secondary', '6E6E72'),
+          baseSize: toHalfPt(basePx),
+          headingSizes: sizeEm.map(m => toHalfPt(basePx * m)),
+          baseFont,
         };
       },
       // 确保 lib/docx.min.js 已加载（定义 window.DocxLib）。
@@ -1288,10 +1367,12 @@
           const escapedTitle = safeBaseName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   
           const colorScheme = document.documentElement.getAttribute('data-color-scheme') || 'default';
-  
+          const themeMode = document.documentElement.getAttribute('data-theme')
+            || (this.isDark ? 'dark' : 'light');
+
           const printCSS = `
     @page { margin: 1.5cm; }
-    html, body { margin: 0 !important; padding: 0 !important; background: white !important; }
+    html, body { margin: 0 !important; padding: 0 !important; background: var(--preview-bg, #ffffff) !important; }
     .preview-content { max-width: 680px !important; margin: 0 auto !important; padding: 16px 24px !important; font-family: ${this._exportPdfFontStack()} !important; }
     .preview-content pre { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; overflow: visible !important; }
     .preview-content pre code { white-space: pre-wrap !important; word-wrap: break-word !important; word-break: break-word !important; }
@@ -1320,7 +1401,7 @@
     `;
   
           const html = `<!DOCTYPE html>
-    <html lang="zh-CN" data-color-scheme="${colorScheme}" data-theme="light">
+    <html lang="zh-CN" data-color-scheme="${colorScheme}" data-theme="${themeMode}">
     <head><meta charset="UTF-8"><title>${escapedTitle}</title>
     <style>${customFontCSS}${appCSS}${hljsCSS}${katexCSS}${printCSS}</style></head>
     <body>

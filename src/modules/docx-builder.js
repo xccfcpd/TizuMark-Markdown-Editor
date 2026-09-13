@@ -17,10 +17,11 @@
     return null;
   }
 
-  function buildTable(D, node) {
+  function buildTable(D, node, theme) {
     // 列宽：cell.width 之前传 0 导致 Word 列宽全 0、排版乱。按列数平均分配 100%。
     const colCount = (node.rows && node.rows[0] && node.rows[0].cells) ? node.rows[0].cells.length : 1;
     const colW = Math.floor(100 / Math.max(1, colCount));
+    const borderColor = (theme && theme.border) || 'D4D4D8';
     const rows = (node.rows || []).map(row => new D.TableRow({
       children: row.cells.map(cell => new D.TableCell({
         children: (cell.paragraphs || []).map(p => new D.Paragraph({
@@ -35,12 +36,12 @@
       rows,
       width: { size: 100, type: D.WidthType.PERCENTAGE },
       borders: {
-        top: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
-        bottom: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
-        left: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
-        right: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
-        insideHorizontal: { style: D.BorderStyle.SINGLE, size: 4, color: 'E4E4E7' },
-        insideVertical: { style: D.BorderStyle.SINGLE, size: 4, color: 'E4E4E7' },
+        top: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
+        bottom: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
+        left: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
+        right: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
+        insideHorizontal: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
+        insideVertical: { style: D.BorderStyle.SINGLE, size: 4, color: borderColor },
       },
     });
   }
@@ -80,14 +81,14 @@
         if (node.align) opts.alignment = AlignmentType[node.align];
         if (node.quote) {
           opts.indent = { left: 360 }; // 0.25 英寸
-          opts.border = { left: { style: D.BorderStyle.SINGLE, size: 24, color: '2563EB', space: 8 } };
+          opts.border = { left: { style: D.BorderStyle.SINGLE, size: 24, color: (page && page.accent) || '2563EB', space: 8 } };
           opts.spacing = { before: 80, after: 80 };
         }
         children.push(new Paragraph(opts));
       } else if (node.type === 'bullet') {
         children.push(new Paragraph({ text: (node.runs && node.runs[0] && node.runs[0].text) || '', bullet: { level: node.level || 0 } }));
       } else if (node.type === 'table') {
-        children.push(buildTable(D, node));
+        children.push(buildTable(D, node, page));
       } else if (node.type === 'code') {
         // 代码块：灰底 + 边框 + 等宽。每行一个独立段落，行间【不用】<w:br/> 软换行——
         // Word/WPS 的东亚排版会把「软换行结尾的行」按两端对齐强行拉伸到整行宽
@@ -99,7 +100,7 @@
           children.push(new Paragraph({
             alignment: AlignmentType.LEFT,
             children: [new TextRun({ text: l, font: { name: 'Consolas' } })],
-            shading: { type: D.ShadingType.CLEAR, fill: 'F6F5F4' },
+            shading: { type: D.ShadingType.CLEAR, fill: (page && page.codeBg) || 'F6F5F4' },
             border: {
               top: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
               bottom: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4D4D8' },
@@ -122,19 +123,47 @@
       } else if (node.type === 'hr') {
         // 水平线：段落底边框。
         children.push(new Paragraph({
-          border: { bottom: { style: D.BorderStyle.SINGLE, size: 6, color: 'D4D4D8', space: 1 } },
+          border: { bottom: { style: D.BorderStyle.SINGLE, size: 6, color: (page && page.border) || 'D4D4D8', space: 1 } },
           spacing: { before: 80, after: 80 },
         }));
       }
     }
+    // 全局默认段落间距 + 正文字体/字号（跟随预览）：否则 Word 默认段落零间距、字体不一致。
+    const fontName = (page && page.baseFont) || undefined;
+    const docRun = {};
+    if (fontName) docRun.font = fontName;
+    if (page && page.baseSize) docRun.size = page.baseSize;
+    const docDefaults = { paragraph: { spacing: { before: 40, after: 40, line: 276, lineRule: 'auto' } } };
+    if (Object.keys(docRun).length) docDefaults.run = docRun;
+
+    // 标题样式：覆盖 Word 内置的蓝色 Calibri Light，改用预览字体 + 主题标题色 + 加粗，
+    // 并还原预览的字号倍率与 h1/h2 下边框，使 docx 标题与软件预览一致。
+    const headingStyles = {};
+    if (page && page.headingSizes) {
+      const hc = page.headingColor || '2C2C2E';
+      const sc = page.textSecondary || '6E6E72';
+      const bc = page.border || 'D4D4D8';
+      const mkHeading = (idx, color, border) => {
+        const run = { bold: true, color };
+        if (page.headingSizes[idx]) run.size = page.headingSizes[idx];
+        if (fontName) run.font = fontName;
+        const paragraph = { spacing: { before: 200, after: 100 } };
+        if (border) paragraph.border = { bottom: { style: D.BorderStyle.SINGLE, size: border.size, color: border.color, space: 4 } };
+        return { run, paragraph };
+      };
+      headingStyles.heading1 = mkHeading(0, hc, { size: 12, color: hc });
+      headingStyles.heading2 = mkHeading(1, hc, { size: 6, color: bc });
+      headingStyles.heading3 = mkHeading(2, hc, null);
+      headingStyles.heading4 = mkHeading(3, hc, null);
+      headingStyles.heading5 = mkHeading(4, sc, null);
+      headingStyles.heading6 = mkHeading(5, sc, null);
+    }
+
     const doc = new Document({
-      // 全局默认段落间距：段前段后各 40 twips（约 0.07cm）+ 1.15 倍行距，
-      // 否则 Word 默认段落零间距、文字太密集（用户反馈"太密集"）。
       styles: {
         default: {
-          document: {
-            paragraph: { spacing: { before: 40, after: 40, line: 276, lineRule: 'auto' } },
-          },
+          document: docDefaults,
+          ...headingStyles,
         },
       },
       sections: [{
