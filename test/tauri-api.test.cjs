@@ -78,14 +78,14 @@ test('plugin 命令透传：dialog / webview / updater（N32，属 core.invoke �
     await TauriApi.toggleDevtools();
     assert.equal(calls[calls.length - 1].cmd, 'plugin:webview|internal_toggle_devtools');
 
+    // 本 fork 已彻底停用更新器：updater 检查/下载/安装均为 no-op，不再发出任何 plugin:updater IPC
     await TauriApi.updater.check();
-    assert.equal(calls[calls.length - 1].cmd, 'plugin:updater|check');
-
     await TauriApi.updater.download({ rid: 1, onEvent: {} });
-    assert.equal(calls[calls.length - 1].cmd, 'plugin:updater|download');
-
     await TauriApi.updater.install({ updateRid: 1, bytesRid: 2 });
-    assert.equal(calls[calls.length - 1].cmd, 'plugin:updater|install');
+    const updaterCalls = calls.filter(c => c.cmd && String(c.cmd).startsWith('plugin:updater'));
+    assert.equal(updaterCalls.length, 0, '彻底停用后不应有任何 plugin:updater IPC 调用');
+    const checkRes = await TauriApi.updater.check();
+    assert.equal(checkRes, null);
   } finally {
     delete global.window;
   }

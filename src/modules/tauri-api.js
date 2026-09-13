@@ -60,10 +60,13 @@
   // 注意：open_devtools 已是 COMMANDS 生成的自定义方法；webview 内部开关单独命名避免冲突
   api.toggleDevtools = function () { return invokeCmd('plugin:webview|internal_toggle_devtools'); };
 
+  // 本 fork 已彻底停用更新器：所有更新检查 / 下载 / 安装均短路为 no-op，
+  // 不再向任何上游（gitee.com/tizu、github.com/tizuio）发起 IPC。
+  // 菜单项在 index.html 中以 .hidden 隐藏；恢复更新时请同步回填此处与 tauri.conf.json 的 endpoints + pubkey。
   api.updater = {
-    check() { return invokeCmd('plugin:updater|check'); },
-    download(payload) { return invokeCmd('plugin:updater|download', payload || {}); },
-    install(payload) { return invokeCmd('plugin:updater|install', payload || {}); },
+    check() { return Promise.resolve(null); },
+    download() { return Promise.resolve(null); },
+    install() { return Promise.resolve(null); },
   };
 
   // P1-5：收敛非 core 命名空间（shell / event / app / window / path）到 TauriApi，

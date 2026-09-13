@@ -95,6 +95,8 @@
         } catch (_) {}
       },
       async checkUpdate(showUpToDate = false) {
+        // 本 fork 已彻底停用更新器：直接短路，不弹窗、不发起任何 IPC（入口已在 tauri-api.js 置为 no-op，菜单项在 index.html 隐藏）。
+        return;
         const checkId = (this._updateCheckId || 0) + 1;
         this._updateCheckId = checkId;
         this._updateDismissed = false;
