@@ -35,6 +35,11 @@
  *       密码学层面的「签名有效性」最终由 Tauri 运行时校验；本脚本做的是
  *       「密钥一致性 + 产物存在性 + 结构正确性 + JSON 一致性 + 端点可达性」检查，
  *       这些才是两类历史故障的直接根因。
+ *
+ * 刻意停用：当 tauri.conf.json 的 updater.endpoints 为空且无 pubkey，且
+ *       tauri-api.js 的 updater 封装为 no-op（不再发出 plugin:updater IPC）时，判定为
+ *       本 fork 已彻底停用更新器，脚本跳过全部更新校验并以「通过」退出（exit 0），
+ *       避免阻断「不提供更新服务」的 fork 的打包/发布流程。
  */
 
 const fs = require('fs');
@@ -201,6 +206,30 @@ function main(argv) {
     return finish(errors, warns, oks, infos, releaseMode);
   }
   ok('tauri.conf.json 含 plugins.updater');
+
+  // 预读取 tauri-api.js，用于「刻意停用」检测
+  let tauriApi = null;
+  try {
+    tauriApi = fs.readFileSync(path.join(ROOT, 'src', 'modules', 'tauri-api.js'), 'utf8');
+  } catch (e) {
+    tauriApi = null;
+  }
+
+  // 刻意停用检测：同时满足 (a) 配置被清空（endpoints 为空且无 pubkey）
+  // 与 (b) JS 封装为 no-op（updater.check/download/install 不再发出 plugin:updater IPC）
+  // 时，判定为「本 fork 已彻底停用更新器」，跳过全部更新端到端校验，避免阻断打包/发布。
+  const blanked = (!Array.isArray(upd.endpoints) || upd.endpoints.length === 0) && !upd.pubkey;
+  const noopWrapper =
+    !!tauriApi &&
+    /api\.updater\s*=\s*\{/.test(tauriApi) &&
+    !/plugin:updater\|check/.test(tauriApi) &&
+    !/plugin:updater\|download/.test(tauriApi) &&
+    !/plugin:updater\|install/.test(tauriApi);
+  if (blanked && noopWrapper) {
+    info('检测到更新器已被刻意停用（tauri.conf.json 的 endpoints/pubkey 为空 + tauri-api.js 的 updater 封装为 no-op）。');
+    ok('更新器刻意停用：跳过自动更新端到端校验（本 fork 不提供更新服务，符合预期）。');
+    return finish(errors, warns, oks, infos, releaseMode);
+  }
 
   let pub = null;
   if (!upd.pubkey) {
