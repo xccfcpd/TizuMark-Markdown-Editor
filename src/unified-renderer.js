@@ -762,7 +762,16 @@ function gfmTableToHtml(tableLines) {
 }
 
 function renderCellContent(text) {
-  let result = escapeHTML(text);
+  // 占位符注释必须先摘出来再转义：escapeHTML 会把 '<!--' 变成 '&lt;!--'，
+  // 之后 restoreMathBlocks 再也匹配不到占位符，单元格里就会显示
+  // "<!--MATHBLOCK_380-->" 这样的源码文字（2026-09-13 复现：标题/段落紧邻的表格
+  // 走 convertContainerTables → gfmTableToHtml → 本函数，整张表公式全部失效）。
+  const comments = [];
+  let result = text.replace(/<!--(?:MATHBLOCK|ALERTBLOCK)_\d+(?:_END)?-->/g, (m) => {
+    comments.push(m);
+    return '\u0000TMC' + (comments.length - 1) + '\u0000';
+  });
+  result = escapeHTML(result);
 
   const codeSpans = [];
   result = result.replace(/`(.+?)`/g, (m, code) => {
@@ -780,6 +789,10 @@ function renderCellContent(text) {
   result = result.replace(/%%CODE(\d+)%%/g, (m, idx) => {
     return '<code>' + codeSpans[parseInt(idx)] + '</code>';
   });
+
+  // 还原被摘出的占位符注释：其余内容已转义完毕，注释以 HTML 注释形态交给 rehype-raw，
+  // 与 remark-gfm 直接渲染表格时的行为保持一致。
+  result = result.replace(/\u0000TMC(\d+)\u0000/g, (m, idx) => comments[parseInt(idx, 10)]);
 
   return result;
 }
@@ -837,9 +850,13 @@ function restoreMathBlocks(html, placeholders) {
       const wrapped = '<span class="math-display" data-source-line="' + ph.line + '">' + escaped + '</span>';
       result = result.split(marker).join(wrapped);
     } else {
-      // 行内数学：占位符是 <!--MATHBLOCK_N-->，直接恢复
+      // 行内数学：占位符是 <!--MATHBLOCK_N-->，直接恢复。
+      // 兜底第二种形态：占位符曾被 escapeHTML 处理过（单元格内容转义路径），
+      // 注释会以实体形式落进 HTML —— &lt;!--MATHBLOCK_N--&gt;，必须同样还原，
+      // 否则预览里会把占位符当普通文字显示。
       const marker = '<!--MATHBLOCK_' + idx + '-->';
-      result = result.split(marker).join(escaped);
+      const escapedMarker = '&lt;!--MATHBLOCK_' + idx + '--&gt;';
+      result = result.split(marker).join(escaped).split(escapedMarker).join(escaped);
     }
   }
   return result;
