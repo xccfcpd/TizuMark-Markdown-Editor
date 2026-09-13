@@ -710,17 +710,24 @@
             codeFontVar ? `--font-code-preview: ${codeFontVar};` : '',
           ].filter(Boolean).join(' ');
 
-          // 屏幕浏览外壳：居中阅读列 + 套用预览字体/字号/行高/最大宽度；不强制白底，保留深色主题观感。
+          // 复用预览容器本身（clone 保留其 class 与内联 style），不再手写 padding / 字号 /
+          // 行高 / 最大宽度 / 字体，避免与 styles.css 及预览实际样式产生偏差：
+          //   - 内联样式已带 font-size / line-height / max-width / margin / font-family；
+          //   - class 已带 code-wrap / code-no-scroll / code-line-numbers / max-width-active，
+          //     代码换行与行号设置因此与预览逐一致；
+          //   - 自定义底色由 styles.css 的 body.custom-bg-active #preview 规则自动驱动。
+          // 这里只解除「静态文档」不需要的滚动 / 高度约束，让整篇内容自然铺开。
+          if (!clone.style.maxWidth) {
+            // 未设置「最大宽度」时，给导出文档一个 860px 的阅读列默认值（静态文档更易读）
+            clone.style.maxWidth = '860px';
+            clone.style.margin = '0 auto';
+          }
+
           const shellCSS = `
     :root { ${rootVarsCSS} }
     html, body { margin: 0; padding: 0; background: ${customBg ? 'var(--custom-bg)' : 'var(--preview-bg, #f8f7f4)'} !important; }
-    ${customBg ? 'body.custom-bg-active .preview-content, .preview-content { background: var(--custom-bg) !important; color: var(--custom-fg) !important; }' : ''}
-    .preview-content { max-width: ${s.maxWidth ? s.maxWidth + 'px' : '860px'}; margin: 0 auto; padding: 40px 32px; box-sizing: border-box; font-family: ${previewFontFamily}; font-size: ${s.previewFontSize}px; line-height: ${s.lineHeight}; }
+    #preview { height: auto !important; min-height: 0 !important; overflow: visible !important; }
     .code-scroll { max-height: none !important; overflow: visible !important; }
-    .code-line { display: flex !important; line-height: 1.8 !important; min-width: 0 !important; }
-    .code-line-num { flex-shrink: 0; width: 3em; text-align: right; padding-right: 0.8em; color: #888; user-select: none; display: none; }
-    .preview-content.code-line-numbers .code-line-num { display: inline !important; }
-    .code-line-text { white-space: pre-wrap; word-wrap: break-word; word-break: break-word; flex: 1 1 auto; min-width: 0 !important; }
     input[type="checkbox"] { -webkit-appearance: none; appearance: none; margin-right: 8px; width: 16px; height: 16px; border: 1.5px solid var(--border-color, #d4d4d8); border-radius: 3px; vertical-align: middle; position: relative; top: -1px; cursor: default; }
     input[type="checkbox"]:checked { background: #16a34a url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIzIiBmaWxsPSJub25lIj48cGF0aCBkPSJNNSAxM2w0IDRMMTkgNyIvPjwvc3ZnPg==") center / 14px no-repeat; border-color: #16a34a; }
     input[type="checkbox"]:checked::after { display: none !important; }
@@ -729,17 +736,19 @@
     `;
 
           const bodyClass = customBg ? ' class="custom-bg-active"' : '';
-          const wrapperClass = `preview-content${s.codeLineNumbers ? ' code-line-numbers' : ''}`;
 
+          // CSS 分层（特异性由低到高）：_documentExportCSS 是「标签级兜底」——styles.css
+          // 拉取失败时导出仍可读，且 jsdom 测试环境无 fetch、只能靠它做结构断言；
+          // styles.css 用 .preview-content 作用域选择器（特异性更高）真正决定视觉，与预览一致。
           const fullHTML = `<!DOCTYPE html>
     <html lang="zh-CN" data-color-scheme="${colorScheme}" data-theme="${themeMode}">
     <head>
       <meta charset="UTF-8">
       <title>${escapedTitle}</title>
-      <style>${customFontCSS}${appCSS}${hljsCSS}${katexCSS}${shellCSS}</style>
+      <style>${this._documentExportCSS()}${customFontCSS}${appCSS}${hljsCSS}${katexCSS}${shellCSS}</style>
     </head>
     <body${bodyClass}>
-    <div class="${wrapperClass}">${clone.innerHTML}</div>
+    ${clone.outerHTML}
     </body>
     </html>`;
   
