@@ -107,6 +107,45 @@
         } catch (e) { /* cross-origin 等忽略 */ }
         return '';
       },
+      // 把 KaTeX CSS 里的 @font-face 字体内联为 base64 data URI。
+      // 为什么必须：KaTeX CSS 中字体是相对路径 url(fonts/KaTeX_*.woff2)；导出成独立 HTML 后
+      // 该目录不存在 → 数学字体回退到系统 serif，大运算符（∫/∑/∏）与整体符号尺寸随之变小，
+      // 与软件预览（有 KaTeX 字体）出现可见差异。内联后导出文件自包含、与预览一致。
+      async _inlineKatexFonts(css) {
+        if (!css) return css;
+        const cache = (this._katexFontCache || (this._katexFontCache = new Map()));
+        const toBase64 = (buf) => {
+          const bytes = new Uint8Array(buf);
+          let bin = '';
+          const CHUNK = 0x8000; // 分块避免 apply 参数过多导致栈溢出
+          for (let i = 0; i < bytes.length; i += CHUNK) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+          }
+          return btoa(bin);
+        };
+        const loadFont = async (file) => {
+          if (cache.has(file)) return cache.get(file);
+          let uri = '';
+          try {
+            const resp = await fetch('lib/katex/fonts/' + file);
+            if (resp.ok) uri = 'data:font/woff2;base64,' + toBase64(await resp.arrayBuffer());
+          } catch (e) { /* 单个字体拉取失败：保留原相对路径，不影响其它字体 */ }
+          cache.set(file, uri);
+          return uri;
+        };
+        // 逐个 @font-face 块处理：只保留 woff2（现代浏览器全支持），避免 woff/ttf 重复内联。
+        const blocks = css.match(/@font-face\s*\{[^}]*\}/g) || [];
+        let out = css;
+        for (const block of blocks) {
+          const m = /url\(\s*['"]?([^'")]+\.woff2)['"]?\s*\)/.exec(block);
+          if (!m) continue;
+          const file = m[1].split('/').pop();
+          const uri = await loadFont(file);
+          if (!uri) continue;
+          out = out.replace(block, block.replace(/src:[^;}]*/, `src:url(${uri}) format("woff2")`));
+        }
+        return out;
+      },
       // 文档导出（HTML / Word）共用的基础样式表。
       // 使用标签级选择器（h1/pre/...）而非 .preview-content 后代选择器，
       // 因为导出时 this.preview 的外层容器被丢弃，仅其 children 进入 <body>。
@@ -667,7 +706,7 @@
           let katexCSS = '';
           try {
             const resp = await fetch('lib/katex/katex.min.css');
-            if (resp.ok) katexCSS = await resp.text();
+            if (resp.ok) katexCSS = await this._inlineKatexFonts(await resp.text());
           } catch (e) { /* skip */ }
   
           let hljsCSS = '';
@@ -1369,7 +1408,7 @@
           let hljsCSS = '';
           try { const themeLink = document.getElementById('highlight-theme'); if (themeLink) { const resp = await fetch(themeLink.getAttribute('href')); if (resp.ok) hljsCSS = await resp.text(); } } catch (e) { /* skip */ }
           let katexCSS = '';
-          try { const resp = await fetch('lib/katex/katex.min.css'); if (resp.ok) katexCSS = await resp.text(); } catch (e) { /* skip */ }
+          try { const resp = await fetch('lib/katex/katex.min.css'); if (resp.ok) katexCSS = await this._inlineKatexFonts(await resp.text()); } catch (e) { /* skip */ }
           // 自定义字体的 @font-face（base64 内联）由 #custom-fonts-style 持有。打印帧是独立文档，
           // 必须一并携带，否则用户选了自定义预览字体时，字体链首项在 PDF 里无字形可落。
           const customFontStyleEl = document.getElementById('custom-fonts-style');
