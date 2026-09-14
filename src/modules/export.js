@@ -858,6 +858,67 @@
           .replace(/&apos;/g, "'")
           .replace(/&#39;/g, "'")
           .replace(/&amp;/g, '&');
+        // mml2omml（0.5.0）遇到 \overset / \underset（MathML <mover>/<munder>）时，会把
+        // <m:limUpp>/<m:limLow> 这类公式对象多包一层 <m:r><m:t>，塞进"文本节点"里。
+        // 原始串能被 XML 解析器接受，但语义是错的；更致命的是紧随其后的 repairTextEscaping
+        // 会把里面的 < 当文本转义成 &lt;，XML 立刻不成对 → 良构校验失败 → 整条公式降级成
+        // LaTeX 源码（用户 2026-09-14 复现：5.3 上下节组合整块显示源码）。
+        // 这里按 OMML 语法把错位结构逐层上提：<m:t> 只允许装文本、<m:r> 只允许 run 子元素。
+        // 未发生改动时原样返回（不做重新序列化），保证对已正确的 500+ 公式零影响。
+        const OMML_RUN_CHILD_TAGS = ['rPr', 't', 'br', 'sym', 'noBreakHyphen', 'softHyphen'];
+        const ommlLocalTag = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
+        const repairMisplacedOMML = (xml) => {
+          try {
+            const doc = new DOMParser().parseFromString(String(xml), 'application/xml');
+            if (!doc || doc.getElementsByTagName('parsererror').length) return xml;
+            let changed = false;
+            // 多趟：上提后父层可能又暴露出新的错位（如 \overset{*}{\underset{**}{X}} 的两层嵌套）
+            for (let pass = 0; pass < 20; pass++) {
+              const nodes = [];
+              const collect = (n) => {
+                for (const c of Array.from(n.children || [])) { collect(c); nodes.push(c); }
+              };
+              collect(doc.documentElement); // 自底向上，先处理子节点
+              let touched = false;
+              for (const el of nodes) {
+                const tag = ommlLocalTag(el);
+                if (tag === 't' && el.children.length) {
+                  // <m:t> 里出现元素 → 元素上提到 m:t 的位置，文本片段重新包成 <m:t>
+                  const parent = el.parentNode;
+                  let buf = '';
+                  const flush = () => {
+                    if (!buf) return;
+                    const t = el.cloneNode(false);
+                    t.textContent = buf;
+                    buf = '';
+                    parent.insertBefore(t, el);
+                  };
+                  for (const child of Array.from(el.childNodes)) {
+                    if (child.nodeType === 1) { flush(); parent.insertBefore(child, el); }
+                    else buf += child.textContent || '';
+                  }
+                  flush();
+                  parent.removeChild(el);
+                  touched = true;
+                } else if (tag === 'r') {
+                  // <m:r> 里出现非 run 子元素（m:limUpp / m:limLow / m:sSubSup…）→ 提到 run 外
+                  const stray = Array.from(el.children).filter((c) => OMML_RUN_CHILD_TAGS.indexOf(ommlLocalTag(c)) === -1);
+                  if (stray.length) {
+                    const parent = el.parentNode;
+                    for (const s of stray) parent.insertBefore(s, el);
+                    if (!el.children.length && !String(el.textContent || '').trim()) parent.removeChild(el);
+                    touched = true;
+                  }
+                }
+              }
+              changed = changed || touched;
+              if (!touched) break;
+            }
+            return changed ? new XMLSerializer().serializeToString(doc) : xml;
+          } catch (e) {
+            return xml; // 修复失败不放大问题：交给下游良构校验与降级逻辑
+          }
+        };
         // mml2omml 产出 <m:t> 文本内容时不做 XML 转义：公式含 <（如 O(1) < O(\log n)）时
         // OMML 里出现裸 < → 非良构（parsererror）→ 被误判坏公式降级成 LaTeX 纯文本。
         // 这里对 <m:t>…</m:t> 内文本定向转义修复（< 一律转义；& 仅在非实体引用处转义，幂等；
@@ -882,6 +943,9 @@
               if (!convert) continue; // 缺库：保留 mathml run，外层据 sawMath 决定走主路径还是回退
               let ommlStr = null;
               try { ommlStr = String(convert(r.mathml)); } catch (e) { ommlStr = null; }
+              // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再做文本转义 ——
+              // 顺序不能反：反了会把错位结构里的 < 转义掉，XML 不成对，整条公式降级为源码。
+              if (ommlStr) ommlStr = repairMisplacedOMML(ommlStr);
               if (ommlStr) ommlStr = repairTextEscaping(ommlStr);
               if (ommlStr && isWellFormed(ommlStr)) {
                 runs[i] = { omml: ommlStr };

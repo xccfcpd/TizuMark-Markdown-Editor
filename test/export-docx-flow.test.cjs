@@ -224,6 +224,59 @@ test('_structureMathmlToOmml: 含 < 的公式修复转义后走 OMML 主路径�
   });
 });
 
+// 回归（2026-09-14 用户复现）：\overset / \underset（MathML <mover>/<munder>）会被 mml2omml
+// 多包一层 <m:r><m:t>，把 <m:limUpp>/<m:limLow> 塞进"文本节点"；随后 repairTextEscaping 把里面的
+// < 转义成 &lt; → XML 不成对 → 良构校验失败 → 整条公式降级成 LaTeX 源码（Word 里看到 {}^{14}_{6}…）。
+// 修复：先按 OMML 语法把错位结构上提（m:t 只装文本、m:r 只装 run 子元素），再做文本转义。
+// 下面的 mathml 是 KaTeX 0.17.0 的真实产出（与真机一致）。
+test('_structureMathmlToOmml: \\overset / \\underset 结构错位修复后走 OMML（不再降级源码）', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  await withEditor({}, async (w, ed) => {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'mathml2omml.min.js'), 'utf8'));
+    const cases = [
+      ['overset', '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi><mover><mo><mi>X</mi></mo><mo lspace="0em" rspace="0em">∗</mo></mover></mi></mrow><annotation encoding="application/x-tex">\\overset{*}{X}</annotation></semantics></math>', '<m:limUpp>'],
+      ['underset', '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi><munder><mo><mi>X</mi></mo><mo lspace="0em" rspace="0em">∗</mo></munder></mi></mrow><annotation encoding="application/x-tex">\\underset{*}{X}</annotation></semantics></math>', '<m:limLow>'],
+      ['嵌套', '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi><mover><mo><mi><munder><mo><mi>X</mi></mo><mrow><mo>∗</mo><mo>∗</mo></mrow></munder></mi></mo><mo lspace="0em" rspace="0em">∗</mo></mover></mi></mrow><annotation encoding="application/x-tex">\\overset{*}{\\underset{**}{X}}</annotation></semantics></math>', '<m:limUpp>'],
+    ];
+    for (const [name, mathml, expectTag] of cases) {
+      const struct = [{ type: 'paragraph', runs: [{ mathml }] }];
+      const ok = ed._structureMathmlToOmml(struct);
+      assert.strictEqual(ok, true, name + ': 应返回 true');
+      const run = struct[0].runs[0];
+      assert.ok(typeof run.omml === 'string', name + ': 应转成 omml run（而不是降级 LaTeX 源码），实际: ' + JSON.stringify(run).slice(0, 140));
+      assert.ok(run.omml.includes(expectTag), name + ': 应保留 ' + expectTag + ' 结构');
+      assert.ok(!run.omml.includes('&lt;m:lim'), name + ': 结构不得被转义成文本');
+      const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
+      assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, name + ': 修复后 OMML 应良构');
+      // <m:t> 里只能有文本：不得再出现元素
+      for (const t of Array.from(doc.getElementsByTagName('m:t'))) {
+        assert.strictEqual(t.children.length, 0, name + ': m:t 内不应再嵌元素');
+      }
+    }
+  });
+});
+
+test('_structureMathmlToOmml: 本来就正确的公式不受结构修复影响', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  await withEditor({}, async (w, ed) => {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'katex', 'dist', 'katex.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'mathml2omml.min.js'), 'utf8'));
+    const holder = w.document.createElement('div');
+    w.katex.render('x^2 + \\sum_{i=1}^{n} i', holder, { displayMode: true, output: 'mathml' });
+    const mathml = holder.querySelector('math').outerHTML;
+    const struct = [{ type: 'paragraph', runs: [{ mathml }] }];
+    assert.strictEqual(ed._structureMathmlToOmml(struct), true);
+    const run = struct[0].runs[0];
+    assert.ok(typeof run.omml === 'string', '普通公式仍应转成 OMML');
+    assert.ok(!/m:lim/.test(run.omml), '普通公式不应出现 m:lim* 结构');
+    const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
+    assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, 'OMML 应良构');
+    assert.ok(/<m:sup>/.test(run.omml) && /<m:nary>/.test(run.omml), '上下标/求和结构应保留');
+  });
+});
+
 test('_structureMathmlToOmml: 降级 LaTeX 文本须解码实体（&lt; 不再字面进 Word）', async () => {
   await withEditor({}, async (w, ed) => {
     // 桩库恒产出非良构 OMML → 强制走降级路径
