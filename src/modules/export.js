@@ -214,6 +214,11 @@
     /(<m:t(?:\s[^>]*[^/>])?>)([\s\S]*?)(<\/m:t>)/g,
     (_, open, text, close) => open
       + text
+        // mml2omml 会把 \text{ 中的空格写成 XML 未定义实体 &nbsp;（解析报 Unexpected entity）。
+        // 这里先还原成真正的不换行空格 —— 若直接转义成 &amp;nbsp;，DOM 文本就变成字面量
+        // "&nbsp;"，后续 repairTextEscaping 也匹配不到它，Word 里会直接显示 "&nbsp;"
+        //（2026-09-14 用户复核：p&nbsp;prime / 其中&nbsp;x_i&nbsp;是陈根）。
+        .replace(/&nbsp;/gi, '\u00a0').replace(/&#0*160;/gi, '\u00a0').replace(/&#x0*a0;/gi, '\u00a0')
         .replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;')
         .replace(/<(?!\/?[mw]:)/g, '&lt;')
       + close
@@ -281,6 +286,25 @@
           if (tag === 'sSub' || tag === 'sSup' || tag === 'sSubSup' || tag === 'sPre') {
             const slots = ['e', 'sub', 'sup'].map((n) => ommlChild(el, n));
             if (slots.every((n) => !n || ommlVisuallyEmpty(n))) { el.parentNode.removeChild(el); touched = true; continue; }
+          }
+          // R7：删除「完全没有文本」的 run（<m:r><m:t/></m:r>）—— mml2omml 对空 <mrow/> 会产出这种
+          // 空 run（用户文档里 319 处），Word 在公式里可能把它们画成占位小框。
+          // 注意：只删"文本为空字符串"的，不能删"仅含空白"的 —— \quad 的 <m:t> </m:t> 是真实间距，
+          // 删掉会触发 I3 文本顺序不变量、整条公式的修复被兜底吞掉（2026-09-14 定位）。
+          if (tag === 'r') {
+            const hasStruct = Array.from(el.children).some((c) => ommlTag(c) !== 't' && ommlTag(c) !== 'rPr');
+            if (String(el.textContent || '') === '' && !hasStruct) { el.parentNode.removeChild(el); touched = true; continue; }
+          }
+          // R8：矩阵的空单元格填一个不可见字符（U+2061 函数应用）—— Word 对公式矩阵里的空格子
+          // 会画虚线占位框（2026-09-14 用户复核：aligned/cases 类公式共 35 个）。不可见字符不改版式。
+          if (tag === 'e' && el.parentNode && ommlTag(el.parentNode) === 'mr' && ommlVisuallyEmpty(el)) {
+            const fillRun = ommlMake(doc, 'r');
+            const fillT = ommlMake(doc, 't');
+            fillT.setAttribute('xml:space', 'preserve');
+            fillT.textContent = '\u2061';
+            fillRun.appendChild(fillT);
+            el.appendChild(fillRun);
+            touched = true;
           }
           if (tag === 'nary') {
             // R1：空限定槽直接删（schema 允许缺省）
@@ -1280,8 +1304,13 @@
           (_, open, text, close) => open
             // DOM 序列化会把 U+00A0 写成 &nbsp; 实体；mml2omml 不还原，最终被下面的 & 转义
             // 修成字面文本 "&nbsp;"（用户实测公式里出现 p&nbsp;prime）。这里先还原成普通空格。
+            // 注意也要处理【已双重转义】的形态 &amp;nbsp;：那条路径上 DOM 文本本身就是字面量
+            // "&nbsp;"，序列化后成了 &amp;nbsp;，只匹配 &nbsp; 会漏掉 → Word 里直接显示 "&nbsp;"
+            //（2026-09-14 用户复核：其中&nbsp;x_i&nbsp;是陈根）。
             + text
-              .replace(/&nbsp;/gi, ' ').replace(/&#0*160;/gi, ' ').replace(/&#x0*a0;/gi, ' ')
+              .replace(/&(?:amp;)?nbsp;/gi, ' ')
+              .replace(/&(?:amp;)?#0*160;/gi, ' ')
+              .replace(/&(?:amp;)?#x0*a0;/gi, ' ')
               .replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;').replace(/</g, '&lt;')
             + close
         );

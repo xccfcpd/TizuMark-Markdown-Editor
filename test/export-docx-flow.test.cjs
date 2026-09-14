@@ -695,3 +695,41 @@ test('_structureMathmlToOmml: 槽内裸文本被包成 run（Word 虚线框）',
     assert.strictEqual(doc.getElementsByTagName('m:sup').length, 0, '空 sup 应被删除');
   });
 });
+
+// 回归（2026-09-14 用户复核）：
+// ① 公式里出现字面 "&nbsp;"：\text{} 的空格被 mml2omml 写成 &nbsp;，解析路径把 DOM 文本
+//    变成字面量 "&nbsp;"，序列化后是 &amp;nbsp;，只匹配 &nbsp; 会漏 → Word 直接显示 "&nbsp;"。
+// ② 矩阵空单元格（aligned/cases 类公式）、③ 空 run（mml2omml 对空 <mrow/> 的产出）→ Word 画虚线框。
+test('_structureMathmlToOmml: &nbsp; 还原为空格 + 矩阵空格子/空 run 清理', async () => {
+  await withEditor({}, async (w, ed) => {
+    const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+    const mathml = '<math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math>';
+    const runOnce = (ommlStub) => {
+      w.MathML2OMML = { mml2omml: () => ommlStub };
+      const struct = [{ type: 'paragraph', runs: [{ mathml }] }];
+      assert.strictEqual(ed._structureMathmlToOmml(struct), true, '应返回 true');
+      return struct[0].runs[0].omml;
+    };
+    // ① 字面 &nbsp;（docx 里以 &amp;nbsp; 形态存在）
+    const o1 = runOnce('<m:oMath xmlns:m="' + M + '">'
+      + '<m:r><m:t xml:space="preserve">其中&amp;nbsp;</m:t></m:r>'
+      + '<m:r><m:t xml:space="preserve">xi</m:t></m:r>'
+      + '<m:r><m:t xml:space="preserve">&amp;nbsp;是陈根</m:t></m:r></m:oMath>');
+    assert.ok(!/nbsp/i.test(o1), '不得残留字面 nbsp，实际 ' + o1);
+    assert.ok(o1.indexOf('其中') !== -1 && o1.indexOf('是陈根') !== -1, '文字应保留，实际 ' + o1);
+    // ② 矩阵空格子 → 填不可见字符（U+2061），版式不变但不画框
+    const o2 = runOnce('<m:oMath xmlns:m="' + M + '"><m:m><m:mr>'
+      + '<m:e/><m:e><m:r><m:t>x</m:t></m:r></m:e>'
+      + '</m:mr></m:m></m:oMath>');
+    assert.ok(/\u2061/.test(o2), '矩阵空格子应填不可见字符，实际 ' + o2);
+    assert.ok(!/<m:e\/>/.test(o2), '不应再有空单元格，实际 ' + o2);
+    // ③ 空 run → 删除
+    const o3 = runOnce('<m:oMath xmlns:m="' + M + '">'
+      + '<m:r><m:t/></m:r><m:r><m:t>a</m:t></m:r><m:r><m:rPr><m:nor/></m:rPr><m:t/></m:r></m:oMath>');
+    assert.strictEqual((o3.match(/<m:r>/g) || []).length, 1, '空 run 应被删除，实际 ' + o3);
+    for (const o of [o1, o2, o3]) {
+      const d = new w.DOMParser().parseFromString(o, 'application/xml');
+      assert.strictEqual(d.getElementsByTagName('parsererror').length, 0, '应良构: ' + o);
+    }
+  });
+});
