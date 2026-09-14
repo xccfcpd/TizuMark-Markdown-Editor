@@ -27,6 +27,9 @@
   //   R6 元素内「不在 <m:t> 里的裸文本」→ 包成正规 run <m:r><m:t>：mml2omml 会产出混排内容
   //      （<m:e><m:r><m:t>f</m:t></m:r>dx</m:e>），而 docx 库导入这类元素时会把带 run 的部分丢掉、
   //      只留裸文本 → Word 里该槽视觉为空 → 又是虚线框（2026-09-14 用户复核：∫_D f dx 等 29 条命中）
+  //   R9 最终归一化（仅 docx 路径）：m:sPre / m:sSubSup 缺 sub 或 sup 任一必需槽时，Word 在另一侧
+  //      画虚线框（化学式 CH₃COOH 等的下标框即此成因；HTML/PDF 经 KaTeX 不画）→ 补不可见占位 U+2061
+  //      并校正 schema 子元素次序；同时填实残留的空基线 m:e 与空 num/den，使 docx 与软件渲染一致无框。
   // 输入健壮性（2026-09-14 定位）：mml2omml 不转义 <m:t> 文本，公式含裸 <（i<j、0<i<n）时
   //   OMML 非良构 → DOM 解析失败；旧行为直接原样返回，规则被静默跳过、空槽残留成虚线框。
   //   现在解析失败时先做「最小可解析化」（只转义 m:t 里不像 OMML 标签的裸 < 与游离 &）再重试。
@@ -205,6 +208,29 @@
     }
     el.parentNode.replaceChild(frag, el);
   }
+  // R9 辅助：造一个「不可见占位槽」——槽里塞一个零宽函数应用符 U+2061（Word 不渲染、不改版式）。
+  // 用于填补 m:sPre / m:sSubSup 缺失的 sub/sup 以及空基线 m:e、空 num/den，消除 Word 的虚线占位框。
+  function ommlHiddenSlot(doc, name) {
+    const slot = ommlMake(doc, name);
+    const r = ommlMake(doc, 'r');
+    const t = ommlMake(doc, 't');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = '\u2061';
+    r.appendChild(t);
+    slot.appendChild(r);
+    return slot;
+  }
+  // R9 辅助：按 OMML schema 次序重排某元素的「属性块 + 槽位」（属性块置首，槽位按 order 排）。
+  // 例：sPre 次序 sub,sup,e；sSubSup 次序 e,sub,sup。仅对已知结构操作，避免误动其它元素。
+  function ommlReorderSlots(el, order) {
+    const prName = ommlTag(el) + 'Pr';
+    const pr = ommlChild(el, prName);
+    const slots = order.map((n) => ommlChild(el, n)).filter(Boolean);
+    if (pr) el.removeChild(pr);
+    for (const s of slots) el.removeChild(s);
+    if (pr) el.appendChild(pr);
+    for (const s of slots) el.appendChild(s);
+  }
 
   // mml2omml 产出 <m:t> 文本时不做 XML 转义：公式含 <（如 i<j、0<i<n）时 OMML 里是裸 <，
   // 文档整体非良构 → DOMParser 报 parsererror。这里做「最小可解析化」：只对 m:t 文本里
@@ -349,6 +375,41 @@
         }
         if (!touched) break;
         changed = true;
+      }
+      // R9：最终归一化（仅 docx 路径；HTML/PDF 经 KaTeX 本就无框）。
+      // Word 对「存在但缺必需槽」的前缀/上下标结构画虚线占位框，而 KaTeX/预览不画。
+      // 这里给缺失的 sub/sup（m:sPre / m:sSubSup）补不可见占位 U+2061，并校正 schema 子元素次序；
+      // 同时把残留的空基线 m:e、空 num/den 也填实，确保导出与软件渲染一致。
+      {
+        let touched9 = false;
+        for (let pass = 0; pass < 6; pass++) {
+          let t = false;
+          for (const el of ommlBottomUp(doc.documentElement)) {
+            const tag = ommlTag(el);
+            if (tag === 'sPre' || tag === 'sSubSup') {
+              // 缺 sub 或 sup 任一项 → Word 在另一侧画框；补齐（不可见）后重排 schema 次序
+              let added = false;
+              if (!ommlChild(el, 'sub')) { el.appendChild(ommlHiddenSlot(doc, 'sub')); added = true; }
+              if (!ommlChild(el, 'sup')) { el.appendChild(ommlHiddenSlot(doc, 'sup')); added = true; }
+              if (added) { ommlReorderSlots(el, tag === 'sPre' ? ['sub', 'sup', 'e'] : ['e', 'sub', 'sup']); t = true; }
+            } else if (tag === 'e' && el.parentNode && ommlTag(el.parentNode) !== 'mr' && ommlVisuallyEmpty(el)) {
+              // 残留空基线（非矩阵单元格，矩阵由 R8 处理）→ 填不可见占位
+              const fillRun = ommlMake(doc, 'r');
+              const fillT = ommlMake(doc, 't');
+              fillT.setAttribute('xml:space', 'preserve');
+              fillT.textContent = '\u2061';
+              fillRun.appendChild(fillT);
+              el.appendChild(fillRun);
+              t = true;
+            } else if ((tag === 'num' || tag === 'den') && ommlVisuallyEmpty(el)) {
+              el.appendChild(ommlHiddenSlot(doc, tag));
+              t = true;
+            }
+          }
+          if (!t) break;
+          touched9 = true;
+        }
+        if (touched9) changed = true;
       }
       if (!changed) return xml;
       const out = new XMLSerializer().serializeToString(doc);

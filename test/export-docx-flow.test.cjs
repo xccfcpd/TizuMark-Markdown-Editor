@@ -636,19 +636,23 @@ test('_structureMathmlToOmml: 裸 < 公式不再被跳过 + mhchem 不再出现 
     assert.ok(!ov.run.omml.includes('&lt;m:'), '不得把 OMML 标记转义进文本（m:t 内应是纯文本），实际 ' + ov.run.omml.slice(0, 200));
     assert.ok(ov.text.indexOf('<') !== -1, 'overset 内的 < 文本应保留');
 
+    // R9 终归化：mhchem 下标基（mphantom 被剥离后变空）转 m:sPre 后，缺失的 sup 槽会补一个
+    // 不可见占位符 U+2061（函数应用，零宽，Word 不渲染、不改版式）—— 这正是消除 Word 虚线框所需的，
+    // 与 HTML/PDF（KaTeX 本就无框）保持一致。比对文本前先剥离 U+2061，避免不可见占位符干扰断言。
+    const norm = (s) => String(s).replace(/\u2061/g, '');
     // ② mhchem 零宽基座不得实体化成 X
     const water = build('\\ce{H2O}');
-    assert.ok(water.text.indexOf('H2O') !== -1, '\\ce{H2O} 文本应为 H2O，实际 ' + water.text);
+    assert.ok(norm(water.text).indexOf('H2O') !== -1, '\\ce{H2O} 文本应为 H2O，实际 ' + water.text);
     const acid = build('\\ce{CH3COOH}');
-    assert.ok(acid.text.indexOf('CH3COOH') !== -1, '\\ce{CH3COOH} 文本应为 CH3COOH，实际 ' + acid.text);
+    assert.ok(norm(acid.text).indexOf('CH3COOH') !== -1, '\\ce{CH3COOH} 文本应为 CH3COOH，实际 ' + acid.text);
     assert.ok(!/X/.test(acid.text), '不得出现 phantom 实体化出来的 X，实际 ' + acid.text);
     const cx = build('\\ce{[Co(NH3)6]^{3+} + 3en -> [Co(en)3]^{3+} + 6NH3}');
     assert.ok(!/X/.test(cx.text), '配位化学式不得出现 X，实际 ' + cx.text);
-    assert.ok(cx.text.indexOf('NH3') !== -1, '下标应保留（NH3），实际 ' + cx.text);
+    assert.ok(norm(cx.text).indexOf('NH3') !== -1, '下标应保留（NH3），实际 ' + cx.text);
 
     // ③ 核素前缀上下标：占位残渣删除 + 收敛为 m:sPre，且不残留空槽
     const nuc = build('\\ce{^{235}_{92}U}');
-    assert.ok(nuc.text.indexOf('92235U') !== -1, '核素记号文本应为 92235U，实际 ' + nuc.text);
+    assert.ok(norm(nuc.text).indexOf('92235U') !== -1, '核素记号文本应为 92235U，实际 ' + nuc.text);
     assert.strictEqual(nuc.doc.getElementsByTagName('m:sPre').length, 1, '应产出 1 个 m:sPre（前缀上下标）');
     assert.ok(!/X/.test(nuc.text), '核素记号不得出现 X，实际 ' + nuc.text);
   });
