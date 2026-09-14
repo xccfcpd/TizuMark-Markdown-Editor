@@ -128,3 +128,83 @@ test('domToDocxStructure: 独立公式块（math-display）提取 mathml 为居�
   assert.ok(para, '独立公式应作为居中段落');
   assert.ok(para.runs.some(r => r.mathml && r.mathml.includes('<math')), '应提取 mathml');
 });
+
+// ===== 2026-09-14 用户导出验证：以下位置此前要么整块丢失、要么公式退化成 "α\alphaα" =====
+
+const KATEX_ALPHA = '<span class="katex">'
+  + '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>α</mi></mrow>'
+  + '<annotation encoding="application/x-tex">\\alpha</annotation></semantics></math></span>'
+  + '<span class="katex-html" aria-hidden="true"><span class="mord">α</span></span></span>';
+
+test('domToDocxStructure: 表格单元格内的公式走 mathml run（不再三重化成 α\\alphaα）', () => {
+  // 单元格此前直接取 td.textContent：MathML 文本 + LaTeX annotation + katex-html 可见文本
+  // 会被拼成 "α\alphaα"，Word 里显示成乱码。
+  const dom = new JSDOM('<div id="root"><table><tr><th>类型</th></tr><tr><td>' + KATEX_ALPHA + '</td></tr></table></div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const para = structure[0].rows[1].cells[0].paragraphs[0];
+  assert.ok(para.runs && para.runs.some(r => r.mathml && r.mathml.includes('<math')), '单元格应有 mathml run');
+  assert.ok(!para.runs.some(r => typeof r.text === 'string' && r.text.includes('α')), '不应把 KaTeX 可见文本收成纯文本 run');
+  assert.ok(!String(para.text).includes('\\alpha'), 'text 兜底字段不应含 LaTeX 源码');
+});
+
+test('domToDocxStructure: dl 定义列表映射为 dt 加粗段 + dd 缩进段（此前整块丢失）', () => {
+  const dom = new JSDOM('<div id="root"><dl><dt>黏聚力</dt><dd>符号 ' + KATEX_ALPHA + ' 的取值</dd></dl></div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  assert.strictEqual(structure.length, 2, 'dt / dd 应各成一段（此前 dl 整块被丢弃）');
+  assert.ok(structure[0].runs.some(r => r.bold && r.text === '黏聚力'), 'dt 应加粗');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(structure[1].indent)), { left: 360 }, 'dd 应缩进');
+  assert.ok(structure[1].runs.some(r => r.mathml), 'dd 内公式应保留为 mathml run');
+});
+
+test('domToDocxStructure: 脚注区 section.footnotes 不再整块丢弃，且脚注引用带上标', () => {
+  const md = '<div id="root"><p>正文有脚注<sup class="footnote-ref"><a href="#fn-1">[1]</a></sup></p>'
+    + '<hr class="footnotes-sep"><section class="footnotes"><ol>'
+    + '<li id="fn-1" class="footnote-definition"><p>质能方程 ' + KATEX_ALPHA + ' ↩</p></li>'
+    + '</ol></section></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  assert.ok(structure.some(n => n.type === 'hr'), '脚注分隔线保留');
+  const bullet = structure.find(n => n.type === 'bullet');
+  assert.ok(bullet, '脚注定义应产出列表项（此前 section 整块丢失）');
+  assert.ok(bullet.runs.some(r => r.mathml), '脚注定义内公式应保留为 mathml run');
+  assert.ok(bullet.runs.some(r => typeof r.text === 'string' && r.text.includes('质能方程')), '脚注正文文字保留');
+  assert.ok(bullet.runs.some(r => typeof r.text === 'string' && r.text.includes('↩')), '返回箭头保留');
+  const refPara = structure.find(n => n.type === 'paragraph');
+  assert.ok(refPara.runs.some(r => r.superScript && r.text === '[1]'), '脚注引用应为上标 run');
+});
+
+test('domToDocxStructure: 提示块标题内的公式走 mathml run', () => {
+  const md = '<div id="root"><div class="alert alert-note" style="background-color:#EEF4FF">'
+    + '<div class="alert-title">公式 ' + KATEX_ALPHA + ' 的取值</div>'
+    + '<div class="alert-content"><p>正文说明</p></div></div></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const alert = structure.find(n => n.type === 'paragraph' && n.quote);
+  assert.ok(alert, '提示块应产出段落');
+  assert.ok(alert.runs.some(r => r.mathml), '标题内公式应为 mathml run');
+  assert.ok(!alert.runs.some(r => typeof r.text === 'string' && r.text.includes('α')), '标题不应三重化');
+  assert.ok(alert.runs.some(r => r.bold && typeof r.text === 'string' && r.text.includes('公式')), '标题文字应加粗');
+  assert.strictEqual(alert.quoteBg, 'EEF4FF', '提示块底纹色保留');
+});
+
+test('domToDocxStructure: 未识别容器下探取回内容，但 style/script 不入正文', () => {
+  const md = '<div id="root"><style>.dbg-only{color:red}</style>'
+    + '<div id="abbr-data" style="display:none" data-abbrs="[]"></div>'
+    + '<div class="card"><p>卡片文字</p></div></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const flat = JSON.stringify(structure);
+  assert.ok(structure.some(n => n.type === 'paragraph' && (n.runs || []).some(r => r.text === '卡片文字')), '裸 div 包裹层应下探取回文本');
+  assert.ok(!flat.includes('color:red'), '<style> 里的 CSS 不得当成正文');
+  assert.ok(!flat.includes('abbrs'), 'abbr-data 隐藏容器不得入正文');
+});

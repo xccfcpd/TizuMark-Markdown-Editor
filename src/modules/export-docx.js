@@ -77,6 +77,9 @@
         else if (tag === 'del' || tag === 's') runBase.strike = true;
         else if (tag === 'code') runBase.codeStyle = true;
         else if (tag === 'mark') { runBase.highlight = true; }
+        // 上标/下标：脚注引用 <sup class="footnote-ref">[1]</sup> 此前退化成普通文本 "[1]"
+        else if (tag === 'sup') runBase.superScript = true;
+        else if (tag === 'sub') runBase.subScript = true;
         else if (tag === 'br') { runs.push({ break: true }); continue; }
         // KaTeX 公式：提取 .katex-mathml 的 <math> 作为 mathml run（可编辑公式源），
         // 不递归收集 katex-html 可见文本（避免公式退化为纯文本 + 重复计数）。
@@ -116,6 +119,34 @@
     }
     return runs;
   }
+
+  // 「行内容器」（表格单元格 / 列表项 / 提示块标题）的 runs：在 collectRuns 基础上
+  // 折叠空白（HTML 源码缩进会带进多余空格）、去掉首尾空白与空文本 run。
+  // 关键：必须走 collectRuns（而不是 textContent），否则 KaTeX 单元格里
+  // MathML 渲染文本 + <annotation> 的 LaTeX 源码 + katex-html 可见文本会被拼成
+  // "α\alphaα"，Word 里显示成乱码（2026-09-14 用户导出验证）。
+  function collectInlineRuns(el) {
+    const runs = collectRuns(el, [], null).filter((r) => {
+      if (r && typeof r.text === 'string') return r.text.trim() !== '';
+      return !!r;
+    });
+    for (const r of runs) {
+      if (typeof r.text === 'string') r.text = r.text.replace(/\s+/g, ' ');
+    }
+    if (runs.length) {
+      const first = runs[0];
+      const last = runs[runs.length - 1];
+      if (typeof first.text === 'string') first.text = first.text.replace(/^\s+/, '');
+      if (typeof last.text === 'string') last.text = last.text.replace(/\s+$/, '');
+    }
+    return runs;
+  }
+
+  // 非内容标签：兜底下探（见 elementToNode 末尾）必须跳过，
+  // 否则 <style> 里的 CSS 文本会被当成正文段落灌进 Word。
+  // math 一并跳过：KaTeX 产出的 <math> 一律经 span.katex 分支处理（不会走到兜底），
+  // 用户手写的裸 MathML 若被下探会被拆成一堆碎片段落，保持与改动前一致的丢弃行为。
+  const SKIP_TAGS = new Set(['style', 'script', 'link', 'meta', 'title', 'head', 'noscript', 'template', 'math']);
 
   function elementToNode(el) {
     const tag = el.tagName.toLowerCase();
@@ -159,16 +190,22 @@
       const ordered = tag === 'ol';
       const nodes = [];
       let idx = 0;
-      for (const li of el.querySelectorAll(':scope > li')) {
-        idx += 1;
-        let prefix = '';
-        const cb = li.querySelector('input[type="checkbox"]');
-        if (cb) prefix = cb.checked ? '☑ ' : '☐ ';
+      // 列表项内容走 runs：脚注定义就在 <ol><li> 里，用 textContent 会把公式三重化
+      //（"E=mc2E = mc^2E=mc2"），高亮/加粗也一并丢失。
+      const liRuns = (li, prefix) => {
         const inner = li.cloneNode(true);
         const cbIn = inner.querySelector('input[type="checkbox"]');
-        if (cbIn) inner.removeChild(cbIn);
-        const text = prefix + (inner.textContent || '').replace(/\s+/g, ' ').trim();
-        nodes.push({ type: 'bullet', ordered, marker: ordered ? `${idx}.` : '', level: 0, runs: [{ text }] });
+        if (cbIn && cbIn.parentNode) cbIn.parentNode.removeChild(cbIn);
+        const runs = collectInlineRuns(inner);
+        if (prefix) runs.unshift({ text: prefix });
+        if (!runs.length) runs.push({ text: '' });
+        return runs;
+      };
+      for (const li of el.querySelectorAll(':scope > li')) {
+        idx += 1;
+        const cb = li.querySelector('input[type="checkbox"]');
+        const prefix = cb ? (cb.checked ? '☑ ' : '☐ ') : '';
+        nodes.push({ type: 'bullet', ordered, marker: ordered ? `${idx}.` : '', level: 0, runs: liRuns(li, prefix) });
         const nestedUl = li.querySelector(':scope > ul, :scope > ol');
         if (nestedUl) {
           const nOrdered = nestedUl.tagName.toLowerCase() === 'ol';
@@ -177,19 +214,41 @@
             nidx += 1;
             nodes.push({
               type: 'bullet', ordered: nOrdered, marker: nOrdered ? `${nidx}.` : '', level: 1,
-              runs: [{ text: (nli.textContent || '').replace(/\s+/g, ' ').trim() }],
+              runs: liRuns(nli, ''),
             });
           }
         }
       }
       return [{ type: 'list', children: nodes }];
     }
+    // 定义列表 <dl>：<dt> 加粗段落 + <dd> 缩进段落（对齐预览 .preview-content dt/dd）。
+    // 此前 dl 不在白名单里 → 整个定义列表在 Word 里整块丢失。
+    if (tag === 'dl') {
+      const nodes = [];
+      for (const child of el.children) {
+        const ct = child.tagName.toLowerCase();
+        if (ct === 'dt') {
+          const runs = collectInlineRuns(child);
+          for (const r of runs) if (typeof r.text === 'string') r.bold = true;
+          if (runs.length) nodes.push({ type: 'paragraph', runs });
+        } else if (ct === 'dd') {
+          const runs = collectInlineRuns(child);
+          if (runs.length) nodes.push({ type: 'paragraph', runs, indent: { left: 360 } });
+        }
+      }
+      return nodes;
+    }
     if (tag === 'table') {
       const rows = [];
       for (const tr of el.querySelectorAll('tr')) {
         const cells = [];
         for (const td of tr.querySelectorAll('th, td')) {
-          cells.push({ paragraphs: [{ text: (td.textContent || '').replace(/\s+/g, ' ').trim() }], width: 0 });
+          const runs = collectInlineRuns(td);
+          // text 保留（无 runs 时的兜底 + 既有结构契约），但必须由 runs 拼接 ——
+          // 用 textContent 会把公式的 MathML/LaTeX 源码/可见文本拼成 "α\alphaα"。
+          const text = runs.map((r) => (typeof r.text === 'string' ? r.text : '')).join('');
+          const para = runs.length ? { text, runs } : { text };
+          cells.push({ paragraphs: [para], width: 0 });
         }
         rows.push({ cells });
       }
@@ -230,7 +289,15 @@
       const title = el.querySelector('.alert-title');
       const content = el.querySelector('.alert-content');
       const runs = [];
-      if (title) runs.push({ text: (title.textContent || '').trim() + '\n', bold: true });
+      if (title) {
+        // 标题按纯文本 + 加粗；公式必须走 mathml run —— textContent 会把 KaTeX 的
+        // MathML 渲染文本 + <annotation> 的 LaTeX 源码 + katex-html 可见文本拼成
+        // "公式 α\alphaα 的取值"（2026-09-14 用户导出验证）。
+        const titleRuns = collectInlineRuns(title);
+        for (const r of titleRuns) if (typeof r.text === 'string') r.bold = true;
+        if (titleRuns.length) runs.push(...titleRuns);
+        runs.push({ text: '\n' });
+      }
       if (content) runs.push(...(collectRuns(content, undefined, imgs)));
       const nodes = [];
       // 提示框同理：把 _prepareWordDOM 内联的彩色底/左边框色带进 docx（此前底纹全丢）
@@ -252,7 +319,21 @@
       const lines = text.split('\n').map(l => l.trimEnd()).filter((l, i, a) => !(i === a.length - 1 && l === ''));
       return lines.length ? [{ type: 'code', lines }] : [];
     }
-    return [];
+    // 兜底：白名单未命中的标签不再整块丢弃（历史 bug：<dl> 定义列表、
+    // <section class="footnotes"> 脚注区在 Word 里整块消失，页面上只剩一条分隔线）。
+    // 策略：先把子元素当块级继续下探（list 节点展平），子元素无产出但自身有文本时
+    // 退化为段落（覆盖裸 <span>/<a>/<figure> 这类纯包裹层）。
+    if (SKIP_TAGS.has(tag)) return [];
+    const nested = [];
+    for (const child of el.children) {
+      for (const n of elementToNode(child)) {
+        if (n && n.type === 'list') nested.push(...n.children);
+        else if (n) nested.push(n);
+      }
+    }
+    if (nested.length) return nested;
+    const fallbackText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    return fallbackText ? [{ type: 'paragraph', runs: collectRuns(el) }] : [];
   }
 
   function domToDocxStructure(root) {

@@ -303,6 +303,51 @@ test('docx-builder: 代码块每行独立段落（无软换行 <w:br/>，显式�
   assert.ok(xml.includes('<w:spacing w:after="120" w:before="0"'), '末段保留 after 外边距');
 });
 
+// 回归（2026-09-14 用户导出验证）：表格单元格 / 列表项里的公式此前被 textContent 拼成
+// "α\alphaα" 纯文本；现在这两处与段落一样走 runs，公式落成 OMML，上标/换行/缩进也保留。
+test('docx-builder: 单元格与列表项内的公式落成 OMML（不再退化成纯文本）', async () => {
+  const path = require('path');
+  const JSZip = require('jszip');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  const omml = '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>x</m:t></m:r></m:oMath>';
+  const structure = [
+    { type: 'table', rows: [{ cells: [{ paragraphs: [{ text: '', runs: [{ omml }, { text: ' 尾' }] }], width: 0 }] }] },
+    { type: 'bullet', ordered: true, marker: '1.', level: 0, runs: [{ text: '质能方程 ' }, { omml }, { text: ' ↩' }] },
+    { type: 'paragraph', runs: [{ text: '[1]', superScript: true }], indent: { left: 720 } },
+    { type: 'paragraph', runs: [{ text: 'a' }, { break: true }, { text: 'b' }] },
+  ];
+  let ab;
+  try {
+    const blob = await builder(structure, {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800, lineHeight: 1.7,
+    });
+    ab = await blob.arrayBuffer();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  const zip = new JSZip();
+  zip.load(Buffer.from(ab));
+  const xml = zip.file('word/document.xml').asText();
+  assert.strictEqual((xml.match(/<m:oMath/g) || []).length, 2, '单元格与列表项里的公式都应落成 OMML');
+  assert.ok(xml.includes('质能方程'), '列表项文本保留');
+  assert.ok(xml.includes('↩'), '列表项尾部文本保留');
+  assert.ok(/superscript/.test(xml), '上标（脚注引用）应保留');
+  assert.ok(xml.includes('w:left="720"'), '缩进段落（定义列表 dd）应保留');
+  assert.ok(/<w:br/.test(xml), 'break run 应落成 <w:br/>');
+});
+
 // 回归：docx 主路径 = 主线程直构建（window.buildDocxFromStructure，docx 库常驻加载）。
 // 曾走 Web Worker，真机上 Worker 不可用时整条链静默降级成 altChunk（公式变纯文本）。
 test('_buildDocxBuffer: 主线程直构建，把页面设置与结构传给 builder', async () => {

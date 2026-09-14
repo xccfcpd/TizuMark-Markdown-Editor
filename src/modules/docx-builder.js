@@ -17,7 +17,46 @@
     return null;
   }
 
-  function buildTable(D, node, theme) {
+  // run → docx 子元素：omml run（可编辑公式）经 ImportedXmlComponent 注入 oMath；普通 run 转 TextRun。
+  // 放在模块级是因为表格单元格 / 列表项也要用它（此前只在段落分支里内联，
+  // 单元格与列表项只能退化成 textContent 纯文本，公式被拼成 "α\alphaα"）。
+  function runToChild(D, r, opts) {
+    // <br> 等换行标记：docx 用 break run 表达（此前被忽略成空 TextRun，换行在 Word 里丢失）
+    if (r && r.break) return new D.TextRun({ break: 1 });
+    if (r && r.omml) {
+      try {
+        const comp = D.ImportedXmlComponent.fromXmlString(r.omml);
+        return (comp && comp.root && comp.root[0]) || new D.TextRun({ text: '' });
+      } catch (e) {
+        // 兜底：OMML 非法 XML（mml2omml 对复杂公式可能产出非良构 XML）时，
+        // 降级为 OMML 内的纯文本，绝不让单个坏公式拖垮整篇文档构建。
+        const fallback = String(r.omml).replace(/<[^>]+>/g, '').trim();
+        return new D.TextRun({ text: fallback });
+      }
+    }
+    // 标题强制加粗：docx 默认 Heading 样式（本库生成）不含 <w:b/>，
+    // 仅靠样式不会加粗，故在 run 层显式 bold，保证标题在 Word 里显眼（用户反馈"标题没加粗"）。
+    const bold = (opts && typeof opts.bold !== 'undefined') ? opts.bold : (r && r.bold);
+    // 行内代码（<code>）：docx 无原生 code 样式，显式套等宽字体以与正文区分
+    const font = (r && r.codeStyle) ? { name: 'Consolas' } : undefined;
+    // <mark> 高亮：collectRuns 标了 runBase.highlight，此前 runToChild 直接丢弃，
+    // 导致预览里的黄底高亮在 Word 里变成普通文字。这里落到 TextRun 的 highlight。
+    const highlight = (r && r.highlight) ? 'yellow' : undefined;
+    // 上标/下标（脚注引用 [1] 等）：collectRuns 标了 superScript/subScript
+    return new D.TextRun({
+      text: (r && r.text) || '',
+      bold,
+      italics: r && r.italics,
+      strike: r && r.strike,
+      color: r && r.color,
+      font,
+      highlight,
+      superScript: (r && r.superScript) ? true : undefined,
+      subScript: (r && r.subScript) ? true : undefined,
+    });
+  }
+
+  function buildTable(D, node, theme, toChild) {
     // 列宽：cell.width 之前传 0 导致 Word 列宽全 0、排版乱。按列数平均分配 100%。
     const colCount = (node.rows && node.rows[0] && node.rows[0].cells) ? node.rows[0].cells.length : 1;
     const colW = Math.floor(100 / Math.max(1, colCount));
@@ -28,7 +67,10 @@
     const rows = (node.rows || []).map(row => new D.TableRow({
       children: row.cells.map(cell => new D.TableCell({
         children: (cell.paragraphs || []).map(p => new D.Paragraph({
-          text: p.text || '',
+          // 单元格段落优先用 runs（公式/高亮/加粗/上标在里面）；没有 runs 才退回纯文本。
+          ...(Array.isArray(p.runs) && p.runs.length
+            ? { children: p.runs.map(r => toChild(r)) }
+            : { text: p.text || '' }),
           // 行高调高：before/after 由 20 提升到 60 让表格每行更舒展（用户反馈"每行高度调高一点"）
           spacing: { before: 60, after: 60, line: Math.round(tableLineH * 240), lineRule: 'auto' },
         })),
@@ -53,38 +95,18 @@
     const D = resolveDocxLib();
     if (!D) throw new Error('docx 库未加载（DocxLib）');
     const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = D;
-    // run → docx 子元素：omml run（可编辑公式）经 ImportedXmlComponent 注入 oMath；
-    // 普通 run 转 TextRun。fromXmlString 的顶层是 undefined key 容器，取 root[0]。
-    const runToChild = (r, opts) => {
-      if (r && r.omml) {
-        try {
-          const comp = D.ImportedXmlComponent.fromXmlString(r.omml);
-          return (comp && comp.root && comp.root[0]) || new TextRun({ text: '' });
-        } catch (e) {
-          // 兜底：OMML 非法 XML（mml2omml 对复杂公式可能产出非良构 XML）时，
-          // 降级为 OMML 内的纯文本，绝不让单个坏公式拖垮整篇文档构建。
-          const fallback = String(r.omml).replace(/<[^>]+>/g, '').trim();
-          return new TextRun({ text: fallback });
-        }
-      }
-      // 标题强制加粗：docx 默认 Heading 样式（本库生成）不含 <w:b/>，
-      // 仅靠样式不会加粗，故在 run 层显式 bold，保证标题在 Word 里显眼（用户反馈"标题没加粗"）。
-      const bold = (opts && typeof opts.bold !== 'undefined') ? opts.bold : (r && r.bold);
-      // 行内代码（<code>）：docx 无原生 code 样式，显式套等宽字体以与正文区分
-      const font = (r && r.codeStyle) ? { name: 'Consolas' } : undefined;
-      // <mark> 高亮：collectRuns 标了 runBase.highlight，此前 runToChild 直接丢弃，
-      // 导致预览里的黄底高亮在 Word 里变成普通文字。这里落到 TextRun 的 highlight。
-      const highlight = (r && r.highlight) ? 'yellow' : undefined;
-      return new TextRun({ text: (r && r.text) || '', bold, italics: r && r.italics, strike: r && r.strike, color: r && r.color, font, highlight });
-    };
+    // run → docx 子元素统一走模块级 runToChild(D, ...)：表格单元格 / 列表项也复用它。
+    const toChild = (r, opts) => runToChild(D, r, opts);
     const children = [];
     for (const node of structure || []) {
       if (node.type === 'heading') {
-        children.push(new Paragraph({ heading: HeadingLevel['HEADING_' + (node.level || 1)], children: (node.runs || []).map(r => runToChild(r, { bold: true })) }));
+        children.push(new Paragraph({ heading: HeadingLevel['HEADING_' + (node.level || 1)], children: (node.runs || []).map(r => toChild(r, { bold: true })) }));
       } else if (node.type === 'paragraph') {
         // quote 段落（blockquote / alert）：加左缩进 + 左边框，否则与普通段落无视觉区分。
-        const opts = { children: (node.runs || []).map(runToChild) };
+        const opts = { children: (node.runs || []).map(r => toChild(r)) };
         if (node.align) opts.alignment = AlignmentType[node.align];
+        // 缩进段落（定义列表 <dd> 等）：预览里 dd 有左缩进，Word 里同步
+        if (node.indent) opts.indent = node.indent;
         if (node.quote) {
           opts.indent = { left: 360 }; // 0.25 英寸
           opts.border = { left: { style: D.BorderStyle.SINGLE, size: 24, color: node.quoteColor || (page && page.accent) || '2563EB', space: 8 } };
@@ -94,21 +116,23 @@
         }
         children.push(new Paragraph(opts));
       } else if (node.type === 'bullet') {
-        const bulletText = (node.runs && node.runs[0] && node.runs[0].text) || '';
+        // 列表项用 runs（不再只取 runs[0].text）：脚注定义挂在 <ol><li> 里，
+        // 其公式/高亮必须在 Word 里保住，不能退化成首个 run 的纯文本。
+        const runs = (Array.isArray(node.runs) && node.runs.length) ? node.runs : [{ text: '' }];
         const level = node.level || 0;
         if (node.ordered) {
           // 有序列表：docx 的 bullet 只有圆点、无内置编号样式，故用「序号 + 悬挂缩进」呈现，
           // 视觉与预览的 1. 2. 3. 一致（不参与 Word 自动重新编号，改条目需重新导出）。
           children.push(new Paragraph({
-            text: `${node.marker || ''} ${bulletText}`.trim(),
+            children: [{ text: `${node.marker || ''} ` }, ...runs].map(r => toChild(r)),
             indent: { left: 360 + level * 360, hanging: 240 },
             spacing: { before: 20, after: 20 },
           }));
         } else {
-          children.push(new Paragraph({ text: bulletText, bullet: { level } }));
+          children.push(new Paragraph({ children: runs.map(r => toChild(r)), bullet: { level } }));
         }
       } else if (node.type === 'table') {
-        children.push(buildTable(D, node, page));
+        children.push(buildTable(D, node, page, toChild));
       } else if (node.type === 'code') {
         // 代码块：灰底 + 边框 + 等宽。每行一个独立段落，行间【不用】<w:br/> 软换行——
         // Word/WPS 的东亚排版会把「软换行结尾的行」按两端对齐强行拉伸到整行宽
