@@ -24,6 +24,9 @@
   //   R4 空 lim：降级为 e 的内容
   //   R5 整块全空的上下标结构（mhchem 的零宽占位残渣）→ 直接删除：不删它会抢占后继原子，
   //      把生成的 sPre 槽位克隆成空 → 又变虚线框（2026-09-14 核素记号 \ce{^{235}_{92}U} 定位）
+  //   R6 元素内「不在 <m:t> 里的裸文本」→ 包成正规 run <m:r><m:t>：mml2omml 会产出混排内容
+  //      （<m:e><m:r><m:t>f</m:t></m:r>dx</m:e>），而 docx 库导入这类元素时会把带 run 的部分丢掉、
+  //      只留裸文本 → Word 里该槽视觉为空 → 又是虚线框（2026-09-14 用户复核：∫_D f dx 等 29 条命中）
   // 输入健壮性（2026-09-14 定位）：mml2omml 不转义 <m:t> 文本，公式含裸 <（i<j、0<i<n）时
   //   OMML 非良构 → DOM 解析失败；旧行为直接原样返回，规则被静默跳过、空槽残留成虚线框。
   //   现在解析失败时先做「最小可解析化」（只转义 m:t 里不像 OMML 标签的裸 < 与游离 &）再重试。
@@ -52,6 +55,19 @@
     return null;
   };
   const ommlIsEmpty = (el) => !!el && el.children.length === 0 && String(el.textContent || '').trim() === '';
+  // 「视觉为空」：只含空 run（<m:r><m:t/></m:r>）或空白，没有任何实际内容/结构。
+  // Word 对【存在但视觉为空】的必需参数槽同样画虚线占位框（2026-09-14 用户复核新版 docx：
+  // ∑/∏/∫ 的"被作用表达式"槽里 mml2omml 塞了一个空 run，旧判定只认"完全没有子节点"→ 漏修 34 处）。
+  const ommlVisuallyEmpty = (el) => {
+    if (!el) return true;
+    for (const c of Array.from(el.children)) {
+      const t = ommlTag(c);
+      if (t === 'rPr') continue;
+      if (t === 'r') { if (String(c.textContent || '').trim()) return false; continue; }
+      return false;
+    }
+    return String(el.textContent || '').trim() === '';
+  };
   function ommlBottomUp(node, acc) {
     acc = acc || [];
     for (const c of Array.from(node.children || [])) { ommlBottomUp(c, acc); acc.push(c); }
@@ -218,6 +234,36 @@
     return retry ? { doc: retry, xml: parsable } : null;
   };
 
+  // R6 的实现：把元素内非 <m:t> 的文本节点包成 <m:r><m:t>（在 <m:r> 里则补 <m:t>）。
+  // 纯空白文本节点直接删除（OMML 里不参与渲染，删掉还能避免 docx 库的混排处理）。
+  function ommlWrapStrayText(doc, root) {
+    let touched = false;
+    for (const el of [root].concat(ommlBottomUp(root))) {
+      const tag = ommlTag(el);
+      if (tag === 't') continue;
+      for (const node of Array.from(el.childNodes)) {
+        if (node.nodeType !== 3) continue;
+        const text = String(node.nodeValue || '');
+        if (!text.trim()) { el.removeChild(node); touched = true; continue; }
+        let holder;
+        if (tag === 'r') {
+          holder = ommlMake(doc, 't');
+          holder.setAttribute('xml:space', 'preserve');
+          holder.textContent = text;
+        } else {
+          holder = ommlMake(doc, 'r');
+          const t = ommlMake(doc, 't');
+          t.setAttribute('xml:space', 'preserve');
+          t.textContent = text;
+          holder.appendChild(t);
+        }
+        el.replaceChild(holder, node);
+        touched = true;
+      }
+    }
+    return touched;
+  }
+
   function repairOmmlEmptyArgs(xml) {
     const parsed = parseOmmlForRepair(xml);
     if (!parsed) return xml;
@@ -227,25 +273,31 @@
     try {
       for (let pass = 0; pass < 20; pass++) {
         let touched = false;
+        // R6：先把裸文本包成正规 run（幂等），再做槽位修复
+        if (ommlWrapStrayText(doc, doc.documentElement)) touched = true;
         for (const el of ommlBottomUp(doc.documentElement)) {
           const tag = ommlTag(el);
           // R5：整块全空的上下标结构（mhchem 的零宽占位残渣）→ 删除，避免它抢占后继原子
           if (tag === 'sSub' || tag === 'sSup' || tag === 'sSubSup' || tag === 'sPre') {
             const slots = ['e', 'sub', 'sup'].map((n) => ommlChild(el, n));
-            if (slots.every((n) => !n || ommlIsEmpty(n))) { el.parentNode.removeChild(el); touched = true; continue; }
+            if (slots.every((n) => !n || ommlVisuallyEmpty(n))) { el.parentNode.removeChild(el); touched = true; continue; }
           }
           if (tag === 'nary') {
             // R1：空限定槽直接删（schema 允许缺省）
             const sup = ommlChild(el, 'sup');
             const sub = ommlChild(el, 'sub');
-            if (ommlIsEmpty(sup)) { el.removeChild(sup); touched = true; }
-            if (ommlIsEmpty(sub)) { el.removeChild(sub); touched = true; }
+            // 注意：ommlVisuallyEmpty(null) 为 true，这里必须判空再删（否则 removeChild(null) 抛错 →
+            // 整个修复被兜底吞掉，后续规则全部失效：2026-09-14 定位 12 条公式漏修的原因）
+            if (sup && ommlVisuallyEmpty(sup)) { el.removeChild(sup); touched = true; }
+            if (sub && ommlVisuallyEmpty(sub)) { el.removeChild(sub); touched = true; }
             // R2：空操作数 → 搬入后继原子，搬不到则降级
             const e = ommlChild(el, 'e');
-            if (!e || ommlIsEmpty(e)) {
+            if (!e || ommlVisuallyEmpty(e)) {
               const atom = ommlNextAtom(el);
               if (atom) {
                 const slot = e || (function () { const n = ommlMake(doc, 'e'); el.appendChild(n); return n; })();
+                // 槽里可能只剩空 run（视觉为空）→ 先清掉，避免它在 Word 里被画成占位框
+                while (slot.firstChild) slot.removeChild(slot.firstChild);
                 ommlMoveToSlot(slot, atom);
               } else {
                 ommlDowngradeNary(doc, el);
@@ -254,7 +306,7 @@
             }
           } else if (tag === 'limLow' || tag === 'limUpp') {
             // R4：lim 是必填槽且为空 → 整结构降级为 e 的内容
-            if (ommlIsEmpty(ommlChild(el, 'lim'))) {
+            if (ommlVisuallyEmpty(ommlChild(el, 'lim'))) {
               const e = ommlChild(el, 'e');
               const frag = doc.createDocumentFragment();
               if (e) for (const c of Array.from(e.childNodes)) frag.appendChild(c);
@@ -263,7 +315,7 @@
             }
           } else if (tag === 'sSubSup' || tag === 'sSub' || tag === 'sSup') {
             const e = ommlChild(el, 'e');
-            if (ommlIsEmpty(e)) {
+            if (ommlVisuallyEmpty(e)) {
               const atom = ommlNextAtom(el);
               if (atom) el.parentNode.replaceChild(ommlToSPre(doc, el, atom), el);
               else ommlFlattenScript(el);

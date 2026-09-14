@@ -653,3 +653,45 @@ test('_structureMathmlToOmml: 裸 < 公式不再被跳过 + mhchem 不再出现 
     assert.ok(!/X/.test(nuc.text), '核素记号不得出现 X，实际 ' + nuc.text);
   });
 });
+
+// 回归（2026-09-14 用户第二次复核仍有虚框）：
+// mml2omml 会产出「run + 裸文本」混排内容，如 <m:e><m:r><m:t>f</m:t></m:r>dx</m:e>；
+// docx 库的 ImportedXmlComponent 导入这种元素时会把带 run 的部分丢掉、只留裸文本，
+// 于是 Word 里该槽视觉为空 → 又画虚线占位框（∫_D f dx、∑ 等 29 条公式命中）。
+// 修复：R6 把「非 <m:t> 的裸文本」包成正规 run。
+// 顺带修掉一个致命细节：ommlVisuallyEmpty(null) 返回 true，旧 R1 会在 nary 已无 sup/sub 时
+// 执行 el.removeChild(null) 抛 TypeError → 整条公式的修复被兜底 catch 吞掉（12 条漏修）。
+test('_structureMathmlToOmml: 槽内裸文本被包成 run（Word 虚线框）', async () => {
+  await withEditor({}, async (w, ed) => {
+    const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+    // 桩直接给「混排」OMML：nary 的 e 里既有 run 又有裸文本 dx，且 sup 为空
+    w.MathML2OMML = {
+      mml2omml: () => '<m:oMath xmlns:m="' + M + '">'
+        + '<m:nary><m:naryPr><m:chr m:val="∫"/></m:naryPr>'
+        + '<m:sub><m:r><m:t>D</m:t></m:r></m:sub><m:sup/>'
+        + '<m:e><m:r><m:t xml:space="preserve">f</m:t></m:r>dx</m:e>'
+        + '</m:nary></m:oMath>',
+    };
+    const struct = [{ type: 'paragraph', runs: [{ mathml: '<math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math>' }] }];
+    assert.strictEqual(ed._structureMathmlToOmml(struct), true, '应返回 true');
+    const run = struct[0].runs[0];
+    assert.ok(typeof run.omml === 'string', '应转成 OMML（而非降级源码）');
+    const omml = run.omml;
+    assert.ok(/<m:r><m:t[^>]*>dx<\/m:t><\/m:r>/.test(omml), '裸文本 dx 应被包成 <m:r><m:t>，实际 ' + omml.slice(0, 240));
+    assert.ok(omml.indexOf('>dx<') === -1 || omml.indexOf('<m:t') !== -1, '不得残留裸文本');
+    const doc = new w.DOMParser().parseFromString(omml, 'application/xml');
+    assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, '应良构');
+    // 每个槽/元素下都不应有直接文本节点（文字必须在 m:t 里）
+    const tagOf = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
+    const stray = [];
+    (function walk(n) {
+      for (const c of Array.from(n.childNodes || [])) {
+        if (c.nodeType === 3 && String(c.nodeValue || '').trim() && tagOf(n) !== 't') stray.push(tagOf(n) + '>' + c.nodeValue);
+        else if (c.nodeType === 1) walk(c);
+      }
+    })(doc.documentElement);
+    assert.deepStrictEqual(stray, [], '不应有非 <m:t> 的裸文本，实际 ' + JSON.stringify(stray));
+    // 空 sup 必须被删掉（这条同时验证 R1 不再因 removeChild(null) 抛错而被兜底吞掉）
+    assert.strictEqual(doc.getElementsByTagName('m:sup').length, 0, '空 sup 应被删除');
+  });
+});
