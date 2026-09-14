@@ -5,6 +5,263 @@
   'use strict';
   const { dialogSave } = TMConst;
 
+  // ============================================================
+  // OMML「空必需参数槽」修复
+  // ------------------------------------------------------------
+  // Word 对【元素存在但为空】的必需参数槽一律渲染成**虚线占位小方框**，而 mathml2omml
+  // 经常产出这种空槽，于是导出的 Word 里公式周围冒出虚框（用户 2026-09-14 截图）：
+  //   ① 只有下标的 ∑/∫（\sum_i、\int_D）→ 空的 <m:sup/>（框画在运算符上方）
+  //   ② 大运算符的"被作用表达式"在 MathML 里是**兄弟节点**（KaTeX：<munderover>∑…</munderover><mfrac>…），
+  //      没被搬进 <m:e> → 空 <m:e/>（框画在运算符旁，后续分式被当成独立元素排在旁边）
+  //   ③ 空基上下标（{}^{14}_{6}C 这种前置上下标写法）→ 空 <m:e/>
+  //   ④ 空 lim（\xrightarrow{}、\ce{->}）→ 空 <m:lim/>
+  // 处理规则（按 OMML schema 语义，而非按具体公式特征）：
+  //   R1 nary 的空 sub/sup：直接删除（schema 允许缺省 → 槽不存在就没有框）
+  //   R2 nary 的空 e：把后继「原子表达式」搬进去（连同一行前导空白一起搬，保持文本顺序）；
+  //      没有可搬的 → 按 limLoc 降级成「字符 + 上下限」（视觉与预览一致，无框）
+  //   R3 空基上下标：有后继原子 → 转前缀上下标 m:sPre（schema 次序 sub,sup,e，文本顺序不倒置）；
+  //      无 → 把 sub/sup 内容上提为普通 run（不留孤儿槽）
+  //   R4 空 lim：降级为 e 的内容
+  // 安全兜底（任一不满足即放弃本次修改、原样返回 —— 宁可保留现状也不产出坏公式）：
+  //   I1 良构；I2 无孤儿槽（sub/sup/lim/e/num/den 不得直接挂在 m:oMath 下，违反 schema）；
+  //   I3 原有文本顺序完整保留（允许新增 nary 的运算符字符）；I4 未命中的公式零改动
+  // 说明：m:e 出现在矩阵行 m:mr 里时是【单元格】而非参数，Word 不画框，故规则里明确排除。
+  // ============================================================
+  const OMML_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+  const OMML_ARG_SLOTS = {
+    e: ['nary', 'rad', 'func', 'acc', 'bar', 'groupChr', 'limLow', 'limUpp', 'sSub', 'sSup', 'sSubSup', 'sPre', 'd', 'box', 'borderBox', 'f'],
+    num: ['f'], den: ['f'],
+    sub: ['nary', 'limLow', 'limUpp', 'sSub', 'sSubSup', 'sPre'],
+    sup: ['nary', 'limUpp', 'sSup', 'sSubSup', 'sPre'],
+    lim: ['limLow', 'limUpp'],
+    fName: ['func'],
+  };
+  // 能整体作为 nary 操作数的「原子表达式」
+  const OMML_ATOM_TAGS = ['f', 'sSup', 'sSub', 'sSubSup', 'sPre', 'rad', 'd', 'func', 'acc', 'bar', 'groupChr', 'limUpp', 'limLow', 'm', 'eqArr', 'box', 'borderBox', 'r'];
+  // 以运算符 / 关系符 / 闭括号开头的 run 不是操作数（否则 ∑ 后面的 "+ ⋯" 会被吞进操作数）
+  const OMML_OPERATOR_HEADS = ['+', '-', '−', '=', '<', '>', '≤', '≥', '≠', '±', '∓', '×', '÷', '⋅', '·', ',', ';', ')', ']', '}', '|', '/', ':', '→', '↔', '⇒', '⇔', '∈', '⊂', '∪', '∩', '≈', '≡', '∴', '…', '⋯'];
+
+  const ommlTag = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
+  const ommlChild = (el, tag) => {
+    for (const c of Array.from(el.children || [])) if (ommlTag(c) === tag) return c;
+    return null;
+  };
+  const ommlIsEmpty = (el) => !!el && el.children.length === 0 && String(el.textContent || '').trim() === '';
+  function ommlBottomUp(node, acc) {
+    acc = acc || [];
+    for (const c of Array.from(node.children || [])) { ommlBottomUp(c, acc); acc.push(c); }
+    return acc;
+  }
+  function ommlText(root) {
+    let s = '';
+    (function walk(n) {
+      for (const c of Array.from(n.childNodes || [])) {
+        if (c.nodeType === 1) { if (ommlTag(c) === 't') s += c.textContent || ''; else walk(c); }
+      }
+    })(root);
+    return s;
+  }
+  function ommlHasEmptyArgSlot(root) {
+    for (const el of ommlBottomUp(root)) {
+      const parents = OMML_ARG_SLOTS[ommlTag(el)];
+      if (!parents) continue;
+      const p = el.parentNode && el.parentNode.nodeType === 1 ? ommlTag(el.parentNode) : '';
+      if (parents.indexOf(p) !== -1 && ommlIsEmpty(el)) return true;
+    }
+    return false;
+  }
+  const ommlMake = (doc, tag) => doc.createElementNS(OMML_NS, 'm:' + tag);
+  function ommlMakeRun(doc, str) {
+    const r = ommlMake(doc, 'r');
+    const t = ommlMake(doc, 't');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = str;
+    r.appendChild(t);
+    return r;
+  }
+  function ommlWrap(doc, tag, kids) {
+    const w = ommlMake(doc, tag);
+    for (const k of kids) if (k) w.appendChild(k);
+    return w;
+  }
+  // 取 el 的"内容"（子节点）——用于把 sub/sup 的表达式放进 m:lim 等槽，避免把槽元素本身搬错位置
+  function ommlInner(el) {
+    const frag = el.ownerDocument.createDocumentFragment();
+    for (const c of Array.from(el.childNodes)) frag.appendChild(c);
+    return frag;
+  }
+  // nary 后面第一个可当操作数的"原子"（跳过纯空白 run，但不动它）
+  function ommlNextAtom(el) {
+    let n = el.nextElementSibling;
+    while (n) {
+      const tag = ommlTag(n);
+      if (tag === 'r' && String(n.textContent || '').trim() === '') { n = n.nextElementSibling; continue; }
+      if (OMML_ATOM_TAGS.indexOf(tag) === -1) return null;
+      if (tag === 'r') {
+        const t = String(n.textContent || '').trim();
+        if (!t) return null;
+        for (const op of OMML_OPERATOR_HEADS) if (t.indexOf(op) === 0) return null;
+      }
+      return n;
+    }
+    return null;
+  }
+  // 搬运操作数时连同一行前导空白 run 一起搬（否则空白落到操作数之后，文本顺序倒置）
+  function ommlMoveToSlot(slot, atom) {
+    const lead = [];
+    let p = atom.previousElementSibling;
+    while (p && ommlTag(p) === 'r' && String(p.textContent || '').trim() === '') { lead.unshift(p); p = p.previousElementSibling; }
+    for (const n of lead) slot.appendChild(n);
+    slot.appendChild(atom);
+  }
+  // R2 兜底：没有操作数可搬 → 把 nary 降级成「运算符字符 + 上下限」（按 limLoc 选上下 / 右侧布局）
+  // 注意 OMML schema：sSub/sSup/sSubSup/limLow/limUpp 的"基数"必须放在 <m:e> 里（不能裸挂 run），
+  // 且 sSubSup 的次序是 e,sub,sup、sPre 是 sub,sup,e、limLow/limUpp 是 e,lim。写错会被 Word 判为坏结构。
+  function ommlDowngradeNary(doc, el) {
+    // 注意：chr / limLoc 在 <m:naryPr> 里面，不是 nary 的直接子元素
+    const pr = ommlChild(el, 'naryPr');
+    const chrEl = pr ? ommlChild(pr, 'chr') : null;
+    const chr = chrEl ? (chrEl.getAttribute('m:val') || chrEl.getAttribute('val') || '') : '';
+    const limLocEl = pr ? ommlChild(pr, 'limLoc') : null;
+    const overUnder = (limLocEl ? (limLocEl.getAttribute('m:val') || '') : '') === 'undOvr';
+    const sub = ommlChild(el, 'sub');
+    const sup = ommlChild(el, 'sup');
+    // 取不到运算符字符时不降级（宁可保留原结构，也不要造一个空 run 出来）
+    if (!chr) return;
+    // 没有任何上下限：直接退化成运算符字符本身（不能留裸 <m:e> 挂在 oMath 下）
+    if (!sub && !sup) {
+      el.parentNode.replaceChild(ommlMakeRun(doc, chr), el);
+      return;
+    }
+    const base = ommlWrap(doc, 'e', [ommlMakeRun(doc, chr)]);
+    let node = base;
+    if (sub && sup) {
+      if (overUnder) {
+        const low = ommlWrap(doc, 'limLow', [base, ommlWrap(doc, 'lim', [ommlInner(sub)])]);
+        node = ommlWrap(doc, 'limUpp', [ommlWrap(doc, 'e', [low]), ommlWrap(doc, 'lim', [ommlInner(sup)])]);
+      } else {
+        node = ommlWrap(doc, 'sSubSup', [base, sub.cloneNode(true), sup.cloneNode(true)]);
+      }
+    } else if (sub) {
+      node = overUnder
+        ? ommlWrap(doc, 'limLow', [base, ommlWrap(doc, 'lim', [ommlInner(sub)])])
+        : ommlWrap(doc, 'sSub', [base, sub.cloneNode(true)]);
+    } else {
+      node = overUnder
+        ? ommlWrap(doc, 'limUpp', [base, ommlWrap(doc, 'lim', [ommlInner(sup)])])
+        : ommlWrap(doc, 'sSup', [base, sup.cloneNode(true)]);
+    }
+    el.parentNode.replaceChild(node, el);
+  }
+  // R3：空基 + 后继原子 → 前缀上下标 m:sPre（schema 次序 sub, sup, e）
+  function ommlToSPre(doc, el, atom) {
+    const tag = ommlTag(el);
+    const sPre = ommlMake(doc, 'sPre');
+    // 属性元素必须换成 <m:sPrePr>（把原 sSubSupPr/sSubPr 直接搬过来不符合 schema）
+    const pr = ommlChild(el, tag + 'Pr');
+    if (pr && pr.children.length) {
+      const newPr = ommlMake(doc, 'sPrePr');
+      for (const c of Array.from(pr.children)) newPr.appendChild(c.cloneNode(true));
+      sPre.appendChild(newPr);
+    }
+    const sub = ommlChild(el, 'sub');
+    const sup = ommlChild(el, 'sup');
+    if (sub) sPre.appendChild(sub.cloneNode(true));
+    if (sup) sPre.appendChild(sup.cloneNode(true));
+    const base = ommlMake(doc, 'e');
+    ommlMoveToSlot(base, atom);
+    sPre.appendChild(base);
+    return sPre;
+  }
+  // R3 兜底：空基且后面没有原子 → 上提 sub/sup 的内容（不留孤儿槽）
+  function ommlFlattenScript(el) {
+    const frag = el.ownerDocument.createDocumentFragment();
+    for (const c of Array.from(el.childNodes)) {
+      const tag = ommlTag(c);
+      if (tag === 'sup' || tag === 'sub') { while (c.firstChild) frag.appendChild(c.firstChild); }
+      else if (tag === 'e' || /Pr$/.test(tag)) { /* 空基与属性丢弃 */ }
+      else frag.appendChild(c);
+    }
+    el.parentNode.replaceChild(frag, el);
+  }
+
+  function repairOmmlEmptyArgs(xml) {
+    const src = String(xml);
+    let doc;
+    try { doc = new DOMParser().parseFromString(src, 'application/xml'); } catch (e) { return xml; }
+    if (!doc || doc.getElementsByTagName('parsererror').length) return xml;
+    const beforeText = ommlText(doc);
+    let changed = false;
+    try {
+      for (let pass = 0; pass < 20; pass++) {
+        let touched = false;
+        for (const el of ommlBottomUp(doc.documentElement)) {
+          const tag = ommlTag(el);
+          if (tag === 'nary') {
+            // R1：空限定槽直接删（schema 允许缺省）
+            const sup = ommlChild(el, 'sup');
+            const sub = ommlChild(el, 'sub');
+            if (ommlIsEmpty(sup)) { el.removeChild(sup); touched = true; }
+            if (ommlIsEmpty(sub)) { el.removeChild(sub); touched = true; }
+            // R2：空操作数 → 搬入后继原子，搬不到则降级
+            const e = ommlChild(el, 'e');
+            if (!e || ommlIsEmpty(e)) {
+              const atom = ommlNextAtom(el);
+              if (atom) {
+                const slot = e || (function () { const n = ommlMake(doc, 'e'); el.appendChild(n); return n; })();
+                ommlMoveToSlot(slot, atom);
+              } else {
+                ommlDowngradeNary(doc, el);
+              }
+              touched = true;
+            }
+          } else if (tag === 'limLow' || tag === 'limUpp') {
+            // R4：lim 是必填槽且为空 → 整结构降级为 e 的内容
+            if (ommlIsEmpty(ommlChild(el, 'lim'))) {
+              const e = ommlChild(el, 'e');
+              const frag = doc.createDocumentFragment();
+              if (e) for (const c of Array.from(e.childNodes)) frag.appendChild(c);
+              el.parentNode.replaceChild(frag, el);
+              touched = true;
+            }
+          } else if (tag === 'sSubSup' || tag === 'sSub' || tag === 'sSup') {
+            const e = ommlChild(el, 'e');
+            if (ommlIsEmpty(e)) {
+              const atom = ommlNextAtom(el);
+              if (atom) el.parentNode.replaceChild(ommlToSPre(doc, el, atom), el);
+              else ommlFlattenScript(el);
+              touched = true;
+            }
+          }
+        }
+        if (!touched) break;
+        changed = true;
+      }
+      if (!changed) return xml;
+      const out = new XMLSerializer().serializeToString(doc);
+      // I1 良构
+      const chk = new DOMParser().parseFromString(out, 'application/xml');
+      if (chk.getElementsByTagName('parsererror').length) return xml;
+      // I2 无孤儿槽
+      for (const el of ommlBottomUp(chk.documentElement)) {
+        const tag = ommlTag(el);
+        if (['sub', 'sup', 'lim', 'e', 'num', 'den'].indexOf(tag) !== -1
+            && el.parentNode && el.parentNode.nodeType === 1 && ommlTag(el.parentNode) === 'oMath') return xml;
+      }
+      // I3 文本顺序完整保留
+      const afterText = ommlText(chk.documentElement);
+      let i = 0;
+      for (const ch of beforeText) {
+        const at = afterText.indexOf(ch, i);
+        if (at === -1) return xml;
+        i = at + 1;
+      }
+      return out;
+    } catch (e) {
+      return xml; // 修复失败不放大问题：由下游良构校验与降级逻辑兜底
+    }
+  }
+
   const mixin = {
       // 导出时把预览里的图片全部内联为 base64 data URI，使导出文档自包含、不受运行时
       // blob: 回收 / 源解析影响（同源 srcdoc 打印帧在 PDF 导出、外部打开在 HTML 导出都适用）。
@@ -923,8 +1180,11 @@
         // OMML 里出现裸 < → 非良构（parsererror）→ 被误判坏公式降级成 LaTeX 纯文本。
         // 这里对 <m:t>…</m:t> 内文本定向转义修复（< 一律转义；& 仅在非实体引用处转义，幂等；
         // > 在 XML 文本中合法不动），修复后良构校验通过即可走 OMML 主路径保留可编辑公式。
+        // 注意：正则必须排除自闭合的 <m:t .../>（空文本 run）—— 它一旦被当成"开始标签"，
+        // 惰性匹配会一路吞到后面某个 </m:t>，把中间的结构全部转义成文本，整条公式报废
+        //（2026-09-14 定位：nary 降级产生空 <m:t/> 后触发）。
         const repairTextEscaping = (xml) => String(xml).replace(
-          /(<m:t(?:\s[^>]*)?>)([\s\S]*?)(<\/m:t>)/g,
+          /(<m:t(?:\s[^>]*[^/>])?>)([\s\S]*?)(<\/m:t>)/g,
           (_, open, text, close) => open
             // DOM 序列化会把 U+00A0 写成 &nbsp; 实体；mml2omml 不还原，最终被下面的 & 转义
             // 修成字面文本 "&nbsp;"（用户实测公式里出现 p&nbsp;prime）。这里先还原成普通空格。
@@ -943,9 +1203,11 @@
               if (!convert) continue; // 缺库：保留 mathml run，外层据 sawMath 决定走主路径还是回退
               let ommlStr = null;
               try { ommlStr = String(convert(r.mathml)); } catch (e) { ommlStr = null; }
-              // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再做文本转义 ——
-              // 顺序不能反：反了会把错位结构里的 < 转义掉，XML 不成对，整条公式降级为源码。
+              // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再修空必需参数槽
+              // （Word 会把空槽画成虚线占位框），最后做文本转义 —— 三者顺序不可颠倒：
+              // 反了会把错位结构里的 < 转义掉、或在已转义文本上做结构搬迁，都会产出坏 OMML。
               if (ommlStr) ommlStr = repairMisplacedOMML(ommlStr);
+              if (ommlStr) ommlStr = repairOmmlEmptyArgs(ommlStr);
               if (ommlStr) ommlStr = repairTextEscaping(ommlStr);
               if (ommlStr && isWellFormed(ommlStr)) {
                 runs[i] = { omml: ommlStr };

@@ -270,10 +270,14 @@ test('_structureMathmlToOmml: 本来就正确的公式不受结构修复影响',
     assert.strictEqual(ed._structureMathmlToOmml(struct), true);
     const run = struct[0].runs[0];
     assert.ok(typeof run.omml === 'string', '普通公式仍应转成 OMML');
-    assert.ok(!/m:lim/.test(run.omml), '普通公式不应出现 m:lim* 结构');
+    assert.ok(/<m:sup>/.test(run.omml) && /<m:nary>/.test(run.omml), '上下标/求和结构应保留');
+    assert.ok(!run.omml.includes('&lt;m:'), '普通公式不应出现被转义的标记');
     const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
     assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, 'OMML 应良构');
-    assert.ok(/<m:sup>/.test(run.omml) && /<m:nary>/.test(run.omml), '上下标/求和结构应保留');
+    // 结构修复不得改动本来就正确的公式：再跑一次结果应完全一致（幂等）
+    const again = [{ type: 'paragraph', runs: [{ mathml }] }];
+    ed._structureMathmlToOmml(again);
+    assert.strictEqual(again[0].runs[0].omml, run.omml, '同一公式两次转换结果应一致');
   });
 });
 
@@ -286,6 +290,123 @@ test('_structureMathmlToOmml: 降级 LaTeX 文本须解码实体（&lt; 不再�
     const struct = [{ type: 'paragraph', runs: [{ mathml }] }];
     ed._structureMathmlToOmml(struct);
     assert.strictEqual(struct[0].runs[0].text, 'O(1) < O(\\log n) & more', '降级文本应解码 &lt;/&amp; 为真实字符');
+  });
+});
+
+// 回归（2026-09-14 用户复现）：Word 对【存在但为空的必需参数槽】一律画虚线占位框。
+// mml2omml 会产出：① 只有下标的 ∑/∫ 的空 <m:sup/>；② 大运算符的空操作数 <m:e/>（被作用表达式
+// 在 MathML 里是兄弟节点）；③ 空基上下标（{}^{14}_{6}C）；④ 空 lim（\xrightarrow{}）。
+// 修复后：这些位置不得再有空槽，且原有文本不得丢失、OMML 必须良构且形状合规。
+test('_structureMathmlToOmml: 空必需参数槽被修掉（Word 虚线占位框）', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  await withEditor({}, async (w, ed) => {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'katex', 'dist', 'katex.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'mathml2omml.min.js'), 'utf8'));
+
+    const ARG_SLOTS = {
+      e: ['nary', 'rad', 'func', 'acc', 'bar', 'groupChr', 'limLow', 'limUpp', 'sSub', 'sSup', 'sSubSup', 'sPre', 'd', 'box', 'borderBox', 'f'],
+      num: ['f'], den: ['f'],
+      sub: ['nary', 'limLow', 'limUpp', 'sSub', 'sSubSup', 'sPre'],
+      sup: ['nary', 'limUpp', 'sSup', 'sSubSup', 'sPre'],
+      lim: ['limLow', 'limUpp'], fName: ['func'],
+    };
+    const tagOf = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
+    const all = (node, acc) => { acc = acc || []; for (const c of Array.from(node.children || [])) { all(c, acc); acc.push(c); } return acc; };
+    const textOf = (root) => {
+      let s = '';
+      (function walk(n) { for (const c of Array.from(n.childNodes || [])) { if (c.nodeType === 1) { if (tagOf(c) === 't') s += c.textContent || ''; else walk(c); } } })(root);
+      return s;
+    };
+    const emptySlotCount = (root) => {
+      let n = 0;
+      for (const el of all(root)) {
+        const parents = ARG_SLOTS[tagOf(el)];
+        if (!parents) continue;
+        const p = el.parentNode && el.parentNode.nodeType === 1 ? tagOf(el.parentNode) : '';
+        if (parents.indexOf(p) !== -1 && el.children.length === 0 && String(el.textContent || '').trim() === '') n++;
+      }
+      return n;
+    };
+    const orphanCount = (root) => {
+      let n = 0;
+      for (const el of all(root)) {
+        const t = tagOf(el);
+        if (['sub', 'sup', 'lim', 'e', 'num', 'den'].indexOf(t) !== -1
+            && el.parentNode && el.parentNode.nodeType === 1 && tagOf(el.parentNode) === 'oMath') n++;
+      }
+      return n;
+    };
+    const isSubseq = (needle, hay) => { let i = 0; for (const ch of needle) { i = hay.indexOf(ch, i); if (i === -1) return false; i++; } return true; };
+
+    const cases = [
+      ['\\sum_{n=1}^{\\infty} \\frac{1}{n^s}', 'Σ 空上标槽 + 空操作数'],
+      ['\\iint_D f\\,dxdy', '∬ 空上标槽'],
+      ['\\int_D', '∫ 仅下标、无操作数 → 降级'],
+      ['\\prod_{p}', '∏ 无操作数 → 按 undOvr 降级为上下限'],
+      ['{}^{14}_{6}\\mathrm{C}', '空基 → 前缀上下标 m:sPre'],
+      ['\\xrightarrow{}', '空 lim → 降级'],
+    ];
+    for (const [tex, label] of cases) {
+      const holder = w.document.createElement('div');
+      w.katex.render(tex, holder, { displayMode: true, throwOnError: false });
+      assert.ok(!holder.querySelector('.katex-error'), label + '：KaTeX 应能渲染（用于取真实 MathML）');
+      const mathml = holder.querySelector('.katex-mathml math').outerHTML;
+      const raw = String(w.MathML2OMML.mml2omml(mathml));
+      const struct = [{ type: 'paragraph', runs: [{ mathml }] }];
+      assert.strictEqual(ed._structureMathmlToOmml(struct), true, label + '：应返回 true');
+      const run = struct[0].runs[0];
+      assert.ok(typeof run.omml === 'string', label + '：应转成 OMML（而非降级源码），实际 ' + JSON.stringify(run).slice(0, 120));
+      assert.ok(!run.omml.includes('&lt;m:'), label + '：不应出现被转义的标记');
+      const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
+      assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, label + '：应良构');
+      assert.strictEqual(emptySlotCount(doc.documentElement), 0, label + '：不应残留空必需槽（会显示虚线框）');
+      assert.strictEqual(orphanCount(doc.documentElement), 0, label + '：不应有孤儿槽（违反 OMML schema）');
+      const rawDoc = new w.DOMParser().parseFromString(raw, 'application/xml');
+      assert.ok(isSubseq(textOf(rawDoc.documentElement), textOf(doc.documentElement)), label + '：原有文本不得丢失');
+    }
+    // 具体形状抽查：空基转前缀上下标、无操作数降级后基数必须放在 <m:e> 里
+    const renderTex = (tex) => {
+      const h = w.document.createElement('div');
+      w.katex.render(tex, h, { displayMode: true, throwOnError: false });
+      return h.querySelector('.katex-mathml math').outerHTML;
+    };
+    const sp = [{ type: 'paragraph', runs: [{ mathml: renderTex('{}^{14}_{6}\\mathrm{C}') }] }];
+    ed._structureMathmlToOmml(sp);
+    const spDoc = new w.DOMParser().parseFromString(sp[0].runs[0].omml, 'application/xml');
+    assert.strictEqual(spDoc.getElementsByTagName('m:sPre').length, 1, '应产出 m:sPre');
+    assert.strictEqual(spDoc.getElementsByTagName('m:sPrePr').length, 1, '前缀上下标的属性元素应是 m:sPrePr');
+    assert.ok(spDoc.getElementsByTagName('m:sPre')[0].getElementsByTagName('m:e').length > 0, 'm:sPre 必须有 <m:e> 基数');
+    const s3 = [{ type: 'paragraph', runs: [{ mathml: renderTex('\\int_D') }] }];
+    ed._structureMathmlToOmml(s3);
+    const d3 = new w.DOMParser().parseFromString(s3[0].runs[0].omml, 'application/xml');
+    assert.strictEqual(d3.getElementsByTagName('m:nary').length, 0, '无操作数的 nary 应被降级');
+    assert.strictEqual(d3.getElementsByTagName('m:sSub').length, 1, '应降级为字符 + 下标');
+    assert.ok(d3.getElementsByTagName('m:sSub')[0].getElementsByTagName('m:e').length > 0, '降级后的基数必须在 <m:e> 里（schema 要求）');
+  });
+});
+
+// 回归（2026-09-14）：repairTextEscaping 的正则曾把自闭合的 <m:t .../>（空文本 run）当成开始标签，
+// 惰性匹配一路吞到后面某个 </m:t>，把中间的结构全部转义成文本 → OMML 报废、整条公式降级为源码。
+test('_structureMathmlToOmml: 空 <m:t/> 不再吞掉后续结构', async () => {
+  await withEditor({}, async (w, ed) => {
+    // 桩必须带命名空间声明：OMML 里用了 m:/w: 前缀，缺声明会让 XML 解析报 parsererror
+    //（良构校验失败 → 走 LaTeX 降级路径，就测不到"空 <m:t/> 吞结构"这一条了）
+    const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+    w.MathML2OMML = {
+      mml2omml: () => '<m:oMath xmlns:m="' + M + '"><m:r><m:t xml:space="preserve"/></m:r>'
+        + '<m:r><m:t>O(1) &lt; O(n)</m:t></m:r>'
+        + '<m:f><m:num><m:r><m:t>1</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f></m:oMath>',
+    };
+    const struct = [{ type: 'paragraph', runs: [{ mathml: '<math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math>' }] }];
+    assert.strictEqual(ed._structureMathmlToOmml(struct), true, '有库应返回 true');
+    const run = struct[0].runs[0];
+    assert.ok(typeof run.omml === 'string', '应产出 OMML');
+    const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
+    assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, '应为良构（旧正则会把结构转义成文本导致标签不成对）');
+    assert.ok(run.omml.includes('&lt;'), 'm:t 内的 < 仍应转义');
+    assert.ok(!run.omml.includes('&lt;/m:r>') && !run.omml.includes('&lt;m:f>'), '不得把后续结构转义进 m:t');
+    assert.strictEqual(doc.getElementsByTagName('m:f').length, 1, '分式结构应保留在树里');
   });
 });
 
