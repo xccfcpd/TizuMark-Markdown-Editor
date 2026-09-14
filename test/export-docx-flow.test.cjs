@@ -561,3 +561,95 @@ test('_buildDocxBuffer: DocxLib 缺失时按需加载后再构建', async () => 
     assert.strictEqual(new Uint8Array(ab).length, 1, '应返回构建字节');
   });
 });
+
+// 回归（2026-09-14 用户第二次验证 docx）：
+// ① 【修复被静默跳过】mml2omml 不转义 <m:t> 文本，公式含裸 <（i<j、0<i<n）时 OMML 非良构，
+//    DOMParser 报 parsererror → 旧实现直接 return，空槽规则/错位上提全部失效、虚线框残留。
+//    现在两个 repair 解析失败时会先做「最小可解析化」（只转义 m:t 里不像 OMML 标签的裸 < 与游离 &）再试。
+// ② 【phantom 实体化成 X】mhchem（\ce{}）用 <mphantom>X</mphantom> 当零宽基座（预览里不可见），
+//    mml2omml 不认识 mphantom → 把 X 当可见文本 → Word 里出现 CHX₃COOH / X²³⁵X₉₂U。
+//    现在转换前剥离 phantom，视觉等价。
+// ③ 【占位残渣抢占原子】剥离后残留的「整块全空」上下标结构会抢走后继原子、把 sPre 槽位克隆成空
+//    （核素记号 \ce{^{235}_{92}U}）→ 规则 R5 直接删除这类空结构。
+test('_structureMathmlToOmml: 裸 < 公式不再被跳过 + mhchem 不再出现 X（2026-09-14 用户验证）', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  await withEditor({}, async (w, ed) => {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'katex', 'dist', 'katex.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'katex', 'dist', 'contrib', 'mhchem.js'), 'utf8'));
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'mathml2omml.min.js'), 'utf8'));
+
+    const ARG_SLOTS = {
+      e: ['nary', 'rad', 'func', 'acc', 'bar', 'groupChr', 'limLow', 'limUpp', 'sSub', 'sSup', 'sSubSup', 'sPre', 'd', 'box', 'borderBox', 'f'],
+      num: ['f'], den: ['f'],
+      sub: ['nary', 'limLow', 'limUpp', 'sSub', 'sSubSup', 'sPre'],
+      sup: ['nary', 'limUpp', 'sSup', 'sSubSup', 'sPre'],
+      lim: ['limLow', 'limUpp'], fName: ['func'],
+    };
+    const tagOf = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
+    const all = (node, acc) => { acc = acc || []; for (const c of Array.from(node.children || [])) { all(c, acc); acc.push(c); } return acc; };
+    const textOf = (root) => {
+      let s = '';
+      (function walk(n) { for (const c of Array.from(n.childNodes || [])) { if (c.nodeType === 1) { if (tagOf(c) === 't') s += c.textContent || ''; else walk(c); } } })(root);
+      return s;
+    };
+    const emptySlotCount = (root) => {
+      let n = 0;
+      for (const el of all(root)) {
+        const parents = ARG_SLOTS[tagOf(el)];
+        if (!parents) continue;
+        const p = el.parentNode && el.parentNode.nodeType === 1 ? tagOf(el.parentNode) : '';
+        if (parents.indexOf(p) !== -1 && el.children.length === 0 && String(el.textContent || '').trim() === '') n++;
+      }
+      return n;
+    };
+    const orphanCount = (root) => {
+      let n = 0;
+      for (const el of all(root)) {
+        const t = tagOf(el);
+        if (['sub', 'sup', 'lim', 'e', 'num', 'den'].indexOf(t) !== -1
+            && el.parentNode && el.parentNode.nodeType === 1 && tagOf(el.parentNode) === 'oMath') n++;
+      }
+      return n;
+    };
+    const build = (tex) => {
+      const holder = w.document.createElement('div');
+      w.katex.render(tex, holder, { displayMode: true, throwOnError: false });
+      assert.ok(!holder.querySelector('.katex-error'), tex + '：KaTeX 应能渲染（用于取真实 MathML）');
+      const struct = [{ type: 'paragraph', runs: [{ mathml: holder.querySelector('.katex-mathml math').outerHTML }] }];
+      assert.strictEqual(ed._structureMathmlToOmml(struct), true, tex + '：应返回 true');
+      const run = struct[0].runs[0];
+      assert.ok(typeof run.omml === 'string', tex + '：应转成 OMML（而非降级源码），实际 ' + JSON.stringify(run).slice(0, 120));
+      const doc = new w.DOMParser().parseFromString(run.omml, 'application/xml');
+      assert.strictEqual(doc.getElementsByTagName('parsererror').length, 0, tex + '：应良构');
+      assert.strictEqual(emptySlotCount(doc.documentElement), 0, tex + '：不应残留空必需槽（Word 虚线框）');
+      assert.strictEqual(orphanCount(doc.documentElement), 0, tex + '：不应有孤儿槽（违反 OMML schema）');
+      return { run, doc, text: textOf(doc.documentElement) };
+    };
+
+    // ① 裸 < + 空必需槽：修复必须真正生效（旧实现会因解析失败被静默跳过，残留空槽）
+    const lt = build('\\int_{D} f\\,dx \\quad 0<i<n');
+    assert.ok(lt.run.omml.includes('&lt;'), '含 < 的公式仍应把文本转义为 &lt;');
+    assert.ok(lt.text.indexOf('<') !== -1, '文本应保留（DOM 文本里是真实 <），实际 ' + lt.text);
+    // ①b 错位结构（\overset 被 mml2omml 包进 m:t）+ 裸 <：两处修复都要生效
+    const ov = build('\\overset{i<j}{\\mathrm{X}}');
+    assert.ok(!ov.run.omml.includes('&lt;m:'), '不得把 OMML 标记转义进文本（m:t 内应是纯文本），实际 ' + ov.run.omml.slice(0, 200));
+    assert.ok(ov.text.indexOf('<') !== -1, 'overset 内的 < 文本应保留');
+
+    // ② mhchem 零宽基座不得实体化成 X
+    const water = build('\\ce{H2O}');
+    assert.ok(water.text.indexOf('H2O') !== -1, '\\ce{H2O} 文本应为 H2O，实际 ' + water.text);
+    const acid = build('\\ce{CH3COOH}');
+    assert.ok(acid.text.indexOf('CH3COOH') !== -1, '\\ce{CH3COOH} 文本应为 CH3COOH，实际 ' + acid.text);
+    assert.ok(!/X/.test(acid.text), '不得出现 phantom 实体化出来的 X，实际 ' + acid.text);
+    const cx = build('\\ce{[Co(NH3)6]^{3+} + 3en -> [Co(en)3]^{3+} + 6NH3}');
+    assert.ok(!/X/.test(cx.text), '配位化学式不得出现 X，实际 ' + cx.text);
+    assert.ok(cx.text.indexOf('NH3') !== -1, '下标应保留（NH3），实际 ' + cx.text);
+
+    // ③ 核素前缀上下标：占位残渣删除 + 收敛为 m:sPre，且不残留空槽
+    const nuc = build('\\ce{^{235}_{92}U}');
+    assert.ok(nuc.text.indexOf('92235U') !== -1, '核素记号文本应为 92235U，实际 ' + nuc.text);
+    assert.strictEqual(nuc.doc.getElementsByTagName('m:sPre').length, 1, '应产出 1 个 m:sPre（前缀上下标）');
+    assert.ok(!/X/.test(nuc.text), '核素记号不得出现 X，实际 ' + nuc.text);
+  });
+});

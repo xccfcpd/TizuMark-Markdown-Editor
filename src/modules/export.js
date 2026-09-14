@@ -22,6 +22,11 @@
   //   R3 空基上下标：有后继原子 → 转前缀上下标 m:sPre（schema 次序 sub,sup,e，文本顺序不倒置）；
   //      无 → 把 sub/sup 内容上提为普通 run（不留孤儿槽）
   //   R4 空 lim：降级为 e 的内容
+  //   R5 整块全空的上下标结构（mhchem 的零宽占位残渣）→ 直接删除：不删它会抢占后继原子，
+  //      把生成的 sPre 槽位克隆成空 → 又变虚线框（2026-09-14 核素记号 \ce{^{235}_{92}U} 定位）
+  // 输入健壮性（2026-09-14 定位）：mml2omml 不转义 <m:t> 文本，公式含裸 <（i<j、0<i<n）时
+  //   OMML 非良构 → DOM 解析失败；旧行为直接原样返回，规则被静默跳过、空槽残留成虚线框。
+  //   现在解析失败时先做「最小可解析化」（只转义 m:t 里不像 OMML 标签的裸 < 与游离 &）再重试。
   // 安全兜底（任一不满足即放弃本次修改、原样返回 —— 宁可保留现状也不产出坏公式）：
   //   I1 良构；I2 无孤儿槽（sub/sup/lim/e/num/den 不得直接挂在 m:oMath 下，违反 schema）；
   //   I3 原有文本顺序完整保留（允许新增 nary 的运算符字符）；I4 未命中的公式零改动
@@ -185,11 +190,38 @@
     el.parentNode.replaceChild(frag, el);
   }
 
-  function repairOmmlEmptyArgs(xml) {
+  // mml2omml 产出 <m:t> 文本时不做 XML 转义：公式含 <（如 i<j、0<i<n）时 OMML 里是裸 <，
+  // 文档整体非良构 → DOMParser 报 parsererror。这里做「最小可解析化」：只对 m:t 文本里
+  // 【不可能构成 OMML 标签】的裸 < 与【游离的 &】转义（实体引用保留、幂等），使解析得以进行。
+  // 文本语义不变，最终仍由 repairTextEscaping 统一收敛为 &lt;/&amp;。
+  const makeOmmlParsable = (xml) => String(xml).replace(
+    /(<m:t(?:\s[^>]*[^/>])?>)([\s\S]*?)(<\/m:t>)/g,
+    (_, open, text, close) => open
+      + text
+        .replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;')
+        .replace(/<(?!\/?[mw]:)/g, '&lt;')
+      + close
+  );
+  // 解析 OMML（必要时先最小可解析化）。成功返回 { doc, xml }（xml 是实际解析成功的串），失败返回 null。
+  const parseOmmlForRepair = (xml) => {
+    const tryParse = (s) => {
+      let d = null;
+      try { d = new DOMParser().parseFromString(s, 'application/xml'); } catch (e) { d = null; }
+      return d && !d.getElementsByTagName('parsererror').length ? d : null;
+    };
     const src = String(xml);
-    let doc;
-    try { doc = new DOMParser().parseFromString(src, 'application/xml'); } catch (e) { return xml; }
-    if (!doc || doc.getElementsByTagName('parsererror').length) return xml;
+    const doc = tryParse(src);
+    if (doc) return { doc, xml: src };
+    const parsable = makeOmmlParsable(src);
+    if (parsable === src) return null;
+    const retry = tryParse(parsable);
+    return retry ? { doc: retry, xml: parsable } : null;
+  };
+
+  function repairOmmlEmptyArgs(xml) {
+    const parsed = parseOmmlForRepair(xml);
+    if (!parsed) return xml;
+    const doc = parsed.doc;
     const beforeText = ommlText(doc);
     let changed = false;
     try {
@@ -197,6 +229,11 @@
         let touched = false;
         for (const el of ommlBottomUp(doc.documentElement)) {
           const tag = ommlTag(el);
+          // R5：整块全空的上下标结构（mhchem 的零宽占位残渣）→ 删除，避免它抢占后继原子
+          if (tag === 'sSub' || tag === 'sSup' || tag === 'sSubSup' || tag === 'sPre') {
+            const slots = ['e', 'sub', 'sup'].map((n) => ommlChild(el, n));
+            if (slots.every((n) => !n || ommlIsEmpty(n))) { el.parentNode.removeChild(el); touched = true; continue; }
+          }
           if (tag === 'nary') {
             // R1：空限定槽直接删（schema 允许缺省）
             const sup = ommlChild(el, 'sup');
@@ -1126,8 +1163,11 @@
         const ommlLocalTag = (el) => String(el.localName || el.nodeName).replace(/^.*:/, '');
         const repairMisplacedOMML = (xml) => {
           try {
-            const doc = new DOMParser().parseFromString(String(xml), 'application/xml');
-            if (!doc || doc.getElementsByTagName('parsererror').length) return xml;
+            // 与 repairOmmlEmptyArgs 同理：含裸 < 的 OMML 直接解析会失败而被静默跳过，
+            // 这里先做「最小可解析化」再解析，否则 \overset/\underset 的结构上提同样会被跳过。
+            const parsed = parseOmmlForRepair(xml);
+            if (!parsed) return xml;
+            const doc = parsed.doc;
             let changed = false;
             // 多趟：上提后父层可能又暴露出新的错位（如 \overset{*}{\underset{**}{X}} 的两层嵌套）
             for (let pass = 0; pass < 20; pass++) {
@@ -1193,6 +1233,21 @@
               .replace(/&(?!(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;').replace(/</g, '&lt;')
             + close
         );
+        // mhchem（\ce{}）用 <mphantom>X</mphantom> 作「零宽基座」（预览里不可见），但 mml2omml
+        // 不认识 <mphantom>，会把里面的 X 当可见文本输出 —— Word 里就成了 CHX₃COOH、X²³⁵X₉₂U。
+        // phantom 按定义不可见 → 转换前直接剥离（视觉等价）；剩余的"空基上下标"由
+        // repairOmmlEmptyArgs 的 R3/R5 收敛成前缀上下标 m:sPre（2026-09-14 定位）。
+        const stripMathmlPhantom = (mathml) => {
+          let out = String(mathml);
+          for (let i = 0; i < 10; i++) {
+            const next = out
+              .replace(/<mphantom(?:\s[^>]*)?\/>/g, '')
+              .replace(/<mphantom(?:\s[^>]*)?>[\s\S]*?<\/mphantom>/g, '');
+            if (next === out) break;
+            out = next;
+          }
+          return out;
+        };
         let sawMath = false;
         const walkRuns = (runs) => {
           if (!Array.isArray(runs)) return;
@@ -1202,10 +1257,11 @@
               sawMath = true;
               if (!convert) continue; // 缺库：保留 mathml run，外层据 sawMath 决定走主路径还是回退
               let ommlStr = null;
-              try { ommlStr = String(convert(r.mathml)); } catch (e) { ommlStr = null; }
+              try { ommlStr = String(convert(stripMathmlPhantom(r.mathml))); } catch (e) { ommlStr = null; }
               // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再修空必需参数槽
               // （Word 会把空槽画成虚线占位框），最后做文本转义 —— 三者顺序不可颠倒：
               // 反了会把错位结构里的 < 转义掉、或在已转义文本上做结构搬迁，都会产出坏 OMML。
+              // （含裸 < 的 OMML 由两个 repair 内部先做最小可解析化，不再被解析失败跳过。）
               if (ommlStr) ommlStr = repairMisplacedOMML(ommlStr);
               if (ommlStr) ommlStr = repairOmmlEmptyArgs(ommlStr);
               if (ommlStr) ommlStr = repairTextEscaping(ommlStr);
