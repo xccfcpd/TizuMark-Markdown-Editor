@@ -441,8 +441,10 @@
       // blob: 回收 / 源解析影响（同源 srcdoc 打印帧在 PDF 导出、外部打开在 HTML 导出都适用）。
       // 分支：blob:→fetch 还原；file://→Rust 读盘；相对路径→按文档目录 Rust 读盘；data:/http(s): 保留。
       async _inlineImagesForExport(clone, filePath) {
-        if (!filePath) return; // 未保存文档：相对路径无法解析，跳过（保留原 src）
-        const dir = filePath.replace(/[/\\][^/\\]*$/, '');
+        // 未保存文档：相对路径/本地图无法解析目录，仅跳过这两类；
+        // blob:/data:/http(s) 不依赖 filePath，仍照常内联，避免「未保存就导出」时连粘贴图都丢。
+        const warnings = [];
+        const dir = filePath ? filePath.replace(/[/\\][^/\\]*$/, '') : '';
         const mimeOfExt = (name) => {
           const ext = String(name).split('.').pop().toLowerCase();
           if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
@@ -483,10 +485,11 @@
                   if (blobUrl === src) { dataUri = dataUriKey; break; }
                 }
               }
+              if (!dataUri) warnings.push('图片内联失败（blob 已被回收，图片可能缺失）：' + src.slice(0, 60));
             } else if (src.startsWith('http://') || src.startsWith('https://')) {
               // 网络图片：下载内联为 base64，保证导出的 HTML 离线（换目录/断网）也能显示。
               // 走浏览器 fetch（blob.type 携带真实 mime，避免按扩展名猜错）；
-              // 下载失败（离线/超时）时保留原 URL，至少联网打开仍可见。
+              // 下载失败（离线/超时）时保留原 URL，至少联网打开仍可见；但 DOCX 无法嵌入外链，会缺失。
               try {
                 const resp = await fetch(src);
                 if (resp.ok) {
@@ -494,13 +497,16 @@
                   dataUri = await blobToDataUri(blob);
                 }
               } catch (_e) { /* 离线或网络异常：保留原 src */ }
+              if (!dataUri) warnings.push('远程图片离线无法内联（联网打开仍可见；Word 中可能缺失）：' + src.slice(0, 60));
             } else if (src.startsWith('file://')) {
               // file:// 走 Rust 读磁盘（绕过 CSP，与 processImages 一致）
+              if (!filePath) { warnings.push('文档未保存，本地图片无法内联：' + src.slice(0, 60)); return; }
               const url = src.replace(/^file:\/\//, '');
               const base64 = await TauriApi.fetchImageAsBase64({ url });
               dataUri = `data:${mimeOfExt(url)};base64,${base64}`;
             } else {
-              // 纯相对路径：按当前 .md 所在目录补全
+              // 纯相对路径：按当前 .md 所在目录补全。未保存文档则无法解析，跳过并提示。
+              if (!filePath) { warnings.push('文档未保存，相对路径图片无法解析：' + src.slice(0, 60)); return; }
               let rel = src;
               if (rel.startsWith('/')) rel = rel.slice(1);
               const base64 = await TauriApi.fetchImageAsBase64({ url: dir + '/' + rel });
@@ -510,9 +516,70 @@
           } catch (e) {
             // 还原失败不阻断导出：保留原 src，至少用户能手动补
             console.warn('[export] 图片内联失败，保留原 src:', src, e);
+            warnings.push('图片内联异常，保留原链接：' + src.slice(0, 60));
           }
         });
         await Promise.allSettled(imgPromises);
+        this._lastExportImageWarnings = warnings;
+      },
+
+      // 把导出过程中「图片未能完全内联」的告警（离线远程图 / 未保存文档的本地图等）
+      // 以非阻断方式提示用户；无告警则静默。
+      _flushExportImageWarnings() {
+        const w = this._lastExportImageWarnings;
+        this._lastExportImageWarnings = null;
+        if (!w || !w.length) return;
+        const msg = '部分图片未能完全内联（' + w.length + ' 张，详见控制台）';
+        if (typeof this.showToast === 'function') this.showToast(msg, 'warning', { duration: 4500 });
+        else if (typeof this.setStatus === 'function') this.setStatus(msg);
+        w.forEach((x) => console.warn('[export] 图片内联警告：', x));
+      },
+
+      // ECharts 是 <canvas> 渲染：cloneNode 不复制 canvas 像素（HTML/PDF 克隆后空白），
+      // html2canvas 对 echarts canvas 也常捕不到（DOCX 丢失）。导出前用实例 getDataURL 截成
+      // PNG，替换容器内 canvas 为 <img>，使三端都能稳定显示且与预览一致（含主题配色）。
+      async _snapshotEchartsForExport() {
+        const snaps = [];
+        const containers = Array.from(this.preview.querySelectorAll('.diagram-container[data-diagram-type="echarts"]'));
+        const ec = (typeof window !== 'undefined' && window.echarts)
+          ? window.echarts
+          : (typeof echarts !== 'undefined' ? echarts : null);
+        if (!ec || !ec.getInstanceByDom) return snaps;
+        const bg = this.isDark ? '#1e1e1e' : '#ffffff';
+        for (const c of containers) {
+          try {
+            const inst = ec.getInstanceByDom(c);
+            if (!inst || inst.isDisposed()) { snaps.push(null); continue; }
+            const url = inst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: bg });
+            snaps.push({ url, w: inst.getWidth() || 0, h: inst.getHeight() || 0 });
+          } catch (_e) {
+            snaps.push(null);
+          }
+        }
+        return snaps;
+      },
+
+      // 把 ECharts 快照（取自真实预览）按索引替换到 clone 的对应容器里。
+      _applyEchartsSnapshots(clone, snaps) {
+        if (!snaps || !snaps.length) return;
+        const cloneContainers = Array.from(clone.querySelectorAll('.diagram-container[data-diagram-type="echarts"]'));
+        cloneContainers.forEach((cc, i) => {
+          const snap = snaps[i];
+          if (!snap || !snap.url) return;
+          const img = document.createElement('img');
+          img.src = snap.url;
+          img.className = 'tizu-echarts-img';
+          img.style.cssText = 'display:block;max-width:100%;height:auto;margin:0 auto;';
+          // 记录真实像素与显示尺寸，供 DOCX 普通图片路径正确等比缩放（避免被放大/超页）。
+          if (snap.w > 0 && snap.h > 0) {
+            img.dataset.natW = String(Math.round(snap.w * 2));
+            img.dataset.natH = String(Math.round(snap.h * 2));
+            img.dataset.dispW = String(Math.round(snap.w));
+            img.dataset.dispH = String(Math.round(snap.h));
+          }
+          const canvas = cc.querySelector('canvas');
+          if (canvas) canvas.replaceWith(img); else cc.appendChild(img);
+        });
       },
       // PDF 导出需要完整 styles.css。优先运行时 fetch（原始文本保真），失败则回退读取
       // 已加载样式表的 CSSOM（自包含、不依赖网络/打包路径），彻底杜绝
@@ -964,6 +1031,8 @@
         const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
         for (let mi = 0; mi < mermaidContainers.length; mi++) {
           const container = mermaidContainers[mi];
+          // ECharts 已截成 <img>（_applyEchartsSnapshots），跳过重截，交由普通图片路径等比缩放。
+          if (container.getAttribute('data-diagram-type') === 'echarts') continue;
           // 重渲染确保 SVG 就绪
           if (typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
             try {
@@ -1131,8 +1200,12 @@
           clone.querySelectorAll('.copy-btn').forEach(el => el.remove());
           const abbrData = clone.querySelector('#abbr-data');
           if (abbrData) abbrData.remove();
-  
+
+          // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，三端稳定显示。
+          const echSnapsHtml = await this._snapshotEchartsForExport();
+          this._applyEchartsSnapshots(clone, echSnapsHtml);
           await this._inlineImagesForExport(clone, this.activeTab.filePath);
+          this._flushExportImageWarnings();
   
           let katexCSS = '';
           try {
@@ -1625,8 +1698,12 @@
             });
           }
   
+          // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，三端稳定显示。
+          const echSnapsDocx = await this._snapshotEchartsForExport();
+          this._applyEchartsSnapshots(clone, echSnapsDocx);
           await this._inlineImagesForExport(clone, this.activeTab.filePath);
-  
+          this._flushExportImageWarnings();
+
           // 把 Web 预览 DOM 预处理成 docx 兼容结构。
           // skipMathImage=true：保留 .katex（其 <math> 供 MathML→OMML 转可编辑公式），
           // 公式转 PNG 仅在 html-docx 回退路径需要（_fallbackWordHtmlExport 内补跑）。
@@ -1889,10 +1966,14 @@
   
           const clone = this.preview.cloneNode(true);
           clone.querySelectorAll('.copy-btn, #abbr-data').forEach(el => el.remove());
-  
+
+          // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，PDF 稳定显示。
+          const echSnapsPdf = await this._snapshotEchartsForExport();
+          this._applyEchartsSnapshots(clone, echSnapsPdf);
           // 图片内联：把预览里的 blob:/file:///相对路径图片全部转内联 base64，
           // 使打印帧自包含（不受 blob LRU 回收 / 源解析影响，根除 PDF 空白图）。
           await this._inlineImagesForExport(clone, this.activeTab.filePath);
+          this._flushExportImageWarnings();
   
           // Re-render Mermaid via mermaid.render() so every diagram gets a
           // consistent viewBox regardless of the current preview-pane width.
@@ -1901,6 +1982,8 @@
             const ff = this._exportPdfFontStack();
             mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } });
             for (let i = 0; i < mermaidContainers.length; i++) {
+              // ECharts 已截成 <img>，无需 mermaid.render（其 option 非 mermaid 语法会报错）
+              if (mermaidContainers[i].getAttribute('data-diagram-type') === 'echarts') continue;
               const code = (mermaidContainers[i].getAttribute('data-code') || mermaidContainers[i].textContent || '').trim();
               if (!code) continue;
               try {
