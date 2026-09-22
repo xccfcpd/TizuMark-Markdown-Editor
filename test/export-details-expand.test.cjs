@@ -29,9 +29,16 @@ test('_clonePreviewForExport：默认展开所有折叠 <details>，且不改动
 
     const clone = ed._clonePreviewForExport();
 
-    for (const d of w.editor.preview.querySelectorAll('details')) {
-      assert.equal(d.open, false, '原预览中收起的块不应被克隆过程改动');
-    }
+    // 原预览必须原样不动：收起的仍收起、已展开的仍展开
+    // （fixture 里原生 <details> 带 open 属性，故不能笼统断言"全部 open === false"）
+    assert.equal(
+      w.editor.preview.querySelector('details[data-admonition]').open, false,
+      '原预览中收起的 admonition 不应被克隆过程改动',
+    );
+    assert.equal(
+      w.editor.preview.querySelector('details:not([data-admonition])').open, true,
+      '原预览中已展开的原生 <details> 不应被克隆过程改动',
+    );
     const cloned = clone.querySelectorAll('details');
     assert.equal(cloned.length, 2, '克隆应保留 2 个 details');
     for (const d of cloned) {
