@@ -90,6 +90,20 @@
 | `.gitignore` | 补上**此前缺失**的图表 vendor 忽略项：`src/lib/echarts.min.js`、`abcjs.min.js`、`graphviz.min.js`、`wavedrom/`、`markmap/`（these 分支此前未忽略，会以未跟踪文件形式污染 `git status`） |
 | `test/slash-order.test.cjs`、`test/slash-command.test.cjs` | 目录规模 28 → **37**（3 处）、隐藏后总数 27 → **36**、面板 23 → **32** |
 
+### 2.4 CI / 构建链路（本次一并修复）
+
+| 文件 | 改动 | 原因 |
+|------|------|------|
+| `.github/workflows/ci.yml` | push / pull_request 分支白名单加入 `more-function` | 该白名单是**显式枚举**的，未列出的分支推送时 workflow 静默不调度。`feat-diagram-engines` / `feat-updater-off` 都补过，`more-function` 从未补过 → 本分支前两次推送都没启动 CI。另注：默认分支 `master` 上的 `ci.yml` 尚无 `workflow_dispatch`，所以 GitHub UI 的「Run workflow」按钮当前不可见 |
+| `.github/workflows/sync-lock.yml` | 回推分支解析改为「手动输入 > `lock-<分支名>` tag 推导 > 兜底 feat-diagram-engines」 | 旧实现 `github.event.inputs.branch \|\| 'feat-diagram-engines'` 在 **tag 触发**时 inputs 为空 → 一律回推 `feat-diagram-engines`；而从其它分支打的 tag 检出是 detached HEAD，非快进会被拒 → lock 永远同步不回目标分支 |
+| `package-lock.json` | 由 CI 生成并回推（`chore(deps): 同步 package-lock.json`，+483 行） | 本机**没有 npm**（`node.exe` 单独分发，无 npm-cli），无法本地更新 lock；而 CI 与打包流程都用 `npm ci`，lock 与 package.json 不一致会直接失败 —— 即 Windows 打包报的 `Missing: markmap-lib@0.18.12 from lock file` |
+
+**操作序列（供复现/回溯）**：
+1. 推送 workflow 修复到 `more-function`；
+2. 打并推送 `lock-more-function` tag；
+3. `sync-lock` 运行 `npm install` 并把 `package-lock.json` 提交回 `more-function`（远程从 `4dde95f` 前进到 `7ff3d4b`）；
+4. **注意**：bot 用 `GITHUB_TOKEN` 推送**不会触发**其它 workflow，所以必须再有「人」的一次推送，CI 才会在「含新 lock 的提交」上运行。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
@@ -158,7 +172,10 @@ peer 依赖（`echarts ^5.1.2`）。强行加入 `echarts-gl` 会让 `npm ci` �
 
 ## 5. 需要在 CI（有 node_modules）确认的项
 
-- [ ] `npm ci` 能安装 `d3` / `markmap-lib` / `markmap-view`（**注意与 echarts v6 的 peer 关系**）
+- [x] lock 与 package.json 不一致的问题已解决（`package-lock.json` 由 CI 的 `sync-lock` 回推，
+      已含 `d3` / `markmap-lib` / `markmap-view` 及其传递依赖）
+- [ ] `npm ci` 实际安装成功（**注意与 echarts v6 的 peer 关系**：lock 由 `npm install` 生成，
+      若存在 peer 冲突会在此处暴露）
 - [ ] `npm run prepare` 成功，产出 `src/lib/markmap/markmap.min.js`
 - [ ] `npm run check`（全部门禁）全绿
 - [ ] `npm test` 全量：重点观察 `render.test.cjs`、`unified-renderer.test.cjs`、`mhchem.test.cjs`、
