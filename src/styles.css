@@ -2194,6 +2194,14 @@ body.is-resizing .side-btn {
   height: 90vh;
   display: block;
 }
+/* Markmap 的 <svg> 现已自带 width/height/viewBox（见 diagram-renderers.js 的 renderMarkmap），
+   故 prepareSvgForLightbox 会走「自带尺寸」早返回、不再补 .lightbox-svg-adapt。
+   这里按类名补上同样的等比放大，保持查看器里的既有观感（有 viewBox，放大不变形）。 */
+.lightbox-svg-wrapper > svg.markmap-svg {
+  width: 90vw;
+  height: 90vh;
+  display: block;
+}
 
 .lightbox-hint {
   position: fixed;

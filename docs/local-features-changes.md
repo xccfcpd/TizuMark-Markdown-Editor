@@ -39,7 +39,8 @@
 | `test/unified-admonitions.test.cjs` | ~300 | 25 例：语法解析（`!!!` / `???` / `:::` 容器） / 反缩进 / 行数中立 / 嵌套 / 防注入 |
 | `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
 | `test/export-details-expand.test.cjs` | ~120 | 5 例：默认克隆展开且不动原预览 / `expandDetails:false` 保持收起 / PDF 打印帧已展开 / HTML 导出保持收起且不丢内容 / 四路共用统一入口且仅 HTML 关闭展开 |
-| `test/lightbox-svg-size.test.cjs` | ~110 | 4 例：Markmap 类 SVG 补尺寸与 viewBox / 自带尺寸的 SVG 完全不动 / 量不到尺寸时不猜 / `showLightbox` 接线 |
+| `test/lightbox-svg-size.test.cjs` | ~130 | 5 例：靠 CSS 撑尺寸的 SVG 补尺寸与 viewBox / 自带尺寸的 SVG 完全不动 / 量不到尺寸时不猜 / `showLightbox` 接线 / **Markmap 现产出（自带尺寸）走早返回且保留类名** |
+| `test/markmap-svg-geometry.test.cjs` | ~85 | 2 例：Markmap 的 `<svg>` 必须自带**绝对** width/height 与 viewBox（覆盖实测尺寸与兜底两条路径）—— 守卫 §2.11 的 d3-zoom `NotSupportedError` |
 | `docs/local-features-changes.md` | — | 本文件 |
 
 > 为什么把纯函数抽成「兄弟模块」：`unified-renderer.js` 顶部 `require` 了 unified / remark 等
@@ -200,12 +201,9 @@
 - **lightbox 克隆加回退**：`prepareSvgForLightbox` 的尺寸补正降级为"尽力而为"，
   任何异常都回退到裸克隆，不让「点开图表」这个动作本身抛全局错误。
 
-> **Markmap 的 SVGLength 报错尚无定论（待复现确认）**：已核实 markmap-view 0.18.12 用
-> `ResizeObserver` 观察 `foreignObject` 内的 div，回调里**直接调 `renderData()` 且无
-> try/catch** → 因此抛出的是**异步 Uncaught**（`renderInto` 的同步 try/catch 看不到）；
-> 而 `fit()` 内部有 `.catch(noop)`，不会逃逸。该库自身不读 `.baseVal`，报错落在被 esbuild
-> 一并打包进来的 d3 代码里。**需确认触发时机**（打开文档即出现 / 打字重渲染时 /
-> 点击思维导图时）后才能定位根因。
+> **Markmap 的 SVGLength 报错：已定位并修复（详见 §2.11）**。此前记为「尚无定论」的推断中，
+> 「该库自身不读 `.baseVal`、报错落在打包进来的 d3 代码里」是对的，但触发时机不在
+> `ResizeObserver`，而在**缩放手势**：markmap 自己把 d3-zoom 绑在了那个 `<svg>` 上。
 
 ### 2.10 补齐：`:::` 容器语法、TikZ `\foreach` / `plot (\x,{…})`、plot 参数方程（2026-09-22）
 
@@ -220,6 +218,38 @@
 | siunitx `\coulomb`（§6.4 对照表） | KaTeX **红字报错**（单位宏表漏登记 `coulomb`） | `SI_UNIT` 补 `coulomb: 'C'`。此前 `\SI{1.6e-19}{\coulomb}` 展开成 `\,\mathrm{\coulomb}`，`\mathrm` 内的未知命令被 KaTeX 标红；测试顺带锁住 `\newton` / `\watt` / `\joule` / `\metre\per\second`，避免再从同表漏登记 |
 
 测试：`test/unified-admonitions.test.cjs` 20 → **25**，`test/diagrams.test.cjs` 25 → **31**，全部本地通过（零 npm 依赖）。
+
+### 2.11 修复：点一下思维导图就抛 `NotSupportedError`（Markmap SVG 缺尺寸，2026-09-23）
+
+- **症状**：Markmap 渲染正常，但对它做**任何缩放手势**（滚轮 / 左键按下拖动 / 双击）都弹全局
+  错误条：`Uncaught NotSupportedError: Failed to read the 'value' property from 'SVGLength':
+  Could not resolve relative length`（`lib/markmap/markmap.min.js`）。
+- **根因（已核对上游源码，非猜测）**：`renderMarkmap` 生成的 `<svg>` **既无 width/height 也无
+  viewBox**，尺寸完全交给 CSS（`.diagram-container .markmap-svg { width/height:100% }`）。而
+  markmap-view 构造函数里 `this.zoom = (<d3-zoom>)().filter(...)`，把 d3-zoom 绑在了这个
+  `<svg>` 上；d3-zoom 的 `defaultExtent` 在**没有 viewBox** 时执行
+  `[[0, 0], [e.width.baseVal.value, e.height.baseVal.value]]` —— 只由 CSS 决定的宽度是
+  **相对长度**，读 `.value` 即抛。任一缩放手势一开始就要算 extent，所以**「点一下思维导图」
+  就会抛**；且它发生在 d3 的手势处理里，属**异步 Uncaught**，`renderInto` 的同步 try/catch
+  拦不住。Mermaid / TikZ / plot / Graphviz 生成时即写 width + viewBox，故从未中招。
+- **与 `???` 折叠改动无关**：该缺陷自 Markmap 引入即存在（§2.9 在更早的构建里就观察到同一
+  报错），只是必须与图交互才触发。§2.9 中「该库自身不读 `.baseVal`、报错落在打包进来的 d3
+  里」的判断正确，但触发时机不在 `ResizeObserver`，而在缩放手势。
+- **修法**：`renderMarkmap` 渲染时量取容器尺寸，显式写死 `width` / `height` / `viewBox`
+  （量不到时退到 `DEFAULT_SVG_WIDTH` × `DEFAULT_MARKMAP_HEIGHT`）。
+
+| 文件 | 改动 |
+|------|------|
+| `src/modules/diagram-renderers.js` | `renderMarkmap` 增加 `width`/`height`/`viewBox`：绝对长度 + 与 CSS 尺寸一致的 viewBox → 用户坐标系仍 1:1，markmap 内部按 px 算的 transform 不受影响 |
+| `src/styles.css` | 新增 `.lightbox-svg-wrapper > svg.markmap-svg { width:90vw; height:90vh }`：该 SVG 现已「自带尺寸」，`prepareSvgForLightbox` 会走早返回、不再补 `.lightbox-svg-adapt`，故按类名给回同样的等比放大，保持查看器里的既有观感 |
+| `src/modules/misc-ui.js` | 仅更新注释：五大引擎现已全部自带尺寸，该函数转为「靠外部 CSS 撑尺寸」的兜底 |
+| `test/markmap-svg-geometry.test.cjs` | 新增 2 例：按实测尺寸写入 / 量不到时兜底；均断言 width·height **不得为百分比**、必须有 viewBox |
+| `test/lightbox-svg-size.test.cjs` | 夹具注释修正（原写「与 renderMarkmap 产出同构」已过时）+ 新增 1 例：现在的 Markmap 产出走早返回且保留类名 |
+
+> **为什么必须同时给 viewBox**：只补 width/height 能让 `baseVal` 变绝对值，但 d3 仍走「读
+> `width.baseVal.value`」那条分支；补上 viewBox 后它改走 `viewBox.baseVal`（必然绝对值），
+> 双保险。二者都不再依赖作用域 CSS，顺带消除了 §2.7 那类「脱离 `.diagram-container` 就塌陷」
+> 的隐患。
 
 ---
 

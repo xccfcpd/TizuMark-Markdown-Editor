@@ -205,15 +205,20 @@
         }, true);
       },
       // 克隆图表 SVG 供 lightbox 展示。
-      // 为什么不直接 cloneNode(true)：部分引擎（如 Markmap）生成的 <svg> **自身不带
-      // width/height**，尺寸完全靠 `.diagram-container .markmap-svg { width/height:100% }`
-      // 这类**有作用域的 CSS**撑开；而 lightbox 把 SVG 克隆到 `.diagram-container` 之外，
-      // 该 CSS 不再匹配 → 克隆的视口尺寸塌陷。偏偏 Markmap 内部那个负责居中缩放的
-      // `<g transform>` 是按**原容器尺寸**算好的，视口一变，整棵树就被推到视口之外，
-      // 表现为「点开一片空白」。
+      // 本函数针对的是「尺寸完全由**有作用域的 CSS** 撑开、自身不带 width/height」的 <svg>：
+      // 这类 SVG 一旦被克隆到 `.diagram-container` 之外，那条 CSS 不再匹配 → 视口尺寸塌陷，
+      // 而引擎按**原容器尺寸**算好的 `<g transform>`（Markmap 的居中缩放）会让内容跑到视口
+      // 之外，表现为「点开一片空白」。
       // 修法：把原节点的真实渲染尺寸显式写到克隆上，缺失时补 viewBox —— 克隆的用户坐标系
       // 因此与原图一致，内容回到正确位置；再由 `.lightbox-svg-adapt` 等比放大到视口内。
-      // 自带尺寸/viewBox 的引擎（Mermaid / TikZ / plot / Graphviz）完全不受影响。
+      //
+      // 现状：五大引擎**全部自带尺寸信息**，正常路径上都从这里早返回 ——
+      //   Mermaid / TikZ / plot / Graphviz 生成时即写了 width/height + viewBox；
+      //   Markmap 也已改为写死 width/height/viewBox（见 diagram-renderers.js 的 renderMarkmap：
+      //   缺 viewBox 时 d3-zoom 的 defaultExtent 会去读只由 CSS 决定的**相对长度**并抛
+      //   NotSupportedError）。本函数保留作兜底：将来任何靠外部 CSS 撑尺寸的引擎仍能正确进查看器。
+      // 注：Markmap 克隆不再加 `.lightbox-svg-adapt`，改由
+      //     `.lightbox-svg-wrapper > svg.markmap-svg` 按类名给同样的 90vw/90vh。
       prepareSvgForLightbox(src) {
         const clone = src.cloneNode(true);
         // 引擎自带尺寸信息（有 width/height 属性或 viewBox）→ 一律不动，保持既有表现。

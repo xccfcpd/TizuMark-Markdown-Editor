@@ -1,13 +1,17 @@
-// 图表查看器（lightbox）里 Markmap 一片空白 —— 回归测试
+// 图表查看器（lightbox）里图表一片空白 —— 回归测试
 //
-// 根因：Markmap 生成的 <svg> **自身不带 width/height**，尺寸靠
-//   `.diagram-container .markmap-svg { width:100%; height:100% }` 撑开；
+// 根因（历史）：引擎生成的 <svg> **自身不带 width/height**、尺寸靠
+//   `.diagram-container .markmap-svg { width:100%; height:100% }` 这类有作用域的 CSS 撑开；
 //   而 lightbox 把 SVG 克隆到 `.diagram-container` 之外，该 CSS 不再匹配 → 视口塌陷。
-//   Markmap 内部那个按**原容器尺寸**算好的 `<g transform>`（居中缩放）保持不变，
+//   引擎按**原容器尺寸**算好的 `<g transform>`（居中缩放）保持不变，
 //   于是整棵树被推到视口之外 → 点开一片空白。
 //
 // 修复：prepareSvgForLightbox() 把真实渲染尺寸与 viewBox 显式写到克隆上，
 //   使用户坐标系与原图一致；仅对「原本靠外部 CSS 撑尺寸」的 SVG 加 .lightbox-svg-adapt。
+//
+// 现状：五大引擎已全部自带尺寸信息（Markmap 亦于 renderMarkmap 中写死 width/height/viewBox，
+//   原因见 test/markmap-svg-geometry.test.cjs），故正常路径都走「早返回」；本文件保留的夹具
+//   代表「靠外部 CSS 撑尺寸」这一类，用于守住兜底分支不被误删。
 const test = require('node:test');
 const assert = require('node:assert');
 const { buildEnv, cleanup, waitForEditor } = require('./helpers/app-env.cjs');
@@ -15,7 +19,7 @@ const { buildEnv, cleanup, waitForEditor } = require('./helpers/app-env.cjs');
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const RECT = (w, h) => ({ width: w, height: h, top: 0, left: 0, right: w, bottom: h, x: 0, y: 0 });
 
-// 与 renderMarkmap 产出同构：只有 class，没有 width/height/viewBox
+// 夹具：只用 class 定尺寸、不带 width/height/viewBox 的 SVG（代表「靠外部 CSS 撑尺寸」一类）
 function makeMarkmapLikeSvg(w, size) {
   const svg = w.document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'markmap-svg');
@@ -100,5 +104,26 @@ test('showLightbox 接线：查看器里的 SVG 已带 viewBox 与自适应类',
     assert.ok(inLightbox, '查看器内应包含 svg');
     assert.strictEqual(inLightbox.getAttribute('viewBox'), '0 0 640 420', '查看器内 svg 应带上 viewBox');
     assert.match(inLightbox.getAttribute('class'), /lightbox-svg-adapt/);
+  } finally { cleanup(w); }
+});
+
+test('Markmap 当前的产出（自带 width/height/viewBox）：早返回，由 .markmap-svg 规则缩放', async () => {
+  const { w } = await buildEnv();
+  const ed = await waitForEditor(w);
+  try {
+    // 与 renderMarkmap 现在的产出一致（见 test/markmap-svg-geometry.test.cjs）
+    const svg = w.document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'markmap-svg');
+    svg.setAttribute('width', '900');
+    svg.setAttribute('height', '420');
+    svg.setAttribute('viewBox', '0 0 900 420');
+    svg.getBoundingClientRect = () => RECT(900, 420);
+
+    const clone = ed.prepareSvgForLightbox(svg);
+
+    assert.strictEqual(clone.getAttribute('width'), '900', '不应改写引擎自带的尺寸');
+    assert.strictEqual(clone.getAttribute('viewBox'), '0 0 900 420', '不应改写自带 viewBox');
+    assert.ok(!/lightbox-svg-adapt/.test(clone.getAttribute('class') || ''), '自带尺寸者不加自适应类');
+    assert.match(clone.getAttribute('class'), /markmap-svg/, '类名必须保留：查看器靠它匹配 .markmap-svg 规则');
   } finally { cleanup(w); }
 });

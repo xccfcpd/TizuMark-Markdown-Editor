@@ -291,8 +291,31 @@ async function renderMarkmap(container, code, opts) {
   }
   container.style.height = DEFAULT_MARKMAP_HEIGHT + 'px';
   container.innerHTML = '';
+  // 量取容器尺寸，作为该 SVG 的显式坐标系；量不到（隐藏 / 未布局）时退到默认参考尺寸。
+  // 只用于写属性，不影响布局：容器宽高仍由 CSS（width:100% / 固定高度）决定。
+  const rect = typeof container.getBoundingClientRect === 'function' ? container.getBoundingClientRect() : null;
+  const boxW = Math.round((rect && rect.width) || 0) || DEFAULT_SVG_WIDTH;
+  const boxH = Math.round((rect && rect.height) || 0) || DEFAULT_MARKMAP_HEIGHT;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'markmap-svg');
+  // 显式写下 width/height/viewBox —— 这不是锦上添花，而是**必需**：
+  // markmap-view 构造时会 `this.zoom = d3zoom()...` 并把 zoom 绑到这个 <svg> 上，
+  // 而 d3-zoom 的 defaultExtent 在**没有 viewBox** 时执行
+  //   return [[0, 0], [e.width.baseVal.value, e.height.baseVal.value]]
+  // 只由 CSS（`.diagram-container .markmap-svg { width/height:100% }`）撑尺寸的 <svg>，
+  // 其 width.baseVal 是**相对长度**，一读即抛
+  //   NotSupportedError: Failed to read the 'value' property from 'SVGLength':
+  //   Could not resolve relative length
+  // 触发时机是**任何缩放手势**（滚轮 / 左键按下拖动 / 双击）——也就是「点一下思维导图」
+  // 就会抛全局错误；且它是**异步 Uncaught**（发生在 d3 的手势处理里），
+  // renderInto 的同步 try/catch 拦不住。
+  // 补上 viewBox 后 d3 会走 `viewBox.baseVal` 分支（绝对值，不再碰相对长度）；
+  // 再补 width/height 使该 SVG 自带确定尺寸、不再依赖作用域 CSS
+  // ——与 Mermaid / TikZ / plot / Graphviz 的产出对齐（这几个本来就自带三者，故从未中招）。
+  // viewBox 与渲染时的 CSS 尺寸一致 → 用户坐标系 1:1，markmap 内部按 px 算的 transform 不受影响。
+  svg.setAttribute('width', String(boxW));
+  svg.setAttribute('height', String(boxH));
+  svg.setAttribute('viewBox', '0 0 ' + boxW + ' ' + boxH);
   container.appendChild(svg);
   const transformer = new window.markmap.Transformer();
   const result = transformer.transform(source);
