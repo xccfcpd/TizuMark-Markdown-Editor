@@ -2174,6 +2174,23 @@ body.is-resizing .side-btn {
   user-select: none;
   -webkit-user-drag: none;
 }
+/* 图表 SVG 查看器容器（lightbox 内 svg 的直接父级）。
+   多数引擎（Mermaid / TikZ / plot / Graphviz）自带 width/height + viewBox，尺寸自洽；
+   少数（如 Markmap）原本靠 `.diagram-container .markmap-svg { width/height:100% }` 撑尺寸，
+   脱离该作用域后由 JS 补显式尺寸 + viewBox 并加 .lightbox-svg-adapt，
+   这里让它等比放大到视口内（preserveAspectRatio 默认 xMidYMid meet，自动留边居中且不变形）。 */
+.lightbox-svg-wrapper {
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.lightbox-svg-wrapper > svg.lightbox-svg-adapt {
+  width: 90vw;
+  height: 90vh;
+}
 
 .lightbox-hint {
   position: fixed;

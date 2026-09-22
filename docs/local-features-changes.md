@@ -39,6 +39,7 @@
 | `test/unified-admonitions.test.cjs` | ~250 | 20 例：语法解析 / 反缩进 / 行数中立 / 嵌套 / 防注入 |
 | `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
 | `test/export-details-expand.test.cjs` | ~120 | 5 例：默认克隆展开且不动原预览 / `expandDetails:false` 保持收起 / PDF 打印帧已展开 / HTML 导出保持收起且不丢内容 / 四路共用统一入口且仅 HTML 关闭展开 |
+| `test/lightbox-svg-size.test.cjs` | ~110 | 4 例：Markmap 类 SVG 补尺寸与 viewBox / 自带尺寸的 SVG 完全不动 / 量不到尺寸时不猜 / `showLightbox` 接线 |
 | `docs/local-features-changes.md` | — | 本文件 |
 
 > 为什么把纯函数抽成「兄弟模块」：`unified-renderer.js` 顶部 `require` 了 unified / remark 等
@@ -141,6 +142,27 @@
 >   收起即隐藏、内容会丢；展开后其输出与修 `???` 折叠前完全一致。
 > - **可交互 HTML → 保持收起**（`{ expandDetails: false }`）。内容不会丢，收起只是「等读者
 >   点开」，故 `???` 的「默认收起」语义在导出的 HTML 里同样成立，不替读者预先展开。
+
+### 2.7 修复：Markmap 在图表查看器里一片空白（2026-09-22）
+
+- **症状**：` ```markmap ` 渲染正常，但点击图表打开查看器（lightbox）后**一片空白**。
+- **根因**：`renderMarkmap` 生成的 `<svg>` **自身不带 width/height/viewBox**，尺寸完全依赖
+  `.diagram-container .markmap-svg { width:100%; height:100% }` 这条**有作用域的 CSS**。
+  而查看器（`misc-ui.js` 的 `showLightbox`）是把 SVG **克隆到 `.diagram-container` 之外**的
+  `.lightbox-svg-wrapper`（该类此前**没有任何 CSS 规则**）→ 作用域选择器失配 → 克隆的视口塌陷。
+  偏偏 Markmap 内部那个负责居中缩放的 `<g transform>` 是按**原容器尺寸**算好的，视口一变
+  整棵树就被推到视口之外 → 空白（同时 `initFit()` 因 `rect` 为 0 而**逐帧无限重试**，附带 CPU 空转）。
+- **为什么只有 Markmap 中招**：Mermaid 自带 `width` + `viewBox`；TikZ / plot 由本模块生成时
+  写死了 `width`/`height` + `viewBox`；Graphviz 亦然 —— 都不依赖外部 CSS。
+
+| 文件 | 改动 |
+|------|------|
+| `src/modules/misc-ui.js` | 新增 `prepareSvgForLightbox(src)`：**仅当源 SVG 不自带尺寸信息**（无 width/height 属性且无 viewBox）时，把真实渲染尺寸与 `viewBox` 显式写到克隆上，并加 `.lightbox-svg-adapt`；自带尺寸的引擎走早返回、完全不动。另外给 `initFit` 的重试加 30 帧上限，消除无限 rAF 空转 |
+| `src/styles.css` | 新增 `.lightbox-svg-wrapper`（限 90vw×90vh、flex 居中）与 `.lightbox-svg-wrapper > svg.lightbox-svg-adapt { width:90vw; height:90vh }`，使补过尺寸的 SVG 等比放大到视口内（`preserveAspectRatio` 默认 `xMidYMid meet`，不变形） |
+| `test/lightbox-svg-size.test.cjs` | 新增 4 例（见 §1 表） |
+
+> **关键取舍：不给「缺的属性」顺手补齐。** 若对 Mermaid（有 `width` 无 `height`）补一个 `height`，
+> 会改变它在查看器里的既有尺寸表现，故判定规则定为「**自带尺寸信息就一律不动**」。
 
 ---
 

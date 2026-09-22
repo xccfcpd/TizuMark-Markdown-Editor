@@ -204,6 +204,36 @@
           }
         }, true);
       },
+      // 克隆图表 SVG 供 lightbox 展示。
+      // 为什么不直接 cloneNode(true)：部分引擎（如 Markmap）生成的 <svg> **自身不带
+      // width/height**，尺寸完全靠 `.diagram-container .markmap-svg { width/height:100% }`
+      // 这类**有作用域的 CSS**撑开；而 lightbox 把 SVG 克隆到 `.diagram-container` 之外，
+      // 该 CSS 不再匹配 → 克隆的视口尺寸塌陷。偏偏 Markmap 内部那个负责居中缩放的
+      // `<g transform>` 是按**原容器尺寸**算好的，视口一变，整棵树就被推到视口之外，
+      // 表现为「点开一片空白」。
+      // 修法：把原节点的真实渲染尺寸显式写到克隆上，缺失时补 viewBox —— 克隆的用户坐标系
+      // 因此与原图一致，内容回到正确位置；再由 `.lightbox-svg-adapt` 等比放大到视口内。
+      // 自带尺寸/viewBox 的引擎（Mermaid / TikZ / plot / Graphviz）完全不受影响。
+      prepareSvgForLightbox(src) {
+        const clone = src.cloneNode(true);
+        // 引擎自带尺寸信息（有 width/height 属性或 viewBox）→ 一律不动，保持既有表现。
+        // Mermaid / TikZ / plot / Graphviz 都属此类，从这里早返回；
+        // 尤其不能"顺手补一个缺的属性"——给 Mermaid 补 height 会改变它在查看器里的既有尺寸。
+        const selfSized = !!(src.getAttribute('width') || src.getAttribute('height') || src.getAttribute('viewBox'));
+        if (selfSized) return clone;
+
+        const rect = typeof src.getBoundingClientRect === 'function' ? src.getBoundingClientRect() : null;
+        const pw = Math.round((rect && rect.width) || 0);
+        const ph = Math.round((rect && rect.height) || 0);
+        // 量不到真实尺寸（元素处于 display:none 等）时不猜：保持原样
+        if (!(pw > 0 && ph > 0)) return clone;
+
+        clone.setAttribute('width', String(pw));
+        clone.setAttribute('height', String(ph));
+        clone.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
+        clone.setAttribute('class', ((clone.getAttribute('class') || '') + ' lightbox-svg-adapt').trim());
+        return clone;
+      },
       showImageLightbox(src) {
         this.showLightbox(src, 'image');
       },
@@ -222,7 +252,7 @@
         if (type === 'svg') {
           el = document.createElement('div');
           el.className = 'lightbox-svg-wrapper';
-          el.appendChild(content.cloneNode(true));
+          el.appendChild(this.prepareSvgForLightbox(content));
         } else {
           el = document.createElement('img');
           el.src = content;
@@ -250,6 +280,7 @@
         };
   
         // Fit to viewport on open
+        let fitTries = 0;
         const initFit = () => {
           const rect = el.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
@@ -260,7 +291,10 @@
               scale = fitScale;
               updateTransform();
             }
-          } else {
+          } else if (++fitTries <= 30) {
+            // 尺寸可能尚未生效（图片加载中 / 布局未完成）→ 下一帧重试。
+            // 上限 30 帧（≈0.5s）：避免元素始终量不到尺寸时无限空转 —— 历史上 Markmap 在
+            // lightbox 里空白就是这种情形（每帧重试且永远拿不到尺寸）。
             requestAnimationFrame(initFit);
           }
         };
