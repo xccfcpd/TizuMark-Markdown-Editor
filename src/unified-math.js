@@ -35,7 +35,7 @@ const SI_UNIT = {
   meter: 'm', metre: 'm', second: 's', ampere: 'A', kelvin: 'K',
   mole: 'mol', candela: 'cd', gram: 'g', gramme: 'g', kilogram: 'kg',
   radian: 'rad', steradian: 'sr', hertz: 'Hz', newton: 'N', pascal: 'Pa',
-  joule: 'J', watt: 'W', volt: 'V', ohm: '\\Omega', siemens: 'S',
+  joule: 'J', watt: 'W', volt: 'V', coulomb: 'C', ohm: '\\Omega', siemens: 'S',
   farad: 'F', weber: 'Wb', tesla: 'T', henry: 'H', lumen: 'lm', lux: 'lx',
   becquerel: 'Bq', gray: 'Gy', sievert: 'Sv', katal: 'kat',
   liter: 'L', litre: 'L', tonne: 't', hectare: 'ha',

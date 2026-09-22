@@ -238,3 +238,16 @@ test('prose eqref: 无命令时原样返回（早退不改变任何字符）', (
   assert.strictEqual(M.expandProseEqref('', new Map()), '');
   assert.strictEqual(M.expandProseEqref(null, new Map()), null);
 });
+
+test('siunitx: 派生单位宏齐全（\\coulomb 曾漏登记 → KaTeX 红字）', () => {
+  assert.strictEqual(
+    M.expandSiunitx('\\SI{1.6e-19}{\\coulomb}'),
+    '1.6\\times 10^{-19}\\,\\mathrm{C}'
+  );
+  assert.strictEqual(M.expandSiunitx('\\si{\\coulomb}'), '\\,\\mathrm{C}');
+  // 顺带把 §6.4 表格里用到的其它单位宏一起锁住，避免再漏
+  assert.strictEqual(M.expandSiunitx('\\si{\\newton}'), '\\,\\mathrm{N}');
+  assert.strictEqual(M.expandSiunitx('\\si{\\watt}'), '\\,\\mathrm{W}');
+  assert.strictEqual(M.expandSiunitx('\\si{\\joule}'), '\\,\\mathrm{J}');
+  assert.strictEqual(M.expandSiunitx('\\si{\\metre\\per\\second}'), '\\,\\mathrm{m/s}');
+});

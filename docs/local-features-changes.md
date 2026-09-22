@@ -35,7 +35,7 @@
 | `src/unified-math.js` | ~243 | siunitx 兼容层 + 公式编号纯函数（渲染器兄弟模块，零依赖） |
 | `src/unified-admonitions.js` | ~206 | Admonition 纯函数（渲染器兄弟模块，零依赖） |
 | `test/diagrams.test.cjs` | ~330 | 31 例：PlantUML(6 图种) / D2 / TikZ（含 `\foreach`、`plot (\x,{…})`） / plot（数据文件、参数方程） / 表达式解析器安全 / 语言路由 |
-| `test/unified-math.test.cjs` | ~298 | 31 例：siunitx 展开（含 `\SIlist`） / 编号 / `\eqref`（数学内 + 正文） / `\tag` 注入 |
+| `test/unified-math.test.cjs` | ~310 | 32 例：siunitx 展开（含 `\SIlist`、`\coulomb` 等派生单位） / 编号 / `\eqref`（数学内 + 正文） / `\tag` 注入 |
 | `test/unified-admonitions.test.cjs` | ~300 | 25 例：语法解析（`!!!` / `???` / `:::` 容器） / 反缩进 / 行数中立 / 嵌套 / 防注入 |
 | `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
 | `test/export-details-expand.test.cjs` | ~120 | 5 例：默认克隆展开且不动原预览 / `expandDetails:false` 保持收起 / PDF 打印帧已展开 / HTML 导出保持收起且不丢内容 / 四路共用统一入口且仅 HTML 关闭展开 |
@@ -217,6 +217,7 @@
 | TikZ `\foreach`（§16.2） | **静默**少画（刻度线不出现） | `expandTikzForeach()` 在拆命令**之前**做纯文本展开：支持 `{0,1,...,8}`（步长由前两项差决定）与 `{1,...,5}`，以及「单条命令」/「花括号命令体」两种形式。**单条命令形式必须用 `;` 重新分隔**——初版漏了，多条命令被粘成一条、整段被当成一条路径，被单测当场抓到 |
 | TikZ `plot (\x, {…})`（§16.1 / §16.4） | **静默**不画曲线 | 路径内新增 `plot` 分支：以 `\x` 参数化，在 `domain` 上按 `samples` 采样成折线（因此能吃到线宽/颜色/虚线）。`domain` / `samples` 可写在 `\draw[...]` 或 `\begin{tikzpicture}[...]` —— **后者原先是死代码**（先 replace 掉 `\begin{tikzpicture}` 再匹配含它的正则，永远匹配不到），一并修掉。表达式按 PGF 语义：`sin(\x r)` 为弧度，无 `r`/`deg` 后缀的三角函数按**度**求值 |
 | plot `set parametric`（§17.4） | **静默画出错误图形**（被当成两条 y=f(x) 曲线） | 正确实现参数方程：`plot x(t), y(t)` 按 `trange` 对 `t` 采样，得到真正的 (x(t), y(t)) 轨迹（**不再猜**）；缺少第二个表达式时返回 null 走错误提示。`set trange [0:2*pi]` 需要表达式边界，故 `parseRangeArg` 改为**表达式感知**（原先 `parseFloat('2*pi')` 会读成 2） |
+| siunitx `\coulomb`（§6.4 对照表） | KaTeX **红字报错**（单位宏表漏登记 `coulomb`） | `SI_UNIT` 补 `coulomb: 'C'`。此前 `\SI{1.6e-19}{\coulomb}` 展开成 `\,\mathrm{\coulomb}`，`\mathrm` 内的未知命令被 KaTeX 标红；测试顺带锁住 `\newton` / `\watt` / `\joule` / `\metre\per\second`，避免再从同表漏登记 |
 
 测试：`test/unified-admonitions.test.cjs` 20 → **25**，`test/diagrams.test.cjs` 25 → **31**，全部本地通过（零 npm 依赖）。
 
