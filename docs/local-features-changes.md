@@ -37,6 +37,8 @@
 | `test/diagrams.test.cjs` | ~230 | 23 例：PlantUML(6 图种) / D2 / TikZ / plot / 表达式解析器安全 / 语言路由 |
 | `test/unified-math.test.cjs` | ~250 | 26 例：siunitx 展开 / 编号 / `\eqref` / `\tag` 注入 |
 | `test/unified-admonitions.test.cjs` | ~250 | 20 例：语法解析 / 反缩进 / 行数中立 / 嵌套 / 防注入 |
+| `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
+| `test/export-details-expand.test.cjs` | ~95 | 4 例：克隆展开且不动原预览 / PDF 打印帧已展开 / HTML 导出已展开且不丢内容 / 四路导出共用统一入口 |
 | `docs/local-features-changes.md` | — | 本文件 |
 
 > 为什么把纯函数抽成「兄弟模块」：`unified-renderer.js` 顶部 `require` 了 unified / remark 等
@@ -104,6 +106,39 @@
 3. `sync-lock` 运行 `npm install` 并把 `package-lock.json` 提交回 `more-function`（远程从 `4dde95f` 前进到 `7ff3d4b`）；
 4. **注意**：bot 用 `GITHUB_TOKEN` 推送**不会触发**其它 workflow，所以必须再有「人」的一次推送，CI 才会在「含新 lock 的提交」上运行。
 
+### 2.5 后续修复：`???` 折叠语义（2026-09-22）
+
+| 文件 | 改动 | 原因 |
+|------|------|------|
+| `src/controllers/preview-controller.js` | 强制展开选择器由 `details:not([open])` 改为 `details:not([open]):not([data-admonition])` | 该行早于 admonition 存在（自 `app.js` 经 `b24b227` 搬迁，**无注释、无测试覆盖**），会把 `???`（默认收起）与 `???+`（默认展开）拉平成「都展开」。**Markdown 手写的原生 `<details>` 行为保持不变** |
+| `src/modules/preview-post.js` | `processDiagrams` 内新增闭包 `withVisibleLayout(el, fn)`：渲染图表前临时展开祖先 `<details>`，渲染后恢复原状态 | `???` 收起时容器 `display:none`，量不到宽高 → ECharts 画布空白、Markmap 尺寸异常。TikZ / plot 是纯函数生成的 SVG 字符串，不依赖布局，不受影响 |
+| `test/admonition-collapse.test.cjs` | 新增 | 锁定行为（`???` 收起 / `???+` 展开）+ 选择器语义（不误伤原生 `<details>`） |
+
+> `withVisibleLayout` 刻意定义为 `processDiagrams` 的**内部闭包**而非模块顶层函数：`preview-post.js` 未包 IIFE，顶层声明会进入全局词法环境并与其它经典 `<script>` 共享命名空间，能不加就不加（`check-globals.cjs` 只校验 `window.X =` 赋值，管不到顶层声明，故此坑需自觉规避）。
+
+### 2.6 回归修复：导出丢折叠块内容（2026-09-22，由 §2.5 引入）
+
+**这是本轮自己引入、又当场修掉的回归，必须记录清楚。**
+
+- **症状**：`???` 折叠块里的内容在导出 **PDF / PNG** 时消失。
+- **根因**：四路导出（HTML / Word / PNG / PDF）**都是克隆预览**再产出结果，而 PDF 走系统打印、
+  PNG 走 `html2canvas`，二者都遵循真实布局 —— 收起即隐藏，隐藏内容直接丢失。
+  §2.5 之前预览里所有 `<details>` 被强制展开，克隆自然也是展开的；§2.5 之后克隆继承了
+  「收起」，内容就没了。另外 `styles.css` 的 `@media print` 中**没有**任何展开 `<details>` 的规则，
+  不存在兜底。
+- **修复**：把 `export.js` 的 4 个克隆点收敛为**唯一入口** `_clonePreviewForExport()`，
+  克隆后统一执行 `querySelectorAll('details:not([open])').forEach(el => el.open = true)`。
+
+| 文件 | 改动 |
+|------|------|
+| `src/modules/export.js` | 新增 `_clonePreviewForExport()`（克隆 + 展开折叠块）；`exportHTML` / `exportWord` / `exportImage` / `exportPDF` 四处 `this.preview.cloneNode(true)` 全部改为调用它 |
+| `test/export-details-expand.test.cjs` | 新增 4 例（见 §1 表） |
+
+> **收敛为单一入口的收益**：将来再加第 5 种导出，只要用 `_clonePreviewForExport()` 就自动获得该
+> 预处理；测试用例 4 会拦住直接用裸 `cloneNode` 的新代码。
+>
+> **语义取舍**：导出结果一律展开折叠块（与修复前完全一致）；「默认收起」只在**实时预览**中生效。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
@@ -142,17 +177,21 @@ ultra thick`、`dashed/dotted/dash dot`、`->`/`<-`/`<->`、`fill=`/`draw=`/`opa
 1. **体后无空行时最多 +1 行**：结束标记需独占一行，实现会「借用」其后一个空行以保持总行数不变；
    无空行可借（块在文件末尾或紧跟非缩进文本）时 +1，其后内容的 `data-source-line` 整体偏移 1 行
    （影响跳转精度，不影响渲染正确性）。已有测试锁定该行为。
-2. **`???` 折叠块默认收起**：`more-function` 的 `preview-controller.js` 中「强制展开所有
-   `<details>`」的逻辑**未改动** —— 若该逻辑存在且未排除 admonition，折叠块会被强制展开。
-   **待 CI/手工确认**：若发现 `???` 一进来就是展开的，需要把该选择器加上
-   `:not([data-admonition])`（本次未改，避免与他们的 `<details>` 相关修复冲突）。
+2. **`???` 折叠块默认收起** —— **已修复**（详见 §2.5）。原先会被 `preview-controller.js` 的
+   「强制展开所有 `<details>`」逻辑拉平（`???` 与 `???+` 都展开）。修复后二者语义区分，
+   且收起状态下图表尺寸仍正确（`withVisibleLayout` 临时展开祖先 `<details>`）。
+   **导出侧不受影响**：四路导出一律展开折叠块（§2.6），即「默认收起」只在实时预览中生效。
 
-### 3.5 ECharts 3D —— **未实现（需要你决策）**
+### 3.5 ECharts 3D —— **已决定放弃（2026-09-22 确认）**
 `more-function` 用的是 **echarts `^6.1.0`**，而 `echarts-gl`（3D 系列）目前仍为 echarts 5 的
 peer 依赖（`echarts ^5.1.2`）。强行加入 `echarts-gl` 会让 `npm ci` 因 peer 冲突失败 → CI 红。
-因此**本次未加入 echarts-gl**，ECharts 仅 2D。
-可选方案（需你定）：① 将 echarts 降到 `^5.6.0` 再加 `echarts-gl`；② 等 echarts-gl 支持 v6；
-③ 放弃 3D。**在未确认前不建议动依赖版本**。
+
+**结论：不引入 `echarts-gl`，ECharts 保持 2D，主版本维持 v6。**
+理由：为 3D 把 echarts 降到 `^5.6.0` 属于**主版本回退**，会牵动既有 2D 图表与导出快照
+（`_snapshotEchartsForExport`）等已验证路径，风险与收益不匹配。
+
+**后继注意**：若将来重启 3D，前置条件是 `echarts-gl` 发布支持 echarts v6 的版本；
+在那之前**不要**往 `package.json` 加 `echarts-gl`，否则 `npm ci` 会直接失败。
 
 ---
 
@@ -174,14 +213,11 @@ peer 依赖（`echarts ^5.1.2`）。强行加入 `echarts-gl` 会让 `npm ci` �
 
 - [x] lock 与 package.json 不一致的问题已解决（`package-lock.json` 由 CI 的 `sync-lock` 回推，
       已含 `d3` / `markmap-lib` / `markmap-view` 及其传递依赖）
-- [ ] `npm ci` 实际安装成功（**注意与 echarts v6 的 peer 关系**：lock 由 `npm install` 生成，
-      若存在 peer 冲突会在此处暴露）
-- [ ] `npm run prepare` 成功，产出 `src/lib/markmap/markmap.min.js`
-- [ ] `npm run check`（全部门禁）全绿
-- [ ] `npm test` 全量：重点观察 `render.test.cjs`、`unified-renderer.test.cjs`、`mhchem.test.cjs`、
-      `demo-features.test.cjs`（alert 与 admonition 共存）、`preview-post-math*.test.cjs`、
-      `export-*.test.cjs`、`slash-order.test.cjs`、`slash-command.test.cjs`、`i18n.test.cjs`、
-      `diagram-engines.test.cjs`
+- [x] `npm ci` 实际安装成功 —— CI run `35734868590`（commit `bc67c72`）全绿；与 echarts v6 的
+      peer 关系未触发冲突（lock 由 `npm install` 生成）
+- [x] `npm run prepare` 成功，产出及 `src/lib/markmap/*` —— 由 `npm ci` 生命周期触发，CI 未报错
+- [x] `npm run check`（全部门禁）全绿 —— 同上（`Coupling & global-export guards` 步骤）
+- [x] `npm test` 全量全绿 —— 同上（`Run tests` 步骤）
 - [ ] 手工冒烟（`npm run dev`）：依次插入并预览 PlantUML / D2 / TikZ / plot / Markmap / 编号公式 /
       siunitx / Admonition；确认 ECharts / Graphviz 等既有引擎仍正常
-- [ ] 手工确认 `??? note` 折叠块默认是否收起（见 §3.4 第 2 点）
+- [x] `??? note` 折叠块默认收起 —— 已修复并由 `test/admonition-collapse.test.cjs` 自动覆盖（§2.5）

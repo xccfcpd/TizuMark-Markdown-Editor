@@ -852,6 +852,18 @@
           return canvas;
         }
       },
+      // 导出前的预览克隆 —— 四路导出（HTML / Word / PNG / PDF）的唯一入口。
+      // 集中在此做「克隆 + 展开折叠块」两件事，避免各路径漏做同一预处理。
+      //
+      // 为什么要展开 <details>：预览里折叠块（`???` 等）默认收起属于**交互语义**，
+      // 但 PDF 走系统打印、PNG 走 html2canvas，二者都遵循真实布局 —— 收起即隐藏，
+      // 隐藏内容会直接从导出结果里消失。而在修 `???` 折叠语义之前，预览中的
+      // <details> 一律被强制展开，故此处展开恰好让四路导出的结果与修复前**完全一致**。
+      _clonePreviewForExport() {
+        const clone = this.preview.cloneNode(true);
+        clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
+        return clone;
+      },
       // Word 导出前的 DOM 预处理：把 Web 预览中 Word HTML 导入器会曲解的结构，
       // 转成 Word 能稳定渲染的等价形式，并内联关键样式。
       // 把 Web 预览 DOM 预处理成 Word 兼容结构。
@@ -1188,7 +1200,7 @@
           });
           if (!path) return;
   
-          const clone = this.preview.cloneNode(true);
+          const clone = this._clonePreviewForExport();
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
@@ -1662,7 +1674,7 @@
             hideOverlay();
           }, 120000);
   
-          const clone = this.preview.cloneNode(true);
+          const clone = this._clonePreviewForExport();
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
@@ -1842,7 +1854,7 @@
         try {
           this.setStatus(this.t('generatingImg'));
   
-          clone = this.preview.cloneNode(true);
+          clone = this._clonePreviewForExport();
           clone.style.position = 'fixed';
           clone.style.left = '-9999px';
           clone.style.top = '0';
@@ -1964,7 +1976,7 @@
           const pdfBaseName = String(this.activeTab.name || '').replace(/\.[^.]+$/, '');
           const safeBaseName = pdfBaseName || this.t('untitled') || 'document';
   
-          const clone = this.preview.cloneNode(true);
+          const clone = this._clonePreviewForExport();
           clone.querySelectorAll('.copy-btn, #abbr-data').forEach(el => el.remove());
 
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，PDF 稳定显示。

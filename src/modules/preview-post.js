@@ -528,6 +528,24 @@ async function processDiagrams(preview, opts) {
   const cache = opt.mermaidCache || null;
   const typeOf = (lang) => DR.diagramTypeFromLanguage(lang);
 
+  // 折叠型 admonition（???）内的容器处于 display:none 时量不到宽高，ECharts / Markmap
+  // 会据此得到 0 尺寸（画布空白、脑图不可见）。TikZ / plot 是纯函数生成的 SVG 字符串，
+  // 不依赖布局，不受影响。故仅在渲染期间临时展开祖先 <details>，渲染后立即恢复原状态，
+  // 兼顾 ??? 的「默认收起」语义与图表尺寸正确性。
+  // 定义为 processDiagrams 内部闭包（而非模块顶层函数）：本文件未包 IIFE，
+  // 顶层声明会进入全局词法环境并与其它经典 <script> 共享，能不加就不加。
+  const withVisibleLayout = async (el, fn) => {
+    const opened = [];
+    for (let node = el && el.parentElement; node; node = node.parentElement) {
+      if (node.tagName === 'DETAILS' && !node.open) { node.open = true; opened.push(node); }
+    }
+    try {
+      return await fn();
+    } finally {
+      for (let i = 0; i < opened.length; i++) opened[i].open = false;
+    }
+  };
+
   // 命中缓存（仅 SVG 引擎）：直接复用上次渲染结果，跳过重新渲染。
   // 异步：Graphviz 需要 await wasm 实例化。
   const paint = async (container, type, code) => {
@@ -536,7 +554,7 @@ async function processDiagrams(preview, opts) {
       container.innerHTML = cache.get(key);
       return true;
     }
-    const ok = await DR.renderInto(container, type, code, { isDark: !!opt.isDark });
+    const ok = await withVisibleLayout(container, () => DR.renderInto(container, type, code, { isDark: !!opt.isDark }));
     if (ok && key && DIAGRAM_HTML_CACHEABLE[type] && container.querySelector('svg')) {
       cache.set(key, container.innerHTML);
     }

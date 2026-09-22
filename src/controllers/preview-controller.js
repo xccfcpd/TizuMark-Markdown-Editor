@@ -189,7 +189,13 @@
           this.app.hideLargeFileNotice();
         }
 
-        this.app.preview.querySelectorAll('details:not([open])').forEach(el => el.open = true);
+        // 折叠型 admonition（???）**不在**强制展开范围内：??? 的语义就是默认收起。
+        // 本行早于 admonition 存在（自 app.js 经 b24b227 搬迁而来，未曾考虑 ??? 语义），
+        // 原样会把 ??? 与 ???+ 拉平成「都展开」；排除 data-admonition 后二者恢复区分。
+        // Markdown 里手写的原生 <details> 仍保持既有「渲染后展开」行为，不做改动。
+        // 注意：??? 内的 ECharts / Markmap 在 display:none 下量不到宽高，故
+        // processDiagrams 渲染图表时会临时展开其祖先 <details>（见 preview-post.js）。
+        this.app.preview.querySelectorAll('details:not([open]):not([data-admonition])').forEach(el => el.open = true);
         // 任务列表 checkbox：remark-gfm 默认输出 disabled 不可交互，渲染后移除 disabled 使其可点击
         this.app.preview.querySelectorAll('input[type="checkbox"][disabled]').forEach(cb => cb.removeAttribute('disabled'));
 
