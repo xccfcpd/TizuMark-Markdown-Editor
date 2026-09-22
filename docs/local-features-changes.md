@@ -38,7 +38,7 @@
 | `test/unified-math.test.cjs` | ~250 | 26 例：siunitx 展开 / 编号 / `\eqref` / `\tag` 注入 |
 | `test/unified-admonitions.test.cjs` | ~250 | 20 例：语法解析 / 反缩进 / 行数中立 / 嵌套 / 防注入 |
 | `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
-| `test/export-details-expand.test.cjs` | ~95 | 4 例：克隆展开且不动原预览 / PDF 打印帧已展开 / HTML 导出已展开且不丢内容 / 四路导出共用统一入口 |
+| `test/export-details-expand.test.cjs` | ~120 | 5 例：默认克隆展开且不动原预览 / `expandDetails:false` 保持收起 / PDF 打印帧已展开 / HTML 导出保持收起且不丢内容 / 四路共用统一入口且仅 HTML 关闭展开 |
 | `docs/local-features-changes.md` | — | 本文件 |
 
 > 为什么把纯函数抽成「兄弟模块」：`unified-renderer.js` 顶部 `require` 了 unified / remark 等
@@ -126,18 +126,21 @@
   §2.5 之前预览里所有 `<details>` 被强制展开，克隆自然也是展开的；§2.5 之后克隆继承了
   「收起」，内容就没了。另外 `styles.css` 的 `@media print` 中**没有**任何展开 `<details>` 的规则，
   不存在兜底。
-- **修复**：把 `export.js` 的 4 个克隆点收敛为**唯一入口** `_clonePreviewForExport()`，
-  克隆后统一执行 `querySelectorAll('details:not([open])').forEach(el => el.open = true)`。
+- **修复**：把 `export.js` 的 4 个克隆点收敛为**唯一入口** `_clonePreviewForExport(opts)`。
 
 | 文件 | 改动 |
 |------|------|
-| `src/modules/export.js` | 新增 `_clonePreviewForExport()`（克隆 + 展开折叠块）；`exportHTML` / `exportWord` / `exportImage` / `exportPDF` 四处 `this.preview.cloneNode(true)` 全部改为调用它 |
-| `test/export-details-expand.test.cjs` | 新增 4 例（见 §1 表） |
+| `src/modules/export.js` | 新增 `_clonePreviewForExport(opts)`；`exportHTML` / `exportWord` / `exportImage` / `exportPDF` 四处 `this.preview.cloneNode(true)` 全部改为调用它 |
+| `test/export-details-expand.test.cjs` | 新增 5 例（见 §1 表） |
 
 > **收敛为单一入口的收益**：将来再加第 5 种导出，只要用 `_clonePreviewForExport()` 就自动获得该
-> 预处理；测试用例 4 会拦住直接用裸 `cloneNode` 的新代码。
+> 预处理；测试用例 5 会拦住直接用裸 `cloneNode` 的新代码。
 >
-> **语义取舍**：导出结果一律展开折叠块（与修复前完全一致）；「默认收起」只在**实时预览**中生效。
+> **语义取舍（按产物类型分区，2026-09-22 二次修订）**：
+> - **固定版式 PDF / PNG / Word → 一律展开**。它们遵循真实布局（系统打印 / `html2canvas`），
+>   收起即隐藏、内容会丢；展开后其输出与修 `???` 折叠前完全一致。
+> - **可交互 HTML → 保持收起**（`{ expandDetails: false }`）。内容不会丢，收起只是「等读者
+>   点开」，故 `???` 的「默认收起」语义在导出的 HTML 里同样成立，不替读者预先展开。
 
 ---
 
@@ -180,7 +183,8 @@ ultra thick`、`dashed/dotted/dash dot`、`->`/`<-`/`<->`、`fill=`/`draw=`/`opa
 2. **`???` 折叠块默认收起** —— **已修复**（详见 §2.5）。原先会被 `preview-controller.js` 的
    「强制展开所有 `<details>`」逻辑拉平（`???` 与 `???+` 都展开）。修复后二者语义区分，
    且收起状态下图表尺寸仍正确（`withVisibleLayout` 临时展开祖先 `<details>`）。
-   **导出侧不受影响**：四路导出一律展开折叠块（§2.6），即「默认收起」只在实时预览中生效。
+   **导出侧按产物类型分区**（§2.6）：可交互的 **HTML 保持收起**，「默认收起」语义同样成立；
+   固定版式的 **PDF / PNG / Word 一律展开**（遵循真实布局，收起即隐藏会丢内容）。
 
 ### 3.5 ECharts 3D —— **已决定放弃（2026-09-22 确认）**
 `more-function` 用的是 **echarts `^6.1.0`**，而 `echarts-gl`（3D 系列）目前仍为 echarts 5 的

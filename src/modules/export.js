@@ -853,15 +853,22 @@
         }
       },
       // 导出前的预览克隆 —— 四路导出（HTML / Word / PNG / PDF）的唯一入口。
-      // 集中在此做「克隆 + 展开折叠块」两件事，避免各路径漏做同一预处理。
+      // 集中在此做「克隆 + 折叠块处理」，避免各路径各写一遍、漏掉同一预处理。
       //
-      // 为什么要展开 <details>：预览里折叠块（`???` 等）默认收起属于**交互语义**，
-      // 但 PDF 走系统打印、PNG 走 html2canvas，二者都遵循真实布局 —— 收起即隐藏，
-      // 隐藏内容会直接从导出结果里消失。而在修 `???` 折叠语义之前，预览中的
-      // <details> 一律被强制展开，故此处展开恰好让四路导出的结果与修复前**完全一致**。
-      _clonePreviewForExport() {
+      // expandDetails（默认 true）——是否把折叠块（`???` 等）全部展开：
+      //   · true  → PDF / PNG / Word。这些是**固定版式**：PDF 走系统打印、PNG 走
+      //             html2canvas，二者遵循真实布局，收起即隐藏，隐藏内容会直接从导出
+      //             结果里消失，故必须展开。这也让它们的输出与修 `???` 折叠语义之前
+      //             完全一致（当时预览里的 <details> 一律被强制展开）。
+      //   · false → HTML。产物是**可交互网页**，内容不会丢，收起只是「等读者点开」，
+      //             故保留实时预览所见的状态，使 `???` 的「默认收起」语义在导出的
+      //             HTML 里同样成立（而非替读者预先展开）。
+      _clonePreviewForExport(opts) {
         const clone = this.preview.cloneNode(true);
-        clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
+        const expandDetails = !opts || opts.expandDetails !== false;
+        if (expandDetails) {
+          clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
+        }
         return clone;
       },
       // Word 导出前的 DOM 预处理：把 Web 预览中 Word HTML 导入器会曲解的结构，
@@ -1200,7 +1207,7 @@
           });
           if (!path) return;
   
-          const clone = this._clonePreviewForExport();
+          const clone = this._clonePreviewForExport({ expandDetails: false });
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
