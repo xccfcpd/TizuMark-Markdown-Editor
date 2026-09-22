@@ -20,6 +20,7 @@ const {
   expandSiunitx,
   assignEquationNumbers,
   expandEqref,
+  expandProseEqref,
   insertEquationTag,
 } = require('./unified-math.js');
 const { convertAdmonitions, restoreAdmonitions } = require('./unified-admonitions.js');
@@ -1606,6 +1607,12 @@ function renderMarkdown(content, options) {
   // 必须排在 alert 之后（体内嵌套的提示块此时已还原完毕），且排在数学还原（第 8 步）
   // 与高亮（7.5）之前 —— 这样 admonition 正文里的公式 / ==高亮== 仍会被后续步骤正常处理。
   html = restoreAdmonitions(html, admonitionBlocks);
+
+  // 7.3 正文中的 \eqref / \ref（最典型写法：「由式 \eqref{eq:a} 可知…」）。
+  // KaTeX 的 delimiters 只认 $...$，写在正文里的命令进不了数学占位符，会原样显示成
+  // 反斜杠命令。本趟必须排在 admonition 还原之后（提示块正文此时才就位），
+  // 且排在数学还原之前 —— 此时数学仍是占位符，不会被误伤。
+  html = expandProseEqref(html, eqLabels);
 
   // 7.5 ==highlight== → <mark>（可由 extendedSyntax 关闭；原第 10 步前移到这里）
   // 必须排在数学还原（第 8 步）之前：公式还原后是一段纯文本 $...$，高亮处理会把

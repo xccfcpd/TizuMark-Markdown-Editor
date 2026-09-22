@@ -35,6 +35,9 @@ const ADMONITION_ALIASES = {
   bug: 'bug',
   example: 'example',
   quote: 'quote', cite: 'quote',
+  // `:::` 容器语法里的 `details`（可折叠）。配色/图标复用 note，
+  // 折叠语义由 parseContainerHeader 单独标记，无需新增 CSS 类型。
+  details: 'note',
 };
 
 const ADMONITION_TITLES = {
@@ -115,6 +118,40 @@ function convertAdmonitions(content) {
   return { content: text, blocks: blocks };
 }
 
+// ============================================================
+// `:::` 容器语法（markdown-it-container / MkDocs 风格）
+// ------------------------------------------------------------
+//   ::: note                ::: tip "自定义标题"
+//   正文（完整 Markdown）     正文
+//   :::                     :::
+//
+// 与 `!!!` 的关键区别：正文由**同名围栏**显式闭合，不靠缩进。由此：
+//   ① 开头/闭合各占一行，标记原地替换它们即天然保持总行数不变（`!!!` 需借空行）；
+//   ② 正文可完全不缩进，且支持同级嵌套（靠深度计数配对）。
+// 名字必须是已知的 admonition 类型，否则原样保留 —— 避免吃掉 `::: python` 这类习惯写法。
+// `::: details` 渲染为**默认收起**的折叠块。
+// ============================================================
+
+const CONTAINER_OPEN_RE = /^([ \t]*)(:{3,})[ \t]*([A-Za-z][\w-]*)?[ \t]*(.*)$/;
+const CONTAINER_CLOSE_RE = /^[ \t]*:{3,}[ \t]*$/;
+
+function parseContainerHeader(line) {
+  const m = String(line).match(CONTAINER_OPEN_RE);
+  if (!m) return null;
+  const name = (m[3] || '').toLowerCase();
+  if (!name) return null; // 纯 `:::` 行是闭合标记，不是开头
+  const type = ADMONITION_ALIASES[name];
+  if (!type) return null; // 未知名字：不当容器
+  let title = (m[4] || '').trim();
+  if (title) {
+    const q = title.match(/^"([\s\S]*)"$/) || title.match(/^'([\s\S]*)'$/);
+    if (q) title = q[1];
+  } else {
+    title = null;
+  }
+  return { type: type, title: title, collapsible: name === 'details' };
+}
+
 function convertAdmonitionsInto(content, blocks) {
   const lines = content.split('\n');
   const out = [];
@@ -135,6 +172,55 @@ function convertAdmonitionsInto(content, blocks) {
       continue;
     }
     if (inFence) { out.push(line); i++; continue; }
+
+    const chdr = parseContainerHeader(line);
+    if (chdr) {
+      // 配对闭合围栏：用深度计数，内层的闭合行**留给递归**处理，
+      // 这样嵌套的 `:::` 也能正确配对（只认"第一个冒号行"会把内层闭合当外层）。
+      const body = [];
+      let j = i + 1;
+      let depth = 1;
+      let inF = false;
+      let fch = '';
+      while (j < lines.length) {
+        const l = lines[j];
+        const fm2 = l.match(/^\s*(`{3,}|~{3,})/);
+        if (fm2) {
+          if (!inF) { inF = true; fch = fm2[1][0]; }
+          else if (fm2[1][0] === fch) inF = false;
+          body.push(l);
+          j++;
+          continue;
+        }
+        if (inF) { body.push(l); j++; continue; }
+        if (CONTAINER_CLOSE_RE.test(l)) {
+          depth--;
+          if (depth === 0) { j++; break; }
+          body.push(l);
+        } else if (parseContainerHeader(l)) {
+          depth++;
+          body.push(l);
+        } else {
+          body.push(l);
+        }
+        j++;
+      }
+      if (depth !== 0) { out.push(line); i++; continue; } // 未闭合：原样保留，不吞内容
+
+      const cidx = blocks.length;
+      blocks.push({
+        type: chdr.type,
+        title: chdr.title || (chdr.collapsible ? 'Details' : null),
+        collapsible: chdr.collapsible,
+        open: false, // `::: details` 默认收起
+      });
+      const cInner = convertAdmonitionsInto(body.join('\n'), blocks);
+      out.push('<!--ADMONITION_' + cidx + '-->');
+      for (const l of cInner.split('\n')) out.push(l);
+      out.push('<!--ADMONITION_' + cidx + '_END-->');
+      i = j;
+      continue;
+    }
 
     const hdr = parseAdmonitionHeader(line);
     if (!hdr) { out.push(line); i++; continue; }

@@ -567,7 +567,16 @@ async function processDiagrams(preview, opts) {
     const b = blocks[i];
     const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, i);
     b.pre.replaceWith(container);
-    await paint(container, b.type, b.code);
+    // 单个图出错绝不能影响后续图：这里再兜一层。
+    // renderInto 内部已有 try/catch，但它只覆盖**同步**异常；引擎若在 await 期间以
+    // 别的方式抛出（或 renderInto 被替换/扩展），整篇文档里靠前的一个图就会让后面
+    // 所有图都渲染不出来 —— 这个代价远大于"多一层 try"。
+    try {
+      await paint(container, b.type, b.code);
+    } catch (e) {
+      console.warn('[diagrams] ' + b.type + ' 渲染异常（已隔离，不影响其它图）：', e);
+      if (container && container.classList) container.classList.add('diagram-error');
+    }
   }
 
   // 2) 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
@@ -580,7 +589,12 @@ async function processDiagrams(preview, opts) {
     container.setAttribute('data-theme', themeKey);
     container.classList.remove('diagram-error');
     container.innerHTML = '';
-    await paint(container, type, code);
+    try {
+      await paint(container, type, code);
+    } catch (e) {
+      console.warn('[diagrams] 主题重绘 ' + type + ' 异常（已隔离）：', e);
+      if (container && container.classList) container.classList.add('diagram-error');
+    }
   }
 }
 

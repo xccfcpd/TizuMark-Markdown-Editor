@@ -190,3 +190,51 @@ test('端到端: 编号 + siunitx + eqref 组合', () => {
   const second = apply(list[1], '由\\eqref{eq:dist}得');
   assert.ok(second.indexOf('\\href{\\#eq-1}{(\\text{1})}') !== -1, 'eqref 应指向第 1 式');
 });
+
+/* ---------------- 2026-09-22 新增：\SIlist 与正文 \eqref ---------------- */
+
+test('siunitx: \\SIlist 数值列表（分号 / 逗号分隔）', () => {
+  assert.strictEqual(
+    M.expandSiunitx('\\SIlist{1;2;3}{\\metre}'),
+    '1,\\;2,\\;3\\,\\mathrm{m}'
+  );
+  assert.strictEqual(
+    M.expandSiunitx('\\SIlist{1,2}{\\kilo\\gram}'),
+    '1,\\;2\\,\\mathrm{kg}'
+  );
+});
+
+test('siunitx: \\SIlist 内的大数同样做千分位分组', () => {
+  assert.strictEqual(
+    M.expandSiunitx('\\SIlist{1000;2000}{\\metre}'),
+    '1\\,000,\\;2\\,000\\,\\mathrm{m}'
+  );
+});
+
+test('prose eqref: 正文中的 \\eqref / \\ref 展开为可点击链接', () => {
+  const labels = new Map([['eq:a', 1], ['eq:b', 2]]);
+  const out = M.expandProseEqref('由式 \\eqref{eq:a} 与 \\ref{eq:b} 可知', labels);
+  assert.ok(out.indexOf('<a class="eq-ref" href="#eq-1">(1)</a>') !== -1, out);
+  assert.ok(out.indexOf('<a class="eq-ref" href="#eq-2">2</a>') !== -1, out);
+  assert.strictEqual(out.indexOf('\\eqref'), -1, '不应残留命令');
+});
+
+test('prose eqref: 未知标签 → (?)；代码块与行内 code 内不受影响', () => {
+  const labels = new Map([['eq:a', 1]]);
+  assert.ok(M.expandProseEqref('见 \\eqref{nope}', labels).indexOf('(?)') !== -1);
+
+  const block = '<pre><code>\\eqref{eq:a}</code></pre>';
+  assert.strictEqual(M.expandProseEqref(block, labels), block, '代码块内原样保留');
+
+  const inline = '<p>写法 <code>\\eqref{eq:a}</code> 与 \\eqref{eq:a}</p>';
+  const out = M.expandProseEqref(inline, labels);
+  assert.ok(out.indexOf('<code>\\eqref{eq:a}</code>') !== -1, '行内 code 内原样保留');
+  assert.strictEqual((out.match(/#eq-1/g) || []).length, 1, 'code 外的应被替换，且只替换一次');
+});
+
+test('prose eqref: 无命令时原样返回（早退不改变任何字符）', () => {
+  const html = '<p>普通正文，无命令。</p>';
+  assert.strictEqual(M.expandProseEqref(html, new Map()), html);
+  assert.strictEqual(M.expandProseEqref('', new Map()), '');
+  assert.strictEqual(M.expandProseEqref(null, new Map()), null);
+});

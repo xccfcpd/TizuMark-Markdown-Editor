@@ -252,7 +252,16 @@
         if (type === 'svg') {
           el = document.createElement('div');
           el.className = 'lightbox-svg-wrapper';
-          el.appendChild(this.prepareSvgForLightbox(content));
+          // 尺寸补正是"尽力而为"：任何异常都回退到裸克隆，
+          // 绝不让"点开图表"这个动作本身抛出全局错误。
+          let node;
+          try {
+            node = this.prepareSvgForLightbox(content);
+          } catch (e) {
+            console.warn('[lightbox] 图表克隆尺寸补正失败，回退为原样克隆：', e);
+            node = content.cloneNode(true);
+          }
+          el.appendChild(node);
         } else {
           el = document.createElement('img');
           el.src = content;

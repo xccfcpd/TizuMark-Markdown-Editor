@@ -34,9 +34,9 @@
 | `src/modules/diagram-converters.js` | ~1706 | 图表语言转换器 + 原生 SVG 渲染器，**纯函数、IIFE 隔离**，唯一全局 `DiagramConverters` |
 | `src/unified-math.js` | ~243 | siunitx 兼容层 + 公式编号纯函数（渲染器兄弟模块，零依赖） |
 | `src/unified-admonitions.js` | ~206 | Admonition 纯函数（渲染器兄弟模块，零依赖） |
-| `test/diagrams.test.cjs` | ~230 | 23 例：PlantUML(6 图种) / D2 / TikZ / plot / 表达式解析器安全 / 语言路由 |
-| `test/unified-math.test.cjs` | ~250 | 26 例：siunitx 展开 / 编号 / `\eqref` / `\tag` 注入 |
-| `test/unified-admonitions.test.cjs` | ~250 | 20 例：语法解析 / 反缩进 / 行数中立 / 嵌套 / 防注入 |
+| `test/diagrams.test.cjs` | ~330 | 31 例：PlantUML(6 图种) / D2 / TikZ（含 `\foreach`、`plot (\x,{…})`） / plot（数据文件、参数方程） / 表达式解析器安全 / 语言路由 |
+| `test/unified-math.test.cjs` | ~298 | 31 例：siunitx 展开（含 `\SIlist`） / 编号 / `\eqref`（数学内 + 正文） / `\tag` 注入 |
+| `test/unified-admonitions.test.cjs` | ~300 | 25 例：语法解析（`!!!` / `???` / `:::` 容器） / 反缩进 / 行数中立 / 嵌套 / 防注入 |
 | `test/admonition-collapse.test.cjs` | ~85 | 2 例：`???` 收起 / `???+` 展开（行为）+ 强制展开选择器排除 admonition 且不误伤原生 `<details>`（选择器语义） |
 | `test/export-details-expand.test.cjs` | ~120 | 5 例：默认克隆展开且不动原预览 / `expandDetails:false` 保持收起 / PDF 打印帧已展开 / HTML 导出保持收起且不丢内容 / 四路共用统一入口且仅 HTML 关闭展开 |
 | `test/lightbox-svg-size.test.cjs` | ~110 | 4 例：Markmap 类 SVG 补尺寸与 viewBox / 自带尺寸的 SVG 完全不动 / 量不到尺寸时不猜 / `showLightbox` 接线 |
@@ -163,6 +163,62 @@
 
 > **关键取舍：不给「缺的属性」顺手补齐。** 若对 Mermaid（有 `width` 无 `height`）补一个 `height`，
 > 会改变它在查看器里的既有尺寸表现，故判定规则定为「**自带尺寸信息就一律不动**」。
+
+### 2.8 补齐：siunitx 列表、正文 `\eqref`、plot 数据文件（2026-09-22）
+
+来源：用户提供的全功能验证文档（`test.md` → 导出 `test.html`）实测取证。
+该 exe 构建于 `edc2093`，**早于 §2.7 的 lightbox 修复**，故 markmap 空白不在其中。
+
+| 缺口 | 现象 | 修法 |
+|------|------|------|
+| `\SIlist` / `\qtylist` | KaTeX 以红字报未知命令（未纳入 siunitx 兼容层） | `unified-math.js` 新增 `siFormatList()`（`1;2;3` → `1,\;2,\;3`；用 `\;` 而非空格——**数学模式会忽略普通空格**），并注册 `\SIlist` / `\qtylist`（含带选项与 `*` 形式） |
+| **正文**中的 `\eqref` / `\ref` | 原样显示成反斜杠命令。根因：KaTeX delimiters 只认 `$...$`，写在正文里的命令根本进不了数学占位符 | 新增 `expandProseEqref(html, labels)`：在**已还原的 HTML** 上替换，按 `<pre>`/`<code>` 分段跳过代码；输出普通 `<a class="eq-ref">`，不依赖 KaTeX trust 白名单。`unified-renderer.js` 在 admonition 还原之后、数学还原之前调用（此时数学仍是占位符，不会被误伤） |
+| plot 数据文件 | `plot '-' using 1:2 title 'data'` 判定失败 → 整图渲染失败 | `diagram-converters.js` 数据文件规格判定放宽为「`'-'` + 可选修饰」或裸 `-`；同时避免把 `plot -x**2 + 10` 这类**负号开头的表达式**误判成数据文件 |
+
+新增/扩展测试（均本地可跑，零 npm 依赖）：
+`test/unified-math.test.cjs` 26 → **31**（`\SIlist` ×2、正文 `\eqref` ×3），
+`test/diagrams.test.cjs` 23 → **25**（数据文件、负号不误判）。
+
+**仍未支持（需决策，见 §3）**：PlantUML `@startgantt`、TikZ 命名节点/相对布局、`:::` 容器语法。
+
+### 2.9 修复：lightbox 用 flex 导致「其它图点开空白」+ 渲染逐图隔离（2026-09-22）
+
+**回归来源：§2.7 自己引入。**
+
+- **症状**：Markmap 在查看器里正常了，但**其它图表点开一片空白**；运行期还伴随
+  `Uncaught NotSupportedError: Failed to read the 'value' property from 'SVGLength'`
+  （`lib/markmap/markmap.min.js`）。
+- **根因（图空白 —— 已定位）**：§2.7 给 `.lightbox-svg-wrapper` 加了 `display:flex`。
+  多数引擎的 SVG 自带 `width="100%"`（Mermaid 就是），父级一变成 flex 容器，百分比宽度
+  就失去确定的包含块 → 克隆体尺寸塌陷 → 空白。只有被显式赋 `90vw/90vh` 的 Markmap 不受
+  影响，所以症状恰好是「思维导图能看、其它图全黑」。
+  **修法**：移除 `display:flex`，恢复该容器原本的普通块级布局，仅对补过尺寸的那类
+  （`.lightbox-svg-adapt`）给显式大小。
+- **渲染逐图隔离**：`renderInto` 内部的 try/catch 只覆盖**同步**异常。`processDiagrams` 的
+  两处渲染循环（首次渲染 / 主题重绘）各自再兜一层 try —— 单图失败只能影响它自己，
+  绝不能让整篇文档里靠后的图都渲染不出来。
+- **lightbox 克隆加回退**：`prepareSvgForLightbox` 的尺寸补正降级为"尽力而为"，
+  任何异常都回退到裸克隆，不让「点开图表」这个动作本身抛全局错误。
+
+> **Markmap 的 SVGLength 报错尚无定论（待复现确认）**：已核实 markmap-view 0.18.12 用
+> `ResizeObserver` 观察 `foreignObject` 内的 div，回调里**直接调 `renderData()` 且无
+> try/catch** → 因此抛出的是**异步 Uncaught**（`renderInto` 的同步 try/catch 看不到）；
+> 而 `fit()` 内部有 `.catch(noop)`，不会逃逸。该库自身不读 `.baseVal`，报错落在被 esbuild
+> 一并打包进来的 d3 代码里。**需确认触发时机**（打开文档即出现 / 打字重渲染时 /
+> 点击思维导图时）后才能定位根因。
+
+### 2.10 补齐：`:::` 容器语法、TikZ `\foreach` / `plot (\x,{…})`、plot 参数方程（2026-09-22）
+
+来源：用户全功能验证文档 §18.3 / §16.2 / §16.4 / §17.4 的实测缺口。
+
+| 缺口 | 原状 | 现在 |
+|------|------|------|
+| `:::` 容器语法（§18.3） | **静默**变纯文本 | `unified-admonitions.js` 新增容器解析：`::: <type> [标题]` … `:::`，与 `!!!` 共用 blocks 与还原链路。正文由**同名围栏**显式闭合 → 开头/闭合各占一行，标记原地替换即天然保持总行数不变（不像 `!!!` 要借空行）；支持不缩进的同级嵌套（深度计数配对）；名字必须是已知类型，否则原样保留（不吃 `::: python`）；`::: details` → 默认收起的折叠块（配色复用 note，无需新增 CSS 类型） |
+| TikZ `\foreach`（§16.2） | **静默**少画（刻度线不出现） | `expandTikzForeach()` 在拆命令**之前**做纯文本展开：支持 `{0,1,...,8}`（步长由前两项差决定）与 `{1,...,5}`，以及「单条命令」/「花括号命令体」两种形式。**单条命令形式必须用 `;` 重新分隔**——初版漏了，多条命令被粘成一条、整段被当成一条路径，被单测当场抓到 |
+| TikZ `plot (\x, {…})`（§16.1 / §16.4） | **静默**不画曲线 | 路径内新增 `plot` 分支：以 `\x` 参数化，在 `domain` 上按 `samples` 采样成折线（因此能吃到线宽/颜色/虚线）。`domain` / `samples` 可写在 `\draw[...]` 或 `\begin{tikzpicture}[...]` —— **后者原先是死代码**（先 replace 掉 `\begin{tikzpicture}` 再匹配含它的正则，永远匹配不到），一并修掉。表达式按 PGF 语义：`sin(\x r)` 为弧度，无 `r`/`deg` 后缀的三角函数按**度**求值 |
+| plot `set parametric`（§17.4） | **静默画出错误图形**（被当成两条 y=f(x) 曲线） | 正确实现参数方程：`plot x(t), y(t)` 按 `trange` 对 `t` 采样，得到真正的 (x(t), y(t)) 轨迹（**不再猜**）；缺少第二个表达式时返回 null 走错误提示。`set trange [0:2*pi]` 需要表达式边界，故 `parseRangeArg` 改为**表达式感知**（原先 `parseFloat('2*pi')` 会读成 2） |
+
+测试：`test/unified-admonitions.test.cjs` 20 → **25**，`test/diagrams.test.cjs` 25 → **31**，全部本地通过（零 npm 依赖）。
 
 ---
 

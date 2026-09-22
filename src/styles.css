@@ -2178,18 +2178,21 @@ body.is-resizing .side-btn {
    多数引擎（Mermaid / TikZ / plot / Graphviz）自带 width/height + viewBox，尺寸自洽；
    少数（如 Markmap）原本靠 `.diagram-container .markmap-svg { width/height:100% }` 撑尺寸，
    脱离该作用域后由 JS 补显式尺寸 + viewBox 并加 .lightbox-svg-adapt，
-   这里让它等比放大到视口内（preserveAspectRatio 默认 xMidYMid meet，自动留边居中且不变形）。 */
+   这里让它等比放大到视口内（preserveAspectRatio 默认 xMidYMid meet，自动留边居中且不变形）。
+
+   ⚠️ 千万不要在这里用 display:flex —— 多数引擎的 SVG 自带 width="100%"（Mermaid 就是），
+   一旦父级变成 flex 容器，百分比宽度就失去确定的包含块，克隆体会尺寸塌陷 → 点开一片空白
+   （只有被显式赋 90vw/90vh 的 Markmap 不受影响，症状就是"思维导图能看、其它图全黑"）。
+   这里保持它原本的普通块级布局，仅对补过尺寸的那类给显式大小。 */
 .lightbox-svg-wrapper {
   max-width: 90vw;
   max-height: 90vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   cursor: default;
 }
 .lightbox-svg-wrapper > svg.lightbox-svg-adapt {
   width: 90vw;
   height: 90vh;
+  display: block;
 }
 
 .lightbox-hint {

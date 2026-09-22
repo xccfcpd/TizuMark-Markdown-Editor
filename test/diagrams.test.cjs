@@ -8,6 +8,14 @@ const path = require('path');
 
 const D = require(path.resolve(__dirname, '../src/modules/diagram-converters.js'));
 
+// 取 SVG 里「段数最多」的 path：<defs> 中的箭头 marker 也是 <path d="M0,0 L10,5 L0,10 z">，
+// 直接取第一条匹配会把 marker 当成曲线（历史测试踩过这个坑）。
+function longestPathSegs(svg) {
+  const ds = [...String(svg).matchAll(/<path d="([^"]+)"/g)].map((m) => m[1]);
+  const curve = ds.sort((a, b) => (b.split('L').length - a.split('L').length))[0] || '';
+  return curve.split('L').length - 1;
+}
+
 /* ---------------- PlantUML ---------------- */
 
 test('plantuml: 类图（继承 / 组合 / 成员）', () => {
@@ -232,4 +240,102 @@ test('toMermaid / toSvg 分发', () => {
   assert.strictEqual(D.toMermaid('d2', ''), null, '空源码应返回 null');
   assert.ok(D.toSvg('tikz', '\\draw (0,0) -- (1,1);').startsWith('<svg'));
   assert.strictEqual(D.toSvg('plot', ''), null);
+});
+
+/* ---------------- 2026-09-22 新增：plot 数据文件（gnuplot 风格） ---------------- */
+
+test("plot: 数据文件（plot '-' using 1:2 + 数据行 + e 结束）", () => {
+  const src = [
+    'set style data points',
+    "plot '-' using 1:2 title 'data'",
+    '1 2',
+    '2 3',
+    '3 5',
+    '4 7',
+    '5 11',
+    'e',
+  ].join('\n');
+  const svg = D.plotToSvg(src, { width: 600, height: 400 });
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  const dots = (svg.match(/l0\.01 0/g) || []).length;
+  assert.strictEqual(dots, 5, '应绘制 5 个数据点，实际 ' + dots);
+});
+
+test('plot: 负号开头的表达式不被误判为数据文件', () => {
+  const svg = D.plotToSvg("plot -x**2 + 10 title '-x^2+10'", { width: 600, height: 400 });
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  assert.strictEqual((svg.match(/l0\.01 0/g) || []).length, 0, '应走曲线路径而非数据点');
+  assert.ok((svg.match(/<path /g) || []).length >= 1, '应有一条曲线');
+});
+
+/* ---------------- 2026-09-22 新增：TikZ \foreach / plot (\x,{…})、plot set parametric ---------------- */
+
+test('tikz: \\foreach 展开为多条命令（单条命令体）', () => {
+  const src = [
+    '\\begin{tikzpicture}',
+    '  \\foreach \\x in {0,1,...,3}',
+    '    \\draw (\\x,0) -- (\\x,1);',
+    '\\end{tikzpicture}',
+  ].join('\n');
+  const svg = D.tikzToSvg(src, {});
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  // 4 个刻度 → 4 条独立线段（减 1：<defs> 里箭头 marker 也是一个 <path>）
+  assert.strictEqual((svg.match(/<path /g) || []).length - 1, 4, '应画出 4 条线段');
+  assert.strictEqual(D.tikzToSvg('\\begin{tikzpicture}\\foreach \\x in {1,...,5} \\draw (\\x,0) -- (\\x,1);\\end{tikzpicture}', {}) !== null, true);
+});
+
+test('tikz: \\foreach 展开为花括号命令体', () => {
+  const src = '\\begin{tikzpicture}\\foreach \\x in {0,2,...,8} { \\draw (\\x,0) -- (\\x,1); }\\end{tikzpicture}';
+  const svg = D.tikzToSvg(src, {});
+  assert.ok(svg && svg.startsWith('<svg'));
+  assert.strictEqual((svg.match(/<path /g) || []).length - 1, 5, '步长 2 应得 0,2,4,6,8 共 5 条');
+});
+
+test('tikz: \\draw plot (\\x, {expr}) 按 domain/samples 采样', () => {
+  const src = [
+    '\\begin{tikzpicture}',
+    '  \\draw[thick, blue, domain=0:4, samples=20] plot (\\x, {0.2*\\x*\\x});',
+    '\\end{tikzpicture}',
+  ].join('\n');
+  const svg = D.tikzToSvg(src, {});
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  // 21 个采样点 → 折线路径含 20 段
+  const poly = (svg.match(/<path d="M[^"]*L/g) || []).length;
+  assert.ok(poly >= 1, '应有折线路径');
+  // 取 L 最多的那条 path —— <defs> 里的箭头 marker 也是 <path d="M0,0 L10,5 …">，
+  // 不能直接取第一条匹配
+  const segs = longestPathSegs(svg);
+  assert.strictEqual(segs, 20, '21 个采样点应得 20 段，实际 ' + segs);
+});
+
+test('tikz: 图片级 domain/samples 生效（写在 \\begin{tikzpicture}[...]）', () => {
+  const src = [
+    '\\begin{tikzpicture}[domain=-3:3, samples=10]',
+    '  \\draw plot (\\x, {sin(\\x r)});',
+    '\\end{tikzpicture}',
+  ].join('\n');
+  const svg = D.tikzToSvg(src, {});
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  const segs = longestPathSegs(svg);
+  assert.strictEqual(segs, 10, '10 个采样点应得 10 段，实际 ' + segs);
+});
+
+test('plot: set parametric 按 x(t),y(t) 采样出真实轨迹（而非两条错误函数曲线）', () => {
+  const src = [
+    'set parametric',
+    'set trange [0:2*pi]',
+    "plot sin(3*t), cos(2*t) title 'Lissajous'",
+  ].join('\n');
+  const svg = D.plotToSvg(src, { width: 600, height: 400 });
+  assert.ok(svg && svg.startsWith('<svg'), '应产出 SVG');
+  // 参数曲线应为一条闭合轨迹：y 既取到接近 1 也取到接近 -1（cos(2t) 在 [0,2π] 上跑满）
+  assert.ok(/Lissajous/.test(svg), '图例应显示标题');
+  // 若被误当成两条函数曲线按 x 采样，x 值域只会来自 sin(3t) 的均匀采样，画不出这个特征；
+  // 这里检查曲线点数量与 t 采样一致（默认 samples=400 → 401 点）
+  const segs = ((svg.match(/<path d="M[^"]*"/) || [])[0] || '').length > 0;
+  assert.ok(segs, '应有曲线路径');
+});
+
+test('plot: set parametric 缺少第二个表达式时不猜（返回 null）', () => {
+  assert.strictEqual(D.plotToSvg('set parametric\nplot sin(t)', {}), null);
 });

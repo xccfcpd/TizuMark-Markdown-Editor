@@ -160,6 +160,16 @@ function siWrapUnit(body) {
   return t ? '\\,\\mathrm{' + t + '}' : '';
 }
 
+// siunitx 数值列表：`1;2;3` / `1,2,3` → `1,\;2,\;3`
+// （数学模式会忽略普通空格，故用 `\;` 而非 ' '，否则分隔在渲染后看不出来）
+function siFormatList(raw) {
+  return String(raw == null ? '' : raw)
+    .split(/[;,]/)
+    .map((x) => formatSiNumber(String(x).trim()))
+    .filter((x) => x !== '')
+    .join(',\\;');
+}
+
 // siunitx 命令展开（仅在数学块内调用）
 function expandSiunitx(tex) {
   if (!tex || tex.indexOf('\\') === -1) return tex;
@@ -169,6 +179,11 @@ function expandSiunitx(tex) {
     (m, a, b, u) => formatSiNumber(a) + '\\text{--}' + formatSiNumber(b) + siWrapUnit(expandSiUnit(u)));
   out = out.replace(/\\(?:SIrange|qtyrange)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
     (m, a, b, u) => formatSiNumber(a) + '\\text{--}' + formatSiNumber(b) + siWrapUnit(expandSiUnit(u)));
+  // \SIlist / \qtylist {a;b;c}{unit}（数值列表；分号或逗号分隔）
+  out = out.replace(/\\(?:SIlist|qtylist)\s*\[[^\]]*\]\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
+    (m, vals, u) => siFormatList(vals) + siWrapUnit(expandSiUnit(u)));
+  out = out.replace(/\\(?:SIlist|qtylist)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
+    (m, vals, u) => siFormatList(vals) + siWrapUnit(expandSiUnit(u)));
   // \SI / \qty {value}{unit}
   out = out.replace(/\\(?:SI|qty)\s*\[[^\]]*\]\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
     (m, a, u) => formatSiNumber(a) + siWrapUnit(expandSiUnit(u)));
@@ -245,6 +260,32 @@ function expandEqref(tex, labels) {
   return out;
 }
 
+// 正文（非数学）中的 \eqref / \ref。
+// 为什么需要单独一趟：KaTeX 的 delimiters 只认 $...$，写在正文里的 `\eqref{eq:x}`
+// 根本进不了数学占位符，于是原样显示成反斜杠命令（最典型的写法就是
+// 「由式 \eqref{eq:a} 可知…」）。本趟在**已还原的 HTML** 上做替换，
+// 跳过 <pre>/<code> 以免误改代码块里的示例文本；输出普通 HTML 链接，
+// 不依赖 KaTeX 的 trust 白名单（也就无需 \href）。
+function expandProseEqref(html, labels) {
+  if (!html || html.indexOf('\\') === -1) return html;
+  const map = labels || new Map();
+  const link = (name, parens) => {
+    const key = String(name == null ? '' : name).trim();
+    const n = map.get(key);
+    if (!n) return '<span class="eq-ref-missing">' + (parens ? '(?)' : '?') + '</span>';
+    const shown = parens ? '(' + n + ')' : String(n);
+    return '<a class="eq-ref" href="#eq-' + n + '">' + shown + '</a>';
+  };
+  const expand = (seg) => String(seg)
+    .replace(/\\eqref\s*\{([^{}]*)\}/g, (m, name) => link(name, true))
+    .replace(/(^|[^A-Za-z\\])\\ref\s*\{([^{}]*)\}/g, (m, pre, name) => pre + link(name, false));
+  // 以 <pre>/<code> 为界分段，命中片段原样保留
+  return String(html)
+    .split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/g)
+    .map((seg) => (/^<(?:pre|code)\b/i.test(seg) ? seg : expand(seg)))
+    .join('');
+}
+
 // 把 \tag{n} 插到块级公式闭合 $$ 之前（用户已写 \tag 时不插入）
 function insertEquationTag(tex, n) {
   if (!n) return tex;
@@ -260,7 +301,9 @@ module.exports = {
   expandSiunitx,
   expandSiUnit,
   formatSiNumber,
+  siFormatList,
   assignEquationNumbers,
   expandEqref,
+  expandProseEqref,
   insertEquationTag,
 };

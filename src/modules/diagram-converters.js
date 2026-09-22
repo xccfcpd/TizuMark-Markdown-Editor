@@ -1060,17 +1060,28 @@
     return m ? m[1] : t;
   }
 
+  // 范围边界：纯数字走 parseFloat 快路径，其余按**表达式**求值
+  // （gnuplot 里 `set trange [0:2*pi]` 很常见，用 parseFloat 会把 2*pi 读成 2）
+  function plotBound(s) {
+    const t = String(s == null ? '' : s).trim();
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(t)) return parseFloat(t);
+    const fn = compileExpr(t);
+    if (!fn) return NaN;
+    const v = fn(0);
+    return isFinite(v) ? v : NaN;
+  }
+
   function parseRangeArg(s) {
     let t = String(s || '').trim();
     const br = t.match(/^\[([\s\S]*)\]$/);
     if (br) t = br[1];
     const parts = t.split(/[:,]/).map((x) => x.trim()).filter(Boolean);
     if (parts.length >= 2) {
-      const a = parseFloat(parts[0]);
-      const b = parseFloat(parts[1]);
+      const a = plotBound(parts[0]);
+      const b = plotBound(parts[1]);
       if (isFinite(a) && isFinite(b) && b > a) return [a, b];
     }
-    const nums = t.split(/\s+/).map((x) => parseFloat(x)).filter((x) => isFinite(x));
+    const nums = t.split(/\s+/).map(plotBound).filter((x) => isFinite(x));
     if (nums.length >= 2 && nums[1] > nums[0]) return [nums[0], nums[1]];
     return null;
   }
@@ -1102,6 +1113,8 @@
     const cfg = {
       title: '', xlabel: 'x', ylabel: 'y', grid: false, samples: 400,
       xrange: null, yrange: null, series: [], points: [],
+      // 参数方程（gnuplot `set parametric`）：plot 的两个表达式是 x(t), y(t)
+      parametric: false, trange: null,
     };
     const lines = String(src == null ? '' : src).split('\n');
     let dataMode = false;
@@ -1114,6 +1127,7 @@
         if (nums.length >= 2) cfg.points.push([nums[0], nums[1]]);
         continue;
       }
+      if (/^unset\s+parametric\b/i.test(line)) { cfg.parametric = false; continue; }
       const sm = line.match(/^set\s+(\w+)\s*(.*)$/i);
       if (sm) {
         const key = sm[1].toLowerCase();
@@ -1125,12 +1139,49 @@
         else if (key === 'yrange') cfg.yrange = parseRangeArg(val) || cfg.yrange;
         else if (key === 'grid') cfg.grid = /^(on|true|1)$/i.test(val);
         else if (key === 'samples') { const n = parseInt(val, 10); if (n >= 10 && n <= 5000) cfg.samples = n; }
+        // `set parametric`（无参数即开启）；`set trange [0:2*pi]` 指定参数区间
+        else if (key === 'parametric') cfg.parametric = !/^(off|false|0|no)$/i.test(val);
+        else if (key === 'trange') cfg.trange = parseRangeArg(val) || cfg.trange;
         continue;
       }
       const pm = line.match(/^plot\s+([\s\S]+)$/i);
       if (pm) {
         const seg = stripComments(pm[1], { hashLine: true }).split(';')[0];
-        if (/^['"]?-['"]?\s*$/.test(seg.trim())) { dataMode = true; continue; }
+        // 数据文件规格：`'-'`（可带 `using 1:2`、`title "…"` 等修饰）或裸 `-`。
+        // 注意别把负号开头的表达式（如 `plot -x**2 + 10`）误判成数据文件。
+        const segTrim = seg.trim();
+        if (/^['"]-['"](\s|$)/.test(segTrim) || segTrim === '-') { dataMode = true; continue; }
+        // 参数方程：`set parametric` 下 plot 的两个表达式是 x(t), y(t)，**不能**当成两条
+        // 函数曲线按 x 采样 —— 那会画出"看着像样但完全不对"的图（原先就是被静默降级成这样）。
+        // 这里按 trange 对 t 采样，得到真正的 (x(t), y(t)) 轨迹。
+        if (cfg.parametric) {
+          const specs = splitTopLevel(seg, ',').map((s) => s.trim()).filter(Boolean);
+          if (specs.length < 2) return null; // 参数方程必须给出两个表达式，否则不猜
+          const stripKw = (s) => {
+            const kw = s.search(/\s(?:title|with|lt|lc|lw|color|linecolor)\b/i);
+            return (kw === -1 ? s : s.slice(0, kw)).trim();
+          };
+          const tm = specs.map((s) => s.match(/\btitle\s+("[^"]*"|'[^']*')/i)).find(Boolean);
+          const fx = compileExpr(stripKw(specs[0]));
+          const fy = compileExpr(stripKw(specs[1]));
+          if (!fx || !fy) return null;
+          const [ta, tb] = cfg.trange || [0, 1];
+          const n = Math.max(10, cfg.samples);
+          const pts = [];
+          for (let k = 0; k <= n; k++) {
+            const tv = ta + (tb - ta) * (k / n);
+            const xv = fx(tv);
+            const yv = fy(tv);
+            pts.push([isFinite(xv) ? xv : NaN, isFinite(yv) ? yv : NaN]);
+          }
+          cfg.series.push({
+            fn: null, pts: pts,
+            expr: specs.join(', '),
+            title: tm ? plotQuote(tm[1]) : 'x(t), y(t)',
+            style: 'lines', color: null,
+          });
+          continue;
+        }
         for (const part of splitTopLevel(seg, ',')) {
           const spec = part.trim();
           if (!spec) continue;
@@ -1170,6 +1221,8 @@
 
     // 采样
     const sampled = cfg.series.map((s) => {
+      // 参数方程已在解析阶段采完（x、y 都来自 t），不能再按 xrange 重采一次
+      if (s.pts) return s.pts;
       const pts = [];
       const [xa, xb] = cfg.xrange || [-10, 10];
       const n = Math.max(10, cfg.samples);
@@ -1326,8 +1379,108 @@
     return isFinite(v) ? v : NaN;
   }
 
+  // ---- TikZ plot 表达式 → JS ----
+  // PGF 的三角函数**默认按度**求值，写成 `sin(\x r)` 才是弧度。这里：
+  //   \x → x；`sin(... r)` 去掉 r（弧度正是 JS 的语义）；无 r/deg 后缀的三角函数按度→弧度包裹。
+  // 这样 `{0.2*\x*\x}` 与 `{sin(\x r)}` 都得到与 TikZ 一致的结果，而不是"看起来对"的猜。
+  function tikzDegToRad(s) {
+    return String(s).replace(
+      /\b(sin|cos|tan|sec|csc|cot)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g,
+      (m, fn, arg) => {
+        const a = String(arg).trim();
+        if (/\br\s*$/.test(a)) return fn + '(' + a.replace(/\br\s*$/, '').trim() + ')';
+        if (/\bdeg\s*$/.test(a)) return fn + '(' + a.replace(/\bdeg\s*$/, '').trim() + ' * pi / 180)';
+        return fn + '(' + a + ' * pi / 180)';
+      },
+    );
+  }
+
+  function compileTikzExpr(raw) {
+    let s = String(raw == null ? '' : raw).trim();
+    const br = s.match(/^\{([\s\S]*)\}$/);
+    if (br) s = br[1].trim();
+    s = s.replace(/\\x(?![A-Za-z])/g, 'x');
+    s = tikzDegToRad(s);
+    return compileExpr(s);
+  }
+
+  // ---- \foreach 展开 ----
+  // 支持 `\foreach \x in {0,1,...,8} <单条命令>;` 与 `\foreach \x in {a,b} { ... }`。
+  // 在拆分命令**之前**做纯文本展开，所以展开出来的命令会被后续流程正常识别。
+  function expandForeachList(spec) {
+    const parts = String(spec).split(',').map((x) => x.trim()).filter((x) => x !== '');
+    const dots = parts.indexOf('...');
+    if (dots === 1 && parts.length >= 3) {
+      // 形式二：{1,...,5} —— 步长 1
+      const a = plotBound(parts[0]);
+      const z = plotBound(parts[2]);
+      return foreachRange(a, 1, z);
+    }
+    if (dots === 2 && parts.length >= 4) {
+      // 形式一：{0,1,...,8} / {0,2,...,10} —— 步长由前两项差决定
+      const a = plotBound(parts[0]);
+      const b = plotBound(parts[1]);
+      const z = plotBound(parts[3]);
+      return foreachRange(a, b - a, z);
+    }
+    return parts;
+  }
+
+  function foreachRange(a, step, z) {
+    if (!isFinite(a) || !isFinite(step) || !isFinite(z) || step === 0) return [];
+    const out = [];
+    const up = step > 0;
+    if (up ? z < a : z > a) return out;
+    for (let v = a, guard = 0; guard < 500; guard++) {
+      if (up ? v > z + 1e-9 : v < z - 1e-9) break;
+      out.push(String(Number(v.toFixed(6))));
+      v += step;
+    }
+    return out;
+  }
+
+  function expandTikzForeach(src) {
+    let out = String(src == null ? '' : src);
+    for (let guard = 0; guard < 200; guard++) {
+      const m = out.match(/\\foreach\s*\\([A-Za-z]+)\s+in\s*\{([^{}]*)\}\s*/);
+      if (!m) break;
+      const varName = m[1];
+      const items = expandForeachList(m[2]);
+      let p = m.index + m[0].length;
+      let body;
+      let isBlock = false;
+      if (out.charAt(p) === '{') {
+        const end = matchBracket(out, p, '{', '}');
+        if (end < 0) break;
+        body = out.slice(p + 1, end);
+        p = end + 1;
+        isBlock = true; // 花括号体内自带 `;`，直接拼接即可
+      } else {
+        // 单条命令：扫到顶层 `;` 为止（该 `;` 不在 body 内，展开时要补回）
+        let depth = 0;
+        let q = p;
+        for (; q < out.length; q++) {
+          const c = out.charAt(q);
+          if (c === '{' || c === '[' || c === '(') depth++;
+          else if (c === '}' || c === ']' || c === ')') depth--;
+          else if (c === ';' && depth <= 0) break;
+        }
+        if (q >= out.length) break;
+        body = out.slice(p, q);
+        p = q + 1;
+      }
+      const reVar = new RegExp('\\\\' + varName + '(?![A-Za-z])', 'g');
+      // 单条命令形式必须用 `;` 重新分隔：否则多条命令会被粘成一条，
+      // 后续按 `;` 拆命令时只认到最后一个分号，整段被当成一条路径。
+      const expanded = items.map((v) => body.replace(reVar, v)).join(isBlock ? ' ' : '; ')
+        + (isBlock ? '' : ';');
+      out = out.slice(0, m.index) + expanded + out.slice(p);
+    }
+    return out;
+  }
+
   function tikzOptions(str) {
-    const st = { color: null, width: 0.4, dash: null, arrow: '', fill: null, opacity: 1, scale: 1, font: null };
+    const st = { color: null, width: 0.4, dash: null, arrow: '', fill: null, opacity: 1, scale: 1, font: null, domain: null, samples: 0 };
     const parts = splitTopLevel(String(str || ''), ',');
     for (const raw of parts) {
       const t = raw.trim();
@@ -1344,6 +1497,9 @@
       if (t === '<-' || t === '<|-' || t === 'latex-') { st.arrow = 'start'; continue; }
       if (t === '<->' || t === '<|-|>' || t === '<->>') { st.arrow = 'both'; continue; }
       if (/^scale\s*=/.test(t)) { const v = parseFloat(t.split('=')[1]); if (isFinite(v) && v > 0) st.scale = v; continue; }
+      // \draw[domain=0:4, samples=100] plot (\x, {...})；也可写在 \begin{tikzpicture}[...]
+      if (/^domain\s*=/.test(t)) { const r = parseRangeArg(t.slice(t.indexOf('=') + 1)); if (r) st.domain = r; continue; }
+      if (/^samples\s*=/.test(t)) { const n = parseInt(t.split('=')[1], 10); if (n >= 2 && n <= 2000) st.samples = n; continue; }
       if (/^opacity\s*=/.test(t)) { const v = parseFloat(t.split('=')[1]); if (isFinite(v)) st.opacity = Math.max(0, Math.min(1, v)); continue; }
       if (/^line\s+width\s*=/.test(t)) { const v = tikzLength(t.split('=')[1], 'pt'); if (isFinite(v)) st.width = v; continue; }
       if (/^font\s*=/.test(t)) {
@@ -1420,16 +1576,27 @@
 
   function tikzToSvg(src, opts) {
     const o = opts || {};
-    const text = String(src == null ? '' : src)
-      .replace(/\\begin\{tikzpicture\}/g, '')
-      .replace(/\\end\{tikzpicture\}/g, '');
+    const raw = String(src == null ? '' : src);
+    const text = expandTikzForeach(
+      raw
+        .replace(/\\begin\{tikzpicture\}(\s*\[[^\]]*\])?/g, '')
+        .replace(/\\end\{tikzpicture\}/g, ''),
+    );
     if (!/\\/.test(text)) return null;
 
     let globalScale = 1;
-    const head = text.match(/\\begin\{tikzpicture\}\s*\[([^\]]*)\]/);
+    let globalDomain = null;
+    let globalSamples = 0;
+    // 图片级选项要在剥离 \begin{tikzpicture} **之前**抓取：
+    // 原实现先 replace 掉 \begin{tikzpicture} 再 match 含它的正则 → 永远匹配不到（死代码），
+    // 等价于 `[scale=…]`/`[domain=…]` 全被忽略。
+    const head = raw.match(/\\begin\{tikzpicture\}\s*\[([^\]]*)\]/);
     if (head) {
       const gs = head[1].match(/scale\s*=\s*([\d.]+)/);
       if (gs) { const v = parseFloat(gs[1]); if (v > 0) globalScale = v; }
+      const gopts = tikzOptions(head[1]);
+      globalDomain = gopts.domain || null;
+      globalSamples = gopts.samples || 0;
     }
 
     // 拆命令
@@ -1555,6 +1722,39 @@
               items.push({ kind: 'text', at: anchorPt, text: tikzText(ntext), color: null, font: tikzOptions(nopt).font, anchor: anchor });
             }
             i = j;
+            continue;
+          }
+          if (op === 'plot') {
+            // TikZ 的 `\draw[...] plot (\x, {<expr>})`：以 \x 参数化，在 domain 上按 samples 采样。
+            // 默认 domain=-5:5（与 TikZ 一致）；结果是一段折线，因此能吃到线宽/颜色/虚线等样式。
+            const c = toks[i + 1];
+            if (c && c.t === 'coord') {
+              const parts = splitTopLevel(c.v, ',');
+              if (parts.length === 2) {
+                const fx = compileTikzExpr(parts[0]);
+                const fy = compileTikzExpr(parts[1]);
+                const dom = st.domain || globalDomain || [-5, 5];
+                const n = Math.max(2, Math.min(2000, st.samples || globalSamples || 50));
+                const pts = [];
+                if (fx && fy) {
+                  for (let k = 0; k <= n; k++) {
+                    const xv = dom[0] + (dom[1] - dom[0]) * (k / n);
+                    const px = fx(xv);
+                    const py = fy(xv);
+                    if (isFinite(px) && isFinite(py)) pts.push({ x: px, y: py });
+                  }
+                }
+                if (pts.length >= 2) {
+                  items.push({ kind: 'poly', pts: pts, style: st, fill: false, stroke: true });
+                  // 让紧跟在 plot 后面的 `node[right] {…}` 落在曲线末端（常见写法）
+                  prevPt = pts.length >= 2 ? pts[pts.length - 2] : null;
+                  lastPt = pts[pts.length - 1];
+                }
+              }
+              i += 2;
+              continue;
+            }
+            i++;
             continue;
           }
           if (op === 'grid' || op === 'arc' || op === 'sin' || op === 'cos' || op === 'controls' || op === 'parabola') {

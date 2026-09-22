@@ -142,6 +142,48 @@ test('admonition: 折叠形式生成 details，???+ 默认展开', () => {
   assert.ok(/<details[^>]*\sopen/.test(b), '???+ 默认展开');
 });
 
+/* ---------------- 2026-09-22 新增：`:::` 容器语法 ---------------- */
+
+test('container: ::: note 生成与 !!! 同构的块，且总行数不变', () => {
+  const src = ['前文', '', '::: note', '容器正文', ':::', '', '后文'].join('\n');
+  const r = render(src);
+  assert.ok(/alert alert-note admonition/.test(r.html), r.html);
+  assert.ok(r.html.indexOf('容器正文') !== -1);
+  assert.ok(/data-admonition="note"/.test(r.html));
+  assert.strictEqual(
+    r.conv.content.split('\n').length, src.split('\n').length,
+    '::: 容器必须保持总行数不变（data-source-line 映射的硬前提）',
+  );
+});
+
+test('container: 标题可带引号或不带', () => {
+  assert.ok(render('::: tip 自定义标题\n正文\n:::').html.indexOf('自定义标题') !== -1);
+  assert.ok(render('::: tip "带引号标题"\n正文\n:::').html.indexOf('带引号标题') !== -1);
+});
+
+test('container: ::: details 生成默认收起的折叠块', () => {
+  const html = render('::: details 折叠详情\n里面\n:::').html;
+  assert.ok(/<details[^>]*data-admonition/.test(html), html);
+  assert.ok(!/<details[^>]*\sopen/.test(html), '::: details 应默认收起');
+  assert.ok(html.indexOf('折叠详情') !== -1);
+});
+
+test('container: 支持不缩进的同级嵌套', () => {
+  const src = ['::: warning 外层', '外层正文', '::: tip 内层', '内层正文', ':::', ':::'].join('\n');
+  const r = render(src);
+  assert.ok(/alert-warning/.test(r.html), r.html);
+  assert.ok(/alert-tip/.test(r.html), '内层应生成独立的 tip 块');
+  assert.ok(r.html.indexOf('内层正文') !== -1);
+  assert.strictEqual(r.conv.content.split('\n').length, src.split('\n').length);
+});
+
+test('container: 未知名字与未闭合都原样保留（不吞内容）', () => {
+  const unknown = render('::: python\nprint(1)\n:::').html;
+  assert.ok(unknown.indexOf('::: python') !== -1, '未知名字应原样保留');
+  const unclosed = render('::: note\n没有闭合').html;
+  assert.ok(unclosed.indexOf('::: note') !== -1, '未闭合应原样保留');
+});
+
 test('admonition: details 使用 summary 且不产生嵌套 alert-title div', () => {
   const a = render('??? note "折叠"\n    内容').html;
   assert.ok(a.indexOf('<summary class="alert-title admonition-summary">') !== -1);
