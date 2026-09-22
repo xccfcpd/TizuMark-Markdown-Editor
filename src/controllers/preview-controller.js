@@ -208,8 +208,12 @@
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
         try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
         try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
+        // PlantUML / D2 → Mermaid 源码改写：必须在 processMermaid **之前**，
+        // 改写后由 processMermaid 统一渲染 / 缓存 / 主题重绘（不重复实现一套渲染）。
+        try { PreviewPost.convertMermaidSources(this.app.preview); } catch (e) { console.warn('[preview] Diagram convert error:', e); }
         try { await PreviewPost.processMermaid(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Mermaid error:', e); }
-        // 图表引擎（ECharts / WaveDrom / abcjs）：与 Mermaid 共用容器与样式链路
+        // 图表引擎（ECharts / WaveDrom / abcjs / Graphviz / TikZ / plot / Markmap）：
+        // 与 Mermaid 共用容器与样式链路
         try { await PreviewPost.processDiagrams(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Diagram error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
         try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }

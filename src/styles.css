@@ -2575,6 +2575,168 @@ body.is-resizing .side-btn {
   color: var(--color-danger);
 }
 
+/* ===== Admonition（MkDocs 风格 !!! / ??? 语法，2026-09 新增）=====
+   note / tip / important / warning / caution 直接复用上面的 .alert-* 配色；
+   下面补齐其余类型的配色（浅色 + 深色变体，与既有 alert 深色规则同构）。 */
+.alert-abstract,
+.alert-quote {
+  background: linear-gradient(135deg, rgba(100, 116, 139, 0.10) 0%, rgba(100, 116, 139, 0.05) 100%);
+  border-left-color: #64748b;
+  box-shadow: inset 0 0 0 1px rgba(100, 116, 139, 0.12);
+}
+
+.alert-abstract .alert-title,
+.alert-quote .alert-title {
+  color: #64748b;
+}
+
+.alert-info {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.04) 100%);
+  border-left-color: #3b82f6;
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.1);
+}
+
+.alert-info .alert-title {
+  color: #3b82f6;
+}
+
+.alert-example {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border-left-color: #0ea5e9;
+  box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.1);
+}
+
+.alert-example .alert-title {
+  color: #0ea5e9;
+}
+
+.alert-success {
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.08) 0%, rgba(22, 163, 74, 0.04) 100%);
+  border-left-color: #16a34a;
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.1);
+}
+
+.alert-success .alert-title {
+  color: #16a34a;
+}
+
+.alert-question {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
+  border-left-color: #8b5cf6;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.1);
+}
+
+.alert-question .alert-title {
+  color: #8b5cf6;
+}
+
+.alert-failure {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.04) 100%);
+  border-left-color: #ef4444;
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.1);
+}
+
+.alert-failure .alert-title {
+  color: #ef4444;
+}
+
+.alert-danger {
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.10) 0%, rgba(220, 38, 38, 0.05) 100%);
+  border-left-color: #dc2626;
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.12);
+}
+
+.alert-danger .alert-title {
+  color: #dc2626;
+}
+
+.alert-bug {
+  background: linear-gradient(135deg, rgba(185, 28, 28, 0.10) 0%, rgba(185, 28, 28, 0.05) 100%);
+  border-left-color: #b91c1c;
+  box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.12);
+}
+
+.alert-bug .alert-title {
+  color: #b91c1c;
+}
+
+[data-theme="dark"] .alert-abstract,
+[data-theme="dark"] .alert-quote { background: linear-gradient(135deg, rgba(100, 116, 139, 0.14) 0%, rgba(100, 116, 139, 0.07) 100%); }
+[data-theme="dark"] .alert-info { background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.06) 100%); }
+[data-theme="dark"] .alert-example { background: linear-gradient(135deg, rgba(14, 165, 233, 0.12) 0%, rgba(14, 165, 233, 0.06) 100%); }
+[data-theme="dark"] .alert-success { background: linear-gradient(135deg, rgba(22, 163, 74, 0.12) 0%, rgba(22, 163, 74, 0.06) 100%); }
+[data-theme="dark"] .alert-question { background: linear-gradient(135deg, rgba(139, 92, 246, 0.12) 0%, rgba(139, 92, 246, 0.06) 100%); }
+[data-theme="dark"] .alert-failure { background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(239, 68, 68, 0.06) 100%); }
+[data-theme="dark"] .alert-danger { background: linear-gradient(135deg, rgba(220, 38, 38, 0.14) 0%, rgba(220, 38, 38, 0.07) 100%); }
+[data-theme="dark"] .alert-bug { background: linear-gradient(135deg, rgba(185, 28, 28, 0.14) 0%, rgba(185, 28, 28, 0.07) 100%); }
+
+/* 折叠型 admonition（??? / ???+）：summary 复用 .alert-title 排版 */
+details.admonition > summary.admonition-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  margin-bottom: 0;
+}
+
+details.admonition > summary.admonition-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.admonition[open] > summary.admonition-summary {
+  margin-bottom: 6px;
+}
+
+details.admonition > summary.admonition-summary::after {
+  content: '▸';
+  margin-left: auto;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+
+details.admonition[open] > summary.admonition-summary::after {
+  transform: rotate(90deg);
+}
+
+/* PlantUML / D2 超出语法子集时的提示（原代码块完整保留在提示下方） */
+.diagram-fallback-note {
+  margin: 12px 0 4px;
+  padding: 6px 10px;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--text-secondary, #6b7280);
+  background-color: var(--bg-secondary);
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+}
+
+/* 自研 SVG（TikZ / plot）：坐标轴与文字用 currentColor，随主题自动适配 */
+.diagram-container svg.tm-diagram-svg {
+  color: var(--text-primary);
+}
+
+/* Markmap：SVG 撑满容器 */
+.diagram-container .markmap-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 公式交叉引用（\eqref / \ref 经 KaTeX \href 生成）与跳转目标高亮 */
+.katex a {
+  color: var(--accent-color);
+  text-decoration: none;
+}
+
+.katex a:hover {
+  text-decoration: underline;
+}
+
+.math-display:target,
+.katex-display:target {
+  background-color: rgba(59, 130, 246, 0.12);
+  border-radius: 4px;
+}
+
 /* Dark theme alerts */
 [data-theme="dark"] .alert-note { background: linear-gradient(135deg, rgba(var(--alert-note-rgb), 0.12) 0%, rgba(var(--alert-note-rgb), 0.06) 100%); box-shadow: inset 0 0 0 1px rgba(var(--alert-note-rgb), 0.15); }
 [data-theme="dark"] .alert-tip { background: linear-gradient(135deg, rgba(var(--alert-tip-rgb), 0.12) 0%, rgba(var(--alert-tip-rgb), 0.06) 100%); box-shadow: inset 0 0 0 1px rgba(var(--alert-tip-rgb), 0.15); }

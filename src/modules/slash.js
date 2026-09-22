@@ -34,6 +34,18 @@
           { action: 'insert-toc', label: '目录 [TOC]', hint: '[TOC]', keywords: ['toc', 'contents', 'mulu'] },
           { action: 'insert-math-block', label: '数学公式', hint: '$$', keywords: ['math', 'formula', 'gongshi', 'tex', 'latex'] },
           { action: 'insert-mermaid', label: 'Mermaid 图表', hint: '```mermaid', keywords: ['mermaid', 'flow', 'liucheng', 'tu', 'chart'] },
+          // 2026-09 新增：本地图表引擎（PlantUML/D2 转 Mermaid；TikZ/plot 自研 SVG；Markmap 思维导图）
+          { action: 'insert-plantuml', label: 'PlantUML 图', hint: '```plantuml', keywords: ['plantuml', 'uml', 'puml', 'leitu', 'shixu'] },
+          { action: 'insert-d2', label: 'D2 图', hint: '```d2', keywords: ['d2', 'diagram', 'tu'] },
+          { action: 'insert-tikz', label: 'TikZ 绘图', hint: '```tikz', keywords: ['tikz', 'pgf', 'latex', 'huitu', 'shapes'] },
+          { action: 'insert-plot', label: '函数绘图', hint: '```plot', keywords: ['plot', 'gnuplot', 'hanshu', 'quxian', 'curve'] },
+          { action: 'insert-markmap', label: '思维导图', hint: '```markmap', keywords: ['markmap', 'mindmap', 'siwei', 'daotu', 'naotu'] },
+          // 数学增强：公式自动编号（\label / \eqref）与 siunitx 物理量
+          { action: 'insert-math-numbered', label: '编号公式', hint: '$$ \\label', keywords: ['math', 'label', 'eqref', 'bianhao', 'gongshi'] },
+          { action: 'insert-siunitx', label: '物理量 (siunitx)', hint: '\\SI', keywords: ['siunitx', 'si', 'unit', 'wuli', 'danwei'] },
+          // Admonition（MkDocs 风格 !!! 语法）
+          { action: 'insert-admonition', label: 'Admonition 提示', hint: '!!! note', keywords: ['admonition', 'note', 'tishi', 'callout'] },
+          { action: 'insert-admonition-collapsible', label: 'Admonition 折叠', hint: '??? note', keywords: ['admonition', 'collapse', 'zhedie', 'details'] },
           { action: 'insert-callout-note', label: 'Note 提示', hint: '> [!NOTE]', keywords: ['note', 'callout', 'tishi', 'prompt'] },
           { action: 'insert-callout-tip', label: 'Tip 建议', hint: '> [!TIP]', keywords: ['tip', 'callout', 'jianyi', 'suggestion'] },
           { action: 'insert-callout-warning', label: 'Warning 警告', hint: '> [!WARNING]', keywords: ['warning', 'callout', 'jinggao', 'alert'] },
@@ -254,6 +266,9 @@
           'insert-quote', 'insert-code-block', 'insert-table',
           'insert-link', 'insert-image', 'insert-bold', 'insert-italic', 'insert-inline-code',
           'insert-hr', 'insert-toc', 'insert-math-block', 'insert-mermaid',
+          'insert-plantuml', 'insert-d2', 'insert-tikz', 'insert-plot', 'insert-markmap',
+          'insert-math-numbered', 'insert-siunitx',
+          'insert-admonition', 'insert-admonition-collapsible',
           'insert-callout-note', 'insert-callout-tip', 'insert-callout-warning', 'insert-callout-important', 'insert-callout-caution',
           'insert-strikethrough', 'insert-highlight',
           'insert-h4', 'insert-h5', 'insert-h6',

@@ -15,7 +15,9 @@ function typeSlash(ed, line, ch) {
 
 test('slash-order: _buildSlashBaseCatalogIds 含全部 28 项', async () => withEditor({ captureInitErr: true }, async (w, ed) => {
   const ids = ed._buildSlashBaseCatalogIds();
-  assert.strictEqual(ids.length, 28, '基础目录应为 28 项，实际: ' + ids.length);
+  // 目录规模随功能增长：28 → 37（2026-09 新增 9 项：PlantUML/D2/TikZ/plot/Markmap/
+  // 编号公式/siunitx/Admonition 提示/Admonition 折叠）
+  assert.strictEqual(ids.length, 37, '基础目录应为 37 项，实际: ' + ids.length);
   assert.ok(ids.includes('insert-h1') && ids.includes('insert-h6'), '应含首尾标题');
   // 默认顺序：前置高频项置顶
   assert.strictEqual(
@@ -70,7 +72,7 @@ test('slash-order: _buildSlashCommands 反映自定义顺序与隐藏', async ()
   assert.strictEqual(actions[0], 'insert-image', '首项应为 insert-image');
   assert.ok(!actions.includes('insert-table'), '隐藏的 insert-table 不应出现');
   // 未列出的其余项按默认序补在后面，总数 = 28 - 1(隐藏) = 27
-  assert.strictEqual(cmds.length, 27, '总数应为 27，实际: ' + cmds.length);
+  assert.strictEqual(cmds.length, 36, '总数应为 36，实际: ' + cmds.length);
 }));
 
 test('slash-order: _moveSlashOrderItem 在草稿内移动', async () => withEditor({ captureInitErr: true }, async (w, ed) => {
@@ -86,13 +88,13 @@ test('slash-order: showSlashOrderDialog 初始化草稿为全 28 项、对话框
   ed.settings.slashHidden = undefined;
   ed.showSlashOrderDialog();
   assert.strictEqual(ed._slashOrderOpen, true, '对话框应标记为打开');
-  assert.strictEqual(ed._slashOrderDraft.length, 28, '草稿应为 28 项');
+  assert.strictEqual(ed._slashOrderDraft.length, 37, '草稿应为 37 项');
   // 默认仅字体类（加粗/斜体/删除线/高亮）隐藏，其余开关默认开启
   assert.strictEqual(ed._slashHiddenDraft.size, 4, '默认仅字体类 4 项隐藏，实际: ' + ed._slashHiddenDraft.size);
   assert.ok(ed._slashHiddenDraft.has('insert-bold'), '加粗应默认隐藏');
   assert.ok(!ed._slashHiddenDraft.has('insert-h1'), '非字体项（如标题1）默认应显示');
   const list = w.document.getElementById('slash-order-list');
-  assert.strictEqual(list.children.length, 28, '对话框应渲染 28 行，实际: ' + list.children.length);
+  assert.strictEqual(list.children.length, 37, '对话框应渲染 37 行，实际: ' + list.children.length);
   assert.strictEqual(w.document.getElementById('slash-order-dialog').classList.contains('hidden'), false, '对话框应可见');
 }));
 
@@ -129,11 +131,11 @@ test('slash-order: applySlashOrder 写盘、清缓存、面板仅显示非隐藏
   assert.strictEqual(ed._slashOrderOpen, false, '保存后对话框应关闭');
   assert.ok(ed.settings.slashHidden.includes('insert-image'), '设置应记录隐藏项');
   assert.strictEqual(ed._slashCommands, null, '应清缓存');
-  // 面板仅显示 23 项（默认字体类 4 项隐藏 + 本测试隐藏的「图片」1 项），无「图片」
+  // 面板仅显示 32 项（默认字体类 4 项隐藏 + 本测试隐藏的「图片」1 项），无「图片」
   ed.cm.setValue('');
   typeSlash(ed, 0, 0);
   const items = w.document.querySelectorAll('#slash-panel .slash-item');
-  assert.strictEqual(items.length, 23, '面板应显示 23 项，实际: ' + items.length);
+  assert.strictEqual(items.length, 32, '面板应显示 32 项，实际: ' + items.length);
   const labels = Array.from(items).map((i) => i.querySelector('.slash-label').textContent);
   assert.ok(!labels.includes('图片'), '面板不应含被隐藏的「图片」');
 }));

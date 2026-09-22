@@ -69,7 +69,7 @@ test('slash: 列表已优选——上标/下标已移除，高频置顶', async 
   // 上标/下标为纯 HTML 边缘标签，已从面板移除（手写即可）
   assert.ok(!cmds.some((c) => c.action === 'insert-superscript'), '上标应已移除');
   assert.ok(!cmds.some((c) => c.action === 'insert-subscript'), '下标应已移除');
-  assert.strictEqual(cmds.length, 28, '优选后应为 28 项，实际: ' + cmds.length);
+  assert.strictEqual(cmds.length, 37, '优选后应为 37 项，实际: ' + cmds.length);
   // 高频块级语法置顶：标题1/2/3 → 无序/有序/任务列表
   const front = cmds.slice(0, 6).map((c) => c.action).join(',');
   assert.strictEqual(front, 'insert-h1,insert-h2,insert-h3,insert-ul,insert-ol,insert-task',

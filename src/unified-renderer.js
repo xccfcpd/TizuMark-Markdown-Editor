@@ -13,6 +13,16 @@ try {
 }
 const rehypeStringify = require('rehype-stringify').default || require('rehype-stringify');
 const { visit } = require('unist-util-visit');
+// 数学增强（siunitx 兼容层 + 公式自动编号 / \eqref 交叉引用）与 Admonition（!!! / ???）：
+// 纯函数抽到兄弟模块，便于在未 npm install 的环境做零依赖单测
+// （test/unified-math.test.cjs / test/unified-admonitions.test.cjs）。
+const {
+  expandSiunitx,
+  assignEquationNumbers,
+  expandEqref,
+  insertEquationTag,
+} = require('./unified-math.js');
+const { convertAdmonitions, restoreAdmonitions } = require('./unified-admonitions.js');
 
 // ---- remark plugin: add data-source-line from AST position ----
 function remarkSourceLine() {
@@ -838,16 +848,25 @@ function decodeHtmlEntities(s) {
     .replace(/&nbsp;/g, '\u00A0');
 }
 
-function restoreMathBlocks(html, placeholders) {
+function restoreMathBlocks(html, placeholders, eqLabels) {
+  const labels = eqLabels || new Map();
   let result = html;
   for (let idx = 0; idx < placeholders.length; idx++) {
     const ph = placeholders[idx];
-    const text = typeof ph === 'string' ? ph : ph.text;
+    let text = typeof ph === 'string' ? ph : ph.text;
+    // 变换顺序固定：剥离残留 \label → siunitx 展开 → 交叉引用展开 → 追加编号 tag。
+    // \label 在主路径上已由 assignEquationNumbers 剥离，此处兜底脚注等旁路（避免
+    // KaTeX 报未知命令）；\tag 放最后，避免其生成内容被前面的正则二次处理。
+    text = String(text).replace(/\\label\s*\{[^{}]*\}/g, '');
+    text = expandSiunitx(text);
+    text = expandEqref(text, labels);
+    if (ph && ph.display && ph.eqNumber) text = insertEquationTag(text, ph.eqNumber);
     const escaped = escapeHTML(decodeHtmlEntities(text));
     if (ph.display) {
       // 显示数学：占位符是 <div class="math-placeholder" data-math-idx="N" ...>，替换为带 data-source-line 的 span
+      const eqAttr = ph.eqNumber ? ' data-eq-number="' + ph.eqNumber + '"' : '';
       const marker = '<div class="math-placeholder" data-math-idx="' + idx + '" data-source-line="' + ph.line + '"></div>';
-      const wrapped = '<span class="math-display" data-source-line="' + ph.line + '">' + escaped + '</span>';
+      const wrapped = '<span class="math-display" data-source-line="' + ph.line + '"' + eqAttr + '>' + escaped + '</span>';
       result = result.split(marker).join(wrapped);
     } else {
       // 行内数学：占位符是 <!--MATHBLOCK_N-->，直接恢复。
@@ -1518,9 +1537,16 @@ function renderMarkdown(content, options) {
   // 2. Guard math blocks
   const mathResult = guardMathBlocks(abbrResult.content);
   const placeholders = mathResult.placeholders;
+  // 2.5 公式自动编号：仅对带 \label{} 的块级公式编号，并建立 label → 序号映射（供 \eqref 使用）
+  const eqLabels = assignEquationNumbers(placeholders);
+
+  // 2.8 Admonition（!!! / ???）：必须先于 alert —— 只有先把缩进体反缩进成顶层文本，
+  // 体内若写的 `> [!NOTE]` 才能被下一步的 convertAlerts 识别。
+  const admonitionResult = convertAdmonitions(mathResult.content);
+  const admonitionBlocks = admonitionResult.blocks;
 
   // 3. Convert alerts to placeholders
-  const alertResult = convertAlerts(mathResult.content);
+  const alertResult = convertAlerts(admonitionResult.content);
   const alertBlocks = alertResult.alertBlocks;
 
   // 4. Convert definition lists
@@ -1576,6 +1602,11 @@ function renderMarkdown(content, options) {
   // 占位符源码（2026-09-13 同类审计）。
   html = restoreAlerts(html, alertBlocks);
 
+  // 7.2 Restore admonitions
+  // 必须排在 alert 之后（体内嵌套的提示块此时已还原完毕），且排在数学还原（第 8 步）
+  // 与高亮（7.5）之前 —— 这样 admonition 正文里的公式 / ==高亮== 仍会被后续步骤正常处理。
+  html = restoreAdmonitions(html, admonitionBlocks);
+
   // 7.5 ==highlight== → <mark>（可由 extendedSyntax 关闭；原第 10 步前移到这里）
   // 必须排在数学还原（第 8 步）之前：公式还原后是一段纯文本 $...$，高亮处理会把
   // 公式内部的成对 == 当成高亮切碎（$a == b == c$ → $a <mark> b </mark> c$），
@@ -1585,8 +1616,8 @@ function renderMarkdown(content, options) {
     html = convertHighlights(html);
   }
 
-  // 8. Restore math blocks
-  html = restoreMathBlocks(html, placeholders);
+  // 8. Restore math blocks（含 siunitx 展开、\eqref 交叉引用、公式编号）
+  html = restoreMathBlocks(html, placeholders, eqLabels);
 
   // 9. Sanitize
   html = sanitizeHTML(html);

@@ -311,6 +311,13 @@
               <div class="dropdown-item" data-action="insert-quote"><span>引用块</span></div>
               <div class="dropdown-item" data-action="insert-math-block"><span>数学公式</span><span class="shortcut"></span></div>
               <div class="dropdown-item" data-action="insert-mermaid"><span>Mermaid 图表</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-plantuml"><span>PlantUML 图</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-d2"><span>D2 图</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-tikz"><span>TikZ 绘图</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-plot"><span>函数绘图</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-markmap"><span>思维导图</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-math-numbered"><span>编号公式</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-siunitx"><span>物理量 (siunitx)</span><span class="shortcut"></span></div>
               <div class="dropdown-item" data-action="insert-toc"><span>目录 [TOC]</span><span class="shortcut"></span></div>
             </div>
           </div>
@@ -341,6 +348,8 @@
               <div class="dropdown-item" data-action="insert-callout-warning"><span>Warning 警告</span><span class="shortcut"></span></div>
               <div class="dropdown-item" data-action="insert-callout-caution"><span>Caution 注意</span><span class="shortcut"></span></div>
               <div class="dropdown-item" data-action="insert-callout-important"><span>Important 重要</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-admonition"><span>Admonition 提示</span><span class="shortcut"></span></div>
+              <div class="dropdown-item" data-action="insert-admonition-collapsible"><span>Admonition 折叠</span><span class="shortcut"></span></div>
             </div>
           </div>
         </div>
@@ -1359,6 +1368,13 @@
     <div class="context-menu-item context-submenu-trigger" data-submenu="ctx-callout"><span>提示块</span><svg class="submenu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></div>
     <div class="context-menu-item" data-action="insert-math-block"><span>数学公式</span></div>
     <div class="context-menu-item" data-action="insert-mermaid"><span>Mermaid 图表</span></div>
+    <div class="context-menu-item" data-action="insert-plantuml"><span>PlantUML 图</span></div>
+    <div class="context-menu-item" data-action="insert-d2"><span>D2 图</span></div>
+    <div class="context-menu-item" data-action="insert-tikz"><span>TikZ 绘图</span></div>
+    <div class="context-menu-item" data-action="insert-plot"><span>函数绘图</span></div>
+    <div class="context-menu-item" data-action="insert-markmap"><span>思维导图</span></div>
+    <div class="context-menu-item" data-action="insert-math-numbered"><span>编号公式</span></div>
+    <div class="context-menu-item" data-action="insert-siunitx"><span>物理量 (siunitx)</span></div>
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="insert-hr"><span>水平线</span><span class="shortcut"></span></div>
     <div class="context-menu-item" data-action="insert-toc"><span>目录 [TOC]</span></div>
@@ -1381,6 +1397,8 @@
     <div class="context-menu-item" data-action="insert-callout-warning"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span>Warning 警告</span></div>
     <div class="context-menu-item" data-action="insert-callout-caution"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16h.01"/><path d="M12 8v4"/><path d="M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z"/></svg><span>Caution 注意</span></div>
     <div class="context-menu-item" data-action="insert-callout-important"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><span>Important 重要</span></div>
+    <div class="context-menu-item" data-action="insert-admonition"><span>Admonition 提示</span></div>
+    <div class="context-menu-item" data-action="insert-admonition-collapsible"><span>Admonition 折叠</span></div>
   </div>
 
   <!-- 文本格式子菜单 -->
@@ -1468,6 +1486,7 @@
 <script src="lib/mathml2omml.min.js"></script>
 <script src="modules/code-block.js"></script>
 <script src="modules/preview-post.js"></script>
+<script src="modules/diagram-converters.js"></script>
 <script src="modules/diagram-renderers.js"></script>
 <script src="modules/word-count.js"></script>
 <script src="modules/outline.js"></script>

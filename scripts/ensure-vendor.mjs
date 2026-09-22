@@ -151,9 +151,39 @@ async function buildMathML2OMML() {
   console.log('[ensure-vendor] 打包 mathml2omml.min.js（全局 MathML2OMML）完成');
 }
 
+// markmap（markdown → 交互式思维导图，```markmap）：esbuild 打包为**单个**文件并暴露全局 markmap。
+// 为什么不用包内现成的 browser 构建：markmap-lib / markmap-view 各自的 dist 目录布局随小版本变动
+// （browser/、index.js、umd/ 都出现过），直接拷贝路径极易在 npm 升级后变成「源缺失 → ensure-vendor
+// 非零退出 → CI 红」。改为从包入口打包：与布局无关；且两个包都挂同一个 window.markmap 命名空间的
+// 语义在此显式合并，避免运行时猜测（diagram-renderers 只探测 window.markmap.Transformer/.Markmap）。
+async function buildMarkmap() {
+  const esbuild = await import('esbuild');
+  const outfile = path.join(LIB, 'markmap', 'markmap.min.js');
+  const contents = [
+    "import * as lib from 'markmap-lib';",
+    "import * as view from 'markmap-view';",
+    'const api = Object.assign({}, lib, view);',
+    "if (typeof window !== 'undefined') window.markmap = api;",
+    "if (typeof globalThis !== 'undefined') globalThis.markmap = api;",
+    "if (typeof module !== 'undefined' && module.exports) module.exports = api;",
+  ].join('\n');
+  await esbuild.build({
+    stdin: { contents, resolveDir: ROOT, loader: 'js' },
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2020',
+    minify: true,
+    outfile,
+    logLevel: 'silent',
+  });
+  console.log('[ensure-vendor] 打包 markmap.min.js（全局 markmap = lib + view）完成');
+}
+
 await buildHighlightMin();
 await buildDocxMin();
 await buildMathML2OMML();
+await buildMarkmap();
 
 let missing = 0;
 for (const [relSrc, relDest] of MANIFEST) {
@@ -172,4 +202,4 @@ if (missing > 0) {
   process.exit(1);
 }
 
-console.log('[ensure-vendor] vendor 同步完成：src/lib（codemirror/katex/mermaid/html2canvas/markdown-it/highlight.js）');
+console.log('[ensure-vendor] vendor 同步完成：src/lib（codemirror/katex/mermaid/echarts/abcjs/graphviz/wavedrom/html2canvas/markdown-it/highlight.js/markmap）');

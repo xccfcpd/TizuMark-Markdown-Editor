@@ -306,6 +306,23 @@ class MarkdownEditor {
       case 'insert-quote': this.insertLinePrefix('> '); break;
       case 'insert-math-block': this.insertBlock('$$\nE = mc^2\n$$', 3); break;
       case 'insert-mermaid': this.insertBlock('```mermaid\ngraph TD\n    A[开始] --> B[结束]\n```', 11); break;
+
+      // ===== 2026-09 新增：本地图表 / 数学增强 / Admonition =====
+      // PlantUML 与 D2 由 modules/diagram-converters.js 转为 Mermaid 后复用既有渲染链；
+      // TikZ / plot / Markmap 由 modules/diagram-renderers.js 作为新引擎渲染。
+      // 游标偏移量落在模板首行正文起点，与既有 insert-mermaid / insert-math-block 约定一致。
+      case 'insert-plantuml': this.insertBlock('```plantuml\n@startuml\nAlice -> Bob: 请求\nBob --> Alice: 响应\n@enduml\n```', 12); break;
+      case 'insert-d2': this.insertBlock('```d2\na -> b: 调用\nb -> c: 返回\n```', 6); break;
+      case 'insert-tikz': this.insertBlock('```tikz\n\\begin{tikzpicture}\n  \\draw[thick, ->] (0,0) -- (2,1);\n  \\draw (1,1) circle (0.4);\n  \\node at (1,1.8) {节点};\n\\end{tikzpicture}\n```', 8); break;
+      case 'insert-plot': this.insertBlock('```plot\nset title "函数图像"\nset xrange [-6.28:6.28]\nset grid on\nplot sin(x) title "sin(x)"\n```', 8); break;
+      case 'insert-markmap': this.insertBlock('```markmap\n# 中心主题\n## 分支一\n### 子项\n## 分支二\n```', 11); break;
+      // 公式编号（\label + \eqref，见 src/unified-math.js）
+      case 'insert-math-numbered': this.insertBlock('$$\nE = mc^2\n\\label{eq:energy}\n$$', 3); break;
+      // siunitx 物理量
+      case 'insert-siunitx': this.insertBlock('$$\n\\SI{9.81}{\\meter\\per\\second\\squared}\n$$', 3); break;
+      // Admonition（!!! / ???，见 src/unified-admonitions.js）
+      case 'insert-admonition': this.insertBlock('!!! note "提示"\n    这里是提示内容，支持**完整 Markdown** 与嵌套。'); break;
+      case 'insert-admonition-collapsible': this.insertBlock('??? warning "点击展开"\n    这里是折叠内容。'); break;
       case 'insert-hr': this.insertBlock('---'); break;
       case 'insert-toc': this.insertBlock('[TOC]'); break;
 

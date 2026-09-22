@@ -26,6 +26,14 @@ const LANGUAGE_MAP = {
   dot: 'graphviz',
   graphviz: 'graphviz',
   gv: 'graphviz',
+  // 2026-09 新增：原生 SVG 引擎，纯函数转换器在 modules/diagram-converters.js
+  tikz: 'tikz',
+  pgf: 'tikz',
+  tikzpicture: 'tikz',
+  plot: 'plot',
+  gnuplot: 'plot',
+  // 2026-09 新增：Markmap 思维导图（懒加载本地 vendor）
+  markmap: 'markmap',
 };
 
 const ENGINE_LABEL = {
@@ -33,10 +41,19 @@ const ENGINE_LABEL = {
   wavedrom: 'WaveDrom',
   abcjs: 'abcjs',
   graphviz: 'Graphviz',
+  tikz: 'TikZ',
+  plot: '函数绘图',
+  markmap: 'Markmap',
 };
 
 // echarts canvas 默认高度（用户可在 option 里用 tizuHeight 覆盖，见 renderEcharts）
 const DEFAULT_ECHARTS_HEIGHT = 360;
+// 原生 SVG 引擎的参考宽度（实际显示由容器 CSS max-width 收敛）
+const DEFAULT_SVG_WIDTH = 700;
+// 函数绘图的默认画布高度（宽高比接近 16:10）
+const DEFAULT_PLOT_HEIGHT = 400;
+// Markmap 画布高度
+const DEFAULT_MARKMAP_HEIGHT = 420;
 
 // 已实例化的 echarts（容器 → 实例），主题切换/重渲染前需 dispose，避免 "There is a chart instance already" 警告
 const chartRegistry = new Map();
@@ -195,11 +212,103 @@ async function renderGraphviz(container, code, opts) {
   return true;
 }
 
+// ---- TikZ（原生 SVG，纯函数转换器位于 diagram-converters.js）----
+// 子集支持：\draw / \fill / \filldraw / \node、-- 折线、-- cycle、circle (r)、
+// rectangle (x,y)、路径内联 node[midway]{t}、常用颜色与线型、-> / <- / <->。
+// 坐标裸数字按 cm 解析（与 TikZ 一致），支持 pt/mm/cm/in 后缀。
+function getDiagramConverters() {
+  if (typeof DiagramConverters !== 'undefined') return DiagramConverters;
+  if (typeof require === 'function') {
+    try { return require('./diagram-converters.js'); } catch (_) { return null; }
+  }
+  return null;
+}
+
+function renderTikz(container, code, opts) {
+  const DC = getDiagramConverters();
+  if (!DC || typeof DC.tikzToSvg !== 'function') {
+    throw new Error('TikZ 转换器未加载（modules/diagram-converters.js）');
+  }
+  const svg = DC.tikzToSvg(code, { width: DEFAULT_SVG_WIDTH });
+  if (!svg) throw new Error('TikZ 解析失败（超出本地支持子集：\\draw / \\fill / \\node / circle / rectangle / --）');
+  container.style.height = '';
+  container.innerHTML = svg;
+  if (!container.querySelector('svg')) throw new Error('TikZ 渲染结果异常（未生成 <svg>）');
+  return true;
+}
+
+// ---- plot（gnuplot 风格函数绘图，原生 SVG）----
+// 支持：set title/xlabel/ylabel/xrange/yrange/grid/samples、plot <expr>[, <expr>…]
+// （可带 title "…" / with lines|points|linespoints / lc 色值）、'plot -' 后的数据行。
+// 表达式解析器为自研递归下降，不使用 eval / new Function。
+function renderPlot(container, code, opts) {
+  const DC = getDiagramConverters();
+  if (!DC || typeof DC.plotToSvg !== 'function') {
+    throw new Error('函数绘图转换器未加载（modules/diagram-converters.js）');
+  }
+  const svg = DC.plotToSvg(code, { width: DEFAULT_SVG_WIDTH, height: DEFAULT_PLOT_HEIGHT, isDark: !!(opts && opts.isDark) });
+  if (!svg) throw new Error('绘图解析失败（检查 set 指令与表达式，如 plot sin(x)）');
+  container.style.height = '';
+  container.innerHTML = svg;
+  if (!container.querySelector('svg')) throw new Error('函数绘图渲染结果异常（未生成 <svg>）');
+  return true;
+}
+
+// ---- Markmap（markdown → 交互式思维导图）----
+// vendor 由 scripts/ensure-vendor.mjs 的 buildMarkmap() 打包成单文件 lib/markmap/markmap.min.js，
+// 合并挂载 window.markmap（Transformer 来自 markmap-lib，Markmap 来自 markmap-view）。
+// 只从应用自身目录加载（CSP script-src 'self' 本就禁止外链脚本），缺文件时抛错 → 走错误框。
+const MARKMAP_VENDOR = 'lib/markmap/markmap.min.js';
+let markmapVendorPromise = null;
+
+function markmapReady() {
+  return typeof window !== 'undefined' && !!window.markmap &&
+    typeof window.markmap.Transformer === 'function' &&
+    typeof window.markmap.Markmap === 'function';
+}
+
+function loadMarkmapVendor() {
+  if (markmapReady()) return Promise.resolve(true);
+  if (typeof document === 'undefined' || typeof window === 'undefined') return Promise.resolve(false);
+  if (markmapVendorPromise) return markmapVendorPromise;
+  markmapVendorPromise = new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = MARKMAP_VENDOR;
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { markmapVendorPromise = null; resolve(false); }; // 允许后续重试
+    document.head.appendChild(el);
+  });
+  return markmapVendorPromise;
+}
+
+async function renderMarkmap(container, code, opts) {
+  const source = String(code == null ? '' : code);
+  if (!source.trim()) throw new Error('Markmap 内容为空（用 # / ## / 列表书写层级）');
+  const loaded = await loadMarkmapVendor();
+  if (!loaded || !markmapReady()) {
+    throw new Error('Markmap 未加载（缺少 ' + MARKMAP_VENDOR + '，需 npm install 生成 vendor）');
+  }
+  container.style.height = DEFAULT_MARKMAP_HEIGHT + 'px';
+  container.innerHTML = '';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'markmap-svg');
+  container.appendChild(svg);
+  const transformer = new window.markmap.Transformer();
+  const result = transformer.transform(source);
+  window.markmap.Markmap.create(svg, null, result.root);
+  if (!container.querySelector('svg')) throw new Error('Markmap 渲染结果异常（未生成 <svg>）');
+  return true;
+}
+
 const RENDERERS = {
   echarts: renderEcharts,
   wavedrom: renderWavedrom,
   abcjs: renderAbc,
   graphviz: renderGraphviz,
+  tikz: renderTikz,
+  plot: renderPlot,
+  markmap: renderMarkmap,
 };
 
 // 渲染失败提示：保留原始源码便于复制修改（与代码块观感一致）。
@@ -239,13 +348,17 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
     diagramTypeFromLanguage, engineLabel, renderInto,
     renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
+    DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,
   };
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     diagramTypeFromLanguage, engineLabel, renderInto,
     renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
+    DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,
   };
 }

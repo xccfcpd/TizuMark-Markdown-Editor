@@ -186,6 +186,13 @@ function processMath(preview) {
       }
     }
 
+    // 公式自动编号：unified-renderer 已给带 \label 的块级公式标注 data-eq-number，
+    // 这里补上锚点 id，使 \eqref / \ref 生成的 \href{\#eq-N} 能跳转到对应公式。
+    preview.querySelectorAll('[data-eq-number]').forEach((el) => {
+      const n = el.getAttribute('data-eq-number');
+      if (n && !el.id) el.id = 'eq-' + n;
+    });
+
     renderMathInElement(preview, {
       delimiters: [
         { left: '$$', right: '$$', display: true },
@@ -195,7 +202,11 @@ function processMath(preview) {
       ],
       throwOnError: false,
       ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-      ignoredClasses: ['katex-ignore']
+      ignoredClasses: ['katex-ignore'],
+      // 只信任指向文内锚点（#eq-N）的 \href —— 公式编号交叉引用所需。
+      // 其余 \href / \url / \includegraphics 一律不信任，保持 KaTeX 默认安全姿态。
+      trust: (context) => !!context && context.command === '\\href' &&
+        typeof context.url === 'string' && context.url.charAt(0) === '#'
     });
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[math] auto-render error:', e);
@@ -419,6 +430,53 @@ function getDiagramRenderers() {
   return null;
 }
 
+// ---- PlantUML / D2 → Mermaid 源码改写 ----
+// 这两者的真正难点是自动布局，故降级为等价的 Mermaid 图描述，复用既有 processMermaid
+// （同一套渲染 / 缓存 / 主题重绘逻辑，不重复实现）。**必须在 processMermaid 之前调用**。
+// 转换器是纯函数模块 modules/diagram-converters.js（可零依赖单测）。
+function getDiagramConverters() {
+  if (typeof DiagramConverters !== 'undefined') return DiagramConverters;
+  if (typeof require === 'function') {
+    try { return require('./diagram-converters.js'); } catch (_) { return null; }
+  }
+  return null;
+}
+
+// 把 ```plantuml / ```d2 就地改写为 ```mermaid。
+// 超出语法子集时**保留原代码块**并加一行可读提示（绝不静默丢弃用户内容）。
+// 返回改写数量，便于测试断言。
+function convertMermaidSources(preview) {
+  const DC = getDiagramConverters();
+  if (!DC || typeof DC.classify !== 'function') return 0;
+  const doc = preview.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  let converted = 0;
+  preview.querySelectorAll('pre > code').forEach((block) => {
+    const m = /(?:^|\s)language-([\w-]+)/.exec(block.className || '');
+    if (!m) return;
+    const info = DC.classify(m[1].toLowerCase(), block.textContent);
+    if (!info || info.kind !== 'mermaid') return;
+    const pre = block.parentElement;
+    const mermaid = DC.toMermaid(info.type, block.textContent);
+    if (!mermaid) {
+      if (pre && !pre.dataset.diagramFallback) {
+        pre.dataset.diagramFallback = info.type;
+        if (doc) {
+          const note = doc.createElement('div');
+          note.className = 'diagram-fallback-note';
+          note.textContent = '⚠ ' + info.type + ' 未转换：超出本地支持的语法子集，已保留原始源码';
+          if (pre.parentNode) pre.parentNode.insertBefore(note, pre);
+        }
+      }
+      return;
+    }
+    block.className = 'language-mermaid';
+    block.textContent = mermaid;
+    if (pre) pre.dataset.diagramSource = info.type;
+    converted++;
+  });
+  return converted;
+}
+
 // 收集「图表语言」代码块。typeOf(lang) 返回引擎类型或 null（便于单测注入）。
 // 只认 <pre><code class="language-X">（围栏代码块），行内 code 不算。
 function collectDiagramBlocks(preview, typeOf) {
@@ -440,7 +498,16 @@ function collectDiagramBlocks(preview, typeOf) {
 
 // 哪些引擎的渲染结果可以通过 innerHTML 复用（SVG）。
 // ECharts 走 canvas，canvas 无法被 innerHTML 序列化保存，必须每次重绘。
-const DIAGRAM_HTML_CACHEABLE = { wavedrom: true, abcjs: true, graphviz: true, echarts: false };
+const DIAGRAM_HTML_CACHEABLE = {
+  wavedrom: true,
+  abcjs: true,
+  graphviz: true,
+  echarts: false,
+  tikz: true,
+  plot: true,
+  // Markmap 的 SVG 带交互（缩放/平移）与内部状态，innerHTML 复用会丢掉，故不缓存
+  markmap: false,
+};
 
 function buildDiagramContainer(document, type, code, sourceLine, themeKey, idSuffix) {
   const container = document.createElement('div');
@@ -503,6 +570,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.PreviewPost = {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
+    convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
     addCopyButtons, getRawCodeText,
   };
 }
@@ -510,6 +578,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
+    convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
     addCopyButtons, EMOJI_MAP,
     protectUnpairedDollar, getRawCodeText,
   };
