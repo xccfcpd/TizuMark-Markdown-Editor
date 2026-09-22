@@ -45,7 +45,23 @@ jobs:
         shell: bash
         run: |
           set -e
-          BRANCH="${{ github.event.inputs.branch || 'feat-diagram-engines' }}"
+          # 目标分支解析优先级：
+          #   ① 手动 dispatch 的 branch 输入
+          #   ② lock-<分支名> 形式的 tag（如 lock-more-function → more-function）
+          #   ③ 兜底 feat-diagram-engines（历史默认，保持兼容）
+          #
+          # 修复（2026-09）：旧实现是 `github.event.inputs.branch || 'feat-diagram-engines'`，
+          # 而 tag 触发时 inputs 为空 → 一律硬编码回推 feat-diagram-engines。从其它分支打
+          # lock-* tag 时，检出的是该 tag 的提交（detached HEAD），回推非快进会被拒，
+          # 于是 lock 永远同步不到真正需要的分支。改用 tag 名推导目标分支。
+          BRANCH="${{ github.event.inputs.branch }}"
+          if [ -z "$BRANCH" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            BRANCH="${GITHUB_REF_NAME#lock-}"
+          fi
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "$GITHUB_REF_NAME" ]; then
+            BRANCH="feat-diagram-engines"
+          fi
+          echo "目标分支: ${BRANCH}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package-lock.json
@@ -53,6 +69,6 @@ jobs:
             echo "package-lock.json 无变化，跳过提交"
             exit 0
           fi
-          git commit -m "chore(deps): 同步 package-lock.json（abcjs / echarts / wavedrom）"
+          git commit -m "chore(deps): 同步 package-lock.json"
           git push origin "HEAD:${BRANCH}"
           echo "已推送到 ${BRANCH}"
