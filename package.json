@@ -13,7 +13,7 @@
     "tauri": "tauri",
     "pretest": "node scripts/build-renderer.mjs",
     "test": "node scripts/run-tests.cjs",
-    "check": "node scripts/check-globals.cjs && node scripts/coupling-report.cjs && node scripts/check-version.mjs && node test/entry-scripts.test.cjs && node test/tauri-api.test.cjs"
+    "check": "node scripts/check-globals.cjs && node scripts/coupling-report.cjs && node scripts/check-version.mjs && node scripts/check-offline.cjs && node test/entry-scripts.test.cjs && node test/tauri-api.test.cjs"
   },
   "author": "TizuMark",
   "license": "GPL-3.0",
