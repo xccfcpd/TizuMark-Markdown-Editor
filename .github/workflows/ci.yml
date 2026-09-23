@@ -56,7 +56,7 @@ jobs:
             names=$(grep -E '^[[:space:]]*not ok ' /tmp/tm-test.log | head -8 | tr '\n' ';' | cut -c1-900)
             [ -z "$names" ] && names="(未匹配到 not ok)"
             echo "::error title=失败用例::${names}"
-            detail=$(grep -nE 'AssertionError|Error:|failing tests|# fail' /tmp/tm-test.log | tail -8 | tr '\n' '|' | cut -c1-2500)
+            detail=$(grep -nE "AssertionError|TypeError|Error:|expected:|actual:|operator:|name: '|failing tests|# fail" /tmp/tm-test.log | tail -14 | tr '\n' '|' | cut -c1-2500)
             [ -z "$detail" ] && detail=$(tail -n 30 /tmp/tm-test.log | tr '\n' '|' | cut -c1-2500)
             echo "::error title=失败摘要::${detail}"
             exit 1

@@ -18,7 +18,15 @@
 // 本文件同时锁住 ①②，避免再次回归。
 const test = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
 const { buildEnv, cleanup, waitForEditor } = require('./helpers/app-env.cjs');
+
+// 被测模块在 node 侧直接加载（两者都是零依赖模块，可在未 npm install 的环境加载）。
+// 为什么不只用 harness 里的全局：模块全局是否已挂上取决于 harness 的加载顺序与是否吞掉
+// 加载异常（它会"非关键模块加载失败仅告警"），测试不该依赖这一点 —— 但也**不能**因此
+// 放过产品行为，故仍调用产品函数，只是显式注入依赖，并顺带断言注入生效。
+const DC = require(path.resolve(__dirname, '../src/modules/diagram-converters.js'));
+const DR = require(path.resolve(__dirname, '../src/modules/diagram-renderers.js'));
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 // 这些类型在预览里由 diagram-renderers.js 的原生引擎渲染，绝不能进 Mermaid
@@ -63,9 +71,14 @@ test('路由守卫：graphviz / echarts / wavedrom / abc / markmap 不得被改�
   const { w } = await buildEnv();
   await waitForEditor(w);
   try {
+    // 注入 node 侧加载的转换器，避免依赖 harness 的模块加载顺序
+    if (!w.DiagramConverters) w.DiagramConverters = DC;
+    assert.strictEqual(typeof w.DiagramConverters, 'object', 'DiagramConverters 应可见（已注入）');
+
     const PP = w.PreviewPost;
     const preview = w.document.createElement('div');
     const nativeLangs = ['graphviz', 'dot', 'echarts', 'wavedrom', 'abc', 'abcjs', 'markmap'];
+    const nativeCodes = [];
     nativeLangs.forEach((lang) => {
       const pre = w.document.createElement('pre');
       const code = w.document.createElement('code');
@@ -73,8 +86,9 @@ test('路由守卫：graphviz / echarts / wavedrom / abc / markmap 不得被改�
       code.textContent = lang + '-source';
       pre.appendChild(code);
       preview.appendChild(pre);
+      nativeCodes.push({ lang, code });
     });
-    // 对照组：真正该被转换的 plantuml
+    // 对照组：真正该被转换的 plantuml（**先保存引用**：转换后 className 会被改写）
     const pPre = w.document.createElement('pre');
     const pCode = w.document.createElement('code');
     pCode.className = 'language-plantuml';
@@ -84,16 +98,14 @@ test('路由守卫：graphviz / echarts / wavedrom / abc / markmap 不得被改�
 
     const converted = PP.convertMermaidSources(preview);
 
-    for (const lang of nativeLangs) {
-      const code = preview.querySelector('code.language-' + lang);
-      assert.ok(code, '应原样保留 ' + lang + ' 代码块');
+    for (const { lang, code } of nativeCodes) {
       assert.strictEqual(code.className.indexOf('language-mermaid'), -1,
-        lang + ' 不得被改写为 language-mermaid');
+        lang + ' 不得被改写为 language-mermaid（实际 className=' + code.className + '）');
       assert.strictEqual(code.textContent, lang + '-source', lang + ' 源码不得被改动');
     }
-    assert.strictEqual(converted, 1, '只有 plantuml 那一块应被转换');
-    assert.strictEqual(preview.querySelector('code.language-plantuml').className, 'language-mermaid',
-      'plantuml 仍应被改写为 mermaid（能力不能被守卫误伤）');
+    assert.strictEqual(converted, 1, '只有 plantuml 那一块应被转换（实际 ' + converted + '）');
+    assert.strictEqual(pCode.className, 'language-mermaid',
+      'plantuml 仍应被改写为 mermaid（能力不能被守卫误伤，实际 className=' + pCode.className + '）');
   } finally { cleanup(w); }
 });
 
@@ -102,7 +114,8 @@ test('收集守卫：这些语言仍由各自原生引擎接管（collectDiagram
   await waitForEditor(w);
   try {
     const PP = w.PreviewPost;
-    const typeOf = w.DiagramRenderers.diagramTypeFromLanguage;
+    // 用 node 侧模块的映射函数（该函数本就以参数注入，便于单测；也避免 harness 加载顺序影响）
+    const typeOf = DR.diagramTypeFromLanguage;
     const expect = {
       graphviz: 'graphviz', dot: 'graphviz', echarts: 'echarts', wavedrom: 'wavedrom',
       abc: 'abcjs', markmap: 'markmap', tikz: 'tikz', plot: 'plot',
@@ -120,7 +133,8 @@ test('收集守卫：这些语言仍由各自原生引擎接管（collectDiagram
     const blocks = PP.collectDiagramBlocks(preview, typeOf);
     const got = blocks.map((b) => b.type).sort();
     const want = Object.keys(expect).map((k) => expect[k]).sort();
-    assert.deepStrictEqual(got, want, '八种语言应全部被收集且类型映射正确');
+    assert.deepStrictEqual(got, want,
+      '八种语言应全部被收集且类型映射正确；实际 ' + JSON.stringify(got) + ' / 期望 ' + JSON.stringify(want));
     assert.ok(got.indexOf('mermaid') === -1, '这些块不得被归为 mermaid');
   } finally { cleanup(w); }
 });
