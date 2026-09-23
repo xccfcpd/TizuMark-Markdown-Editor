@@ -421,6 +421,58 @@ tikz：`\begin{axis}`、`\matrix`、`\tikzset`、`.style=`、`\usetikzlibrary`�
 
 > ③ 的修法很小（一个分支内追加 run），但需真机导出一次看版式 —— 本次**先出结论、不动手**。
 
+### 2.16 ③ Word 公式编号 + G10 表格引用 + C 组章节编号与设置（2026-09-23）
+
+#### ③ Word 导出的公式编号（此前会整块丢失）
+
+`export-docx.js` 的 `.math-display` 分支只取 `.katex-mathml` 的 `<math>`（Word 可编辑公式的来源），
+而 KaTeX 的 `\tag` 编号渲染在 **`.katex-html`** 侧的 `<span class="tag">` → 编号进不了 MathML，
+导出的 Word 里公式编号**整块消失**（预览 / 导出 HTML / PDF / PNG 都不受影响）。
+
+| 文件 | 改动 |
+|---|---|
+| `src/modules/export-docx.js` | `elementToNode` 的 `.math-display` 分支：按 `data-eq-number` / `data-eq-tag` 追加一个文本 run（形如 ` (1)`）；`collectRuns` 补同规则分支，覆盖**表格单元格 / 提示块**里的公式块。没有编号属性的公式行为不变（KaTeX 未注入编号 → 不加任何东西） |
+| `test/export-docx-nodes.test.cjs` | 新增 2 例：`math-display` 补编号（自动编号 / 自定义 `\tag` / 无编号三态）+ 表格单元格内的编号 |
+
+> 引用链接在 Word 里仍是纯文本（docx 无文内锚点语义）—— 编号可见即可，链接不是 Word 的阅读方式。
+
+#### G10 表格单元格里的 `\eqref`：**结论 = 本来就能用**，并补测试锁死
+
+链路：`convertContainerTables → gfmTableToHtml → renderCellContent`（只做 `escapeHTML`，
+**不动反斜杠**）→ 单元格里的 `\eqref{eq:a}` 以字面量进入最终 HTML → 第 7.3 步 `expandProseEqref`
+统一展开（`<pre>`/`<code>` 仍跳过）。
+
+`test/unified-math.test.cjs` 新增 2 例：单元格内的 `\eqref` 展开、`&amp;` 等实体不被改动、
+单元格内的 `\cref` 多标签展开、`<code>` 内的命令原样保留。
+
+#### C1 章节级编号（2.1）
+
+| 位置 | 实现 |
+|---|---|
+| `unified-math.js` | `assignEquationNumbers(placeholders, { sectionAt })`：编号 = `节.序号`，**序号在节内重置**；`equationAnchor` 让章节号（`2.1`）也落在 `eq-` 命名空间 —— 锚点与引用链接由同一函数推导，永不失配 |
+| `unified-math.js` | `buildSectionResolver(content)`：扫描标题（跳过围栏代码块），**以存在的最深章节级标题作前缀**（有 H2 用 H2，否则用 H1；H3+ 不参与，避免 (1.2.3.4)）；前缀取该级标题的**全局序号**（不随 H1 重置 —— 否则第 2 章第 1 节与第 1 章第 1 节会同号，引用歧义） |
+| `unified-renderer.js` | `equationNumbering === 'section'` 时启用；扫描对象与 `guardMathBlocks` 是同一份文本，行号坐标系一致 |
+
+#### C2 设置项
+
+`设置 → 公式按章节编号（2.1）`（默认**关闭**，零破坏）：`settings.js` 默认值与面板读取/监听、
+`index.html` 面板行、`i18n.js` 标签与提示、`i18n-data.js` 中英文案、
+`preview-controller.js` 传 `equationNumbering: 'section' | 'global'`。
+
+> **括号样式（`[1]`）不做**：公式右侧编号由 KaTeX 的 `\tag` 渲染，KaTeX 固定输出圆括号；
+> 要支持方括号需自绘编号列（与 `align` 逐行编号同属 D 组那一档工作）。
+
+**测试**：`test/unified-math.test.cjs` 51 → **55 例**（章节内重置、无章节回退全局、默认行为不变、
+`buildSectionResolver` 的 H1/H2/围栏边界），本地 **55/55 通过**。
+
+#### ② PDF 引用可点击 —— 真机验证清单（无 GUI 环境无法完成）
+
+1. 打开含「由式 \eqref{eq:a} 可知」的文档，预览里点 `(1)` → 应高亮跳转到对应公式；
+2. 导出 PDF（导出面板 → PDF）；
+3. 用 PDF 阅读器（Edge / Adobe / Foxit）点正文里的 `(1)`：**能跳到公式所在页 = 通过**；
+4. 若不能跳：属打印引擎未保留内部链接（不是本链路的问题），可在 D 组用「引用清单」兜底；
+5. 顺带确认 Word 侧：公式右侧编号 `(1)` 已出现（③ 的修复），且公式仍可双击编辑。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

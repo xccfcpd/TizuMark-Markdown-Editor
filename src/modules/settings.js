@@ -29,6 +29,7 @@
           codeScroll: true,
           softBreaks: true,
           extendedSyntax: true,
+          equationSectionNumbering: false, // 公式按章节编号（2.1）；默认关闭＝全文连续编号 (1)(2)(3)
           showTrayIcon: true,
           closeAction: 'ask',
           clearTabsOnQuit: false, // 退出应用时不保存标签会话，下次打开总是空白
@@ -142,6 +143,7 @@
         if (this._selects && this._selects.language) this._selects.language.setValue(s.language || 'zh', true);
         document.getElementById('set-soft-breaks').checked = s.softBreaks !== false;
         document.getElementById('set-extended-syntax').checked = s.extendedSyntax !== false;
+        document.getElementById('set-equation-section-numbering').checked = s.equationSectionNumbering === true;
         document.getElementById('set-show-tray-icon').checked = s.showTrayIcon !== false;
         document.getElementById('set-show-all-files').checked = s.showAllFiles === true;
         if (this._selects && this._selects.closeAction) this._selects.closeAction.setValue(s.closeAction || 'ask', true);
@@ -282,6 +284,9 @@
         });
         document.getElementById('set-extended-syntax').addEventListener('change', (e) => {
           this.settings.extendedSyntax = e.target.checked;
+        });
+        document.getElementById('set-equation-section-numbering').addEventListener('change', (e) => {
+          this.settings.equationSectionNumbering = e.target.checked;
         });
         document.getElementById('set-show-tray-icon').addEventListener('change', (e) => {
           this.settings.showTrayIcon = e.target.checked;

@@ -210,6 +210,75 @@ test('prose 引用: \\cref 多标签各自成链（区间压缩），\\autoref �
   assert.strictEqual(out.indexOf('\\autoref'), -1, '不应残留命令');
 });
 
+test('prose 引用: 表格单元格内的 \\eqref 同样展开（G10）', () => {
+  const labels = new Map([['eq:a', 3]]);
+  // convertContainerTables → gfmTableToHtml → renderCellContent 产出的形态：
+  // 单元格文本只经 escapeHTML（不动反斜杠），随后进入本趟处理。
+  const html = '<table><thead><tr><th>量</th><th>见</th></tr></thead><tbody><tr>' +
+    '<td>质量 &amp; 能量</td><td>由式 \\eqref{eq:a} 得</td></tr></tbody></table>';
+  const out = M.expandProseEqref(html, labels);
+  assert.ok(out.indexOf('<a class="eq-ref" href="#eq-3">(3)</a>') !== -1, out);
+  assert.strictEqual(out.indexOf('\\eqref'), -1, '不应残留命令');
+  assert.ok(out.indexOf('质量 &amp; 能量') !== -1, '单元格里的实体（&amp;）不得被改动');
+  // 单元格内的行内 code 仍原样保留（与正文同规则）
+  const html2 = '<table><tbody><tr><td><code>\\eqref{eq:a}</code></td></tr></tbody></table>';
+  assert.strictEqual(M.expandProseEqref(html2, labels), html2);
+});
+
+test('prose 引用: 单元格内的 \\cref 多标签同样展开为组', () => {
+  const labels = new Map([['eq:a', 1], ['eq:b', 2]]);
+  const out = M.expandProseEqref('<td>见 \\cref{eq:a,eq:b}</td>', labels);
+  assert.ok(out.indexOf('<span class="eq-ref-group">公式 (<a class="eq-ref" href="#eq-1">1</a>, <a class="eq-ref" href="#eq-2">2</a>)</span>') !== -1, out);
+});
+
+test('章节编号: 按章节给出 (2.1) 并在章节内重置', () => {
+  const list = [ph('$$a=1\\label{eq:a}$$'), ph('$$b=2\\label{eq:b}$$'), ph('$$c=3\\label{eq:c}$$')];
+  list[0].line = 10; list[1].line = 20; list[2].line = 50;
+  const labels = M.assignEquationNumbers(list, { sectionAt: (line) => (line < 30 ? '2' : '3') });
+  assert.strictEqual(list[0].eqNumber, '2.1');
+  assert.strictEqual(list[1].eqNumber, '2.2');
+  assert.strictEqual(list[2].eqNumber, '3.1', '进入新章节后重新计数');
+  assert.strictEqual(list[0].eqAnchor, 'eq-2.1', '章节号锚点仍属 eq- 命名空间');
+  assert.strictEqual(labels.get('eq:a'), '2.1');
+  assert.strictEqual(M.expandEqref('\\eqref{eq:c}', labels), '\\href{\\#eq-3.1}{(\\text{3.1})}');
+  assert.strictEqual(M.insertEquationTag('$$x=1$$', '2.1'), '$$x=1\\tag{2.1}$$');
+});
+
+test('章节编号: 首个标题之前的公式回退全局流水号', () => {
+  const list = [ph('$$a=1\\label{eq:a}$$'), ph('$$b=2\\label{eq:b}$$')];
+  list[0].line = 5; list[1].line = 40;
+  M.assignEquationNumbers(list, { sectionAt: (line) => (line < 30 ? null : '1') });
+  assert.strictEqual(list[0].eqNumber, 1, '无章节可归属 → 全局流水号');
+  assert.strictEqual(list[1].eqNumber, '1.1');
+});
+
+test('章节编号: 未传 options 时行为不变（默认全局连续编号）', () => {
+  const list = [ph('$$a=1\\label{eq:a}$$')];
+  M.assignEquationNumbers(list);
+  assert.strictEqual(list[0].eqNumber, 1);
+  assert.strictEqual(list[0].eqAnchor, 'eq-1');
+});
+
+test('章节解析: H2 优先作前缀，无 H2 用 H1，H3 不参与，围栏内 # 不算标题', () => {
+  const doc = '# 标题\n\n正文\n\n## 第一节\n\n$$a$$\n\n### 小节\n\n$$b$$\n\n## 第二节\n\n$$c$$';
+  const lines = doc.split('\n');
+  const at = M.buildSectionResolver(doc);
+  assert.ok(at, '有标题应返回解析器');
+  assert.strictEqual(at(lines.indexOf('$$a$$') + 1), '1');
+  assert.strictEqual(at(lines.indexOf('$$b$$') + 1), '1', 'H3 不参与，仍属第 1 节');
+  assert.strictEqual(at(lines.indexOf('$$c$$') + 1), '2');
+  assert.strictEqual(at(lines.indexOf('正文') + 1), null, '首个标题之前 → null');
+
+  const doc1 = '# 一\n\n$$x$$\n\n# 二\n\n$$y$$';
+  const l1 = doc1.split('\n');
+  const at1 = M.buildSectionResolver(doc1);
+  assert.strictEqual(at1(l1.indexOf('$$x$$') + 1), '1');
+  assert.strictEqual(at1(l1.indexOf('$$y$$') + 1), '2');
+
+  assert.strictEqual(M.buildSectionResolver('正文 $$a$$'), null, '无标题 → null');
+  assert.strictEqual(M.buildSectionResolver('```\n# 不是标题\n```\n$$a$$'), null, '围栏代码块里的 # 不算标题');
+});
+
 /* ---------------- \\tag 注入 ---------------- */
 
 test('insertEquationTag: 插到闭合 $$ 之前', () => {

@@ -22,6 +22,7 @@ const {
   expandEqref,
   expandProseEqref,
   insertEquationTag,
+  buildSectionResolver,
 } = require('./unified-math.js');
 const { convertAdmonitions, restoreAdmonitions } = require('./unified-admonitions.js');
 
@@ -1560,8 +1561,13 @@ function renderMarkdown(content, options) {
   // 2. Guard math blocks
   const mathResult = guardMathBlocks(abbrResult.content);
   const placeholders = mathResult.placeholders;
-  // 2.5 公式自动编号：仅对带 \label{} 的块级公式编号，并建立 label → 序号映射（供 \eqref 使用）
-  const eqLabels = assignEquationNumbers(placeholders);
+  // 2.5 公式自动编号：仅对带 \label{} 的块级公式编号，并建立 label → 序号映射（供 \eqref 使用）。
+  // equationNumbering === 'section' 时启用章节级编号（形如 2.1）：以 H2（无则 H1）为前缀、
+  // 序号在章节内重置。扫描对象与 guardMathBlocks 用的是**同一份文本**，保证行号坐标系一致。
+  const sectionAt = opts.equationNumbering === 'section'
+    ? buildSectionResolver(abbrResult.content)
+    : null;
+  const eqLabels = assignEquationNumbers(placeholders, sectionAt ? { sectionAt: sectionAt } : null);
 
   // 2.8 Admonition（!!! / ???）：必须先于 alert —— 只有先把缩进体反缩进成顶层文本，
   // 体内若写的 `> [!NOTE]` 才能被下一步的 convertAlerts 识别。

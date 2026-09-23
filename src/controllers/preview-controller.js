@@ -151,7 +151,13 @@
         if (typeof UnifiedRenderer === 'undefined' || !UnifiedRenderer || typeof UnifiedRenderer.renderMarkdown !== 'function') {
           throw new Error('渲染器未构建或加载失败（src/lib/unified-bundle.js），请运行 npm run build:renderer');
         }
-        const html = UnifiedRenderer.renderMarkdown(renderContent, { softBreaks: this.app.settings.softBreaks, tabSize: this.app.settings.tabSize, extendedSyntax: this.app.settings.extendedSyntax });
+        // equationNumbering：'section' 时公式按章节编号（2.1），否则全文连续编号（默认）。
+        const html = UnifiedRenderer.renderMarkdown(renderContent, {
+          softBreaks: this.app.settings.softBreaks,
+          tabSize: this.app.settings.tabSize,
+          extendedSyntax: this.app.settings.extendedSyntax,
+          equationNumbering: this.app.settings.equationSectionNumbering ? 'section' : 'global',
+        });
         if (gen !== this.app._renderGeneration) return;
 
         let finalHtml = html;

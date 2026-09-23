@@ -85,6 +85,16 @@
         // 不递归收集 katex-html 可见文本（避免公式退化为纯文本 + 重复计数）。
         // 兼容两种结构：span.katex > (katex-mathml, katex-html) 与
         // KaTeX 直接输出 <math>（output:'mathml' 时 span.katex 下即 <math>）。
+        // 块级公式出现在**行内容器**（表格单元格 / 提示块标题）里时，同样要补编号 run：
+        // 本函数只取 .katex-mathml 的 <math>，而 KaTeX 的 \tag 编号在 .katex-html 侧，
+        // 不补的话 Word 里编号会丢（与 elementToNode 的 math-display 分支同一原因）。
+        if (tag === 'span' && typeof child.className === 'string' &&
+            child.className.split(/\s+/).includes('math-display')) {
+          const eqNo = child.getAttribute('data-eq-number') || child.getAttribute('data-eq-tag');
+          collectRuns(child, runs, images);
+          if (eqNo) runs.push({ text: ' (' + eqNo + ')' });
+          continue;
+        }
         if (tag === 'span' && typeof child.className === 'string' && child.className.split(/\s+/).includes('katex')) {
           const mathEl = child.querySelector('.katex-mathml math') || child.querySelector('math');
           if (mathEl) {
@@ -262,15 +272,25 @@
     // 独立公式块：<span class="math-display"> / <div class="math-display"> 内含已渲染 KaTeX
     if (/math-display/.test(el.className || '')) {
       const mathEl = el.querySelector('.katex-mathml math') || el.querySelector('math');
+      // 公式编号：KaTeX 把 \tag 编号渲染在 **.katex-html** 侧的 <span class="tag">，而本分支
+      // 只取 .katex-mathml 的 <math>（Word 可编辑公式的来源）→ 编号进不了 MathML，
+      // 于是导出的 Word 里公式编号**整块消失**（预览 / 导出 HTML / PDF / PNG 都不受影响）。
+      // 这里按 data-eq-number / data-eq-tag（unified-renderer 输出）显式补一个文本 run，
+      // 让 Word 里也能看到编号。KaTeX 未注入编号的公式没有这两个属性 → 行为不变。
+      const eqNo = el.getAttribute('data-eq-number') || el.getAttribute('data-eq-tag');
+      const noRun = eqNo ? { text: ' (' + eqNo + ')' } : null;
       if (mathEl) {
         const mathml = mathEl.outerHTML;
         if (mathml) {
-          return [{ type: 'paragraph', runs: [{ mathml }], align: 'center' }];
+          return [{ type: 'paragraph', runs: noRun ? [{ mathml }, noRun] : [{ mathml }], align: 'center' }];
         }
       }
       // 未渲染成 KaTeX（公式渲染失败等）：回退到纯文本
       const txt = (el.textContent || '').trim();
-      return txt ? [{ type: 'paragraph', runs: [{ text: txt }], align: 'center' }] : [];
+      const runs = [];
+      if (txt) runs.push({ text: txt });
+      if (noRun) runs.push(noRun);
+      return runs.length ? [{ type: 'paragraph', runs: runs, align: 'center' }] : [];
     }
     // 顶层直接是 .katex（无 math-display 包裹）：提取公式
     if (tag === 'span' && typeof el.className === 'string' && el.className.split(/\s+/).includes('katex')) {

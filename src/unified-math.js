@@ -344,11 +344,14 @@ function expandSiunitx(tex) {
 // labels.warnings：未定义引用 / 重复 label / 无效 \label（供界面提示，见 unified-renderer）
 // ============================================================
 
-// 锚点 id：数字走 eq-N，自定义 tag 走 eql-<slug>
+// 锚点 id：自动编号（1 / 2.1）走 eq-，自定义 \tag 文本走 eql-<slug>
 function equationAnchor(value) {
   if (value == null) return '';
-  if (typeof value === 'number') return 'eq-' + value;
-  const slug = String(value).trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const s = String(value).trim();
+  // 纯数字与章节号（2.1）都属自动编号 → 同一命名空间，
+  // 这样"锚点"与"引用链接"两侧用同一函数推导，永远不会失配。
+  if (typeof value === 'number' || /^\d+(?:\.\d+)*$/.test(s)) return 'eq-' + s;
+  const slug = s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   return 'eql-' + (slug || 'tag');
 }
 
@@ -360,10 +363,16 @@ function pushWarning(labels, type, label, detail) {
   labels.warnings.push({ key: key, type: type, label: label, detail: detail || '' });
 }
 
-function assignEquationNumbers(placeholders) {
+// options.sectionAt(line) —— 可选：返回该行所属的**章节号**（如 '2'），启用章节级编号（2.1）。
+// 公式序号在章节内重置，因此引用不会歧义；取不到章节（首个标题之前）时回退全局流水号。
+function assignEquationNumbers(placeholders, options) {
+  const opts = options || {};
+  const sectionAt = typeof opts.sectionAt === 'function' ? opts.sectionAt : null;
   const labels = new Map();
   labels.warnings = [];
   let counter = 0;
+  let lastSection = null;
+  let sectionCounter = 0;
   const register = (key, value) => {
     if (labels.has(key)) {
       pushWarning(labels, 'duplicate-label', key, '重复定义，保留首次出现的 ' + labels.get(key));
@@ -404,10 +413,19 @@ function assignEquationNumbers(placeholders) {
       continue;
     }
     counter += 1;
-    ph.eqNumber = counter;
-    ph.eqAnchor = equationAnchor(counter);
+    let shown = counter;
+    if (sectionAt) {
+      const sec = sectionAt(ph.line);
+      if (sec) {
+        if (sec !== lastSection) { lastSection = sec; sectionCounter = 0; }
+        sectionCounter += 1;
+        shown = sec + '.' + sectionCounter;
+      }
+    }
+    ph.eqNumber = shown;
+    ph.eqAnchor = equationAnchor(shown);
     ph.eqLabelName = found[0];
-    for (const k of found) register(k, counter);
+    for (const k of found) register(k, shown);
   }
   return labels;
 }
@@ -579,6 +597,44 @@ function insertEquationTag(tex, n) {
 }
 
 
+// 章节编号解析：扫描 Markdown 标题（跳过围栏代码块），返回 sectionAt(line)。
+// 规则（可预测优先，且保证引用不歧义）：
+//   · 以**存在的最深章节级标题**作前缀：有 H2 用 H2，否则用 H1（H3+ 不参与，避免 (1.2.3.4)）；
+//   · 前缀 = 该级标题的**全局序号**（H2 不随 H1 重置 —— 否则第 2 章第 1 节与第 1 章第 1 节
+//     都会得到 1，引用就歧义了）；
+//   · 该级标题之前的公式返回 null（调用方回退全局流水号）；
+//   · 完全没有 H1/H2 的文档返回 null（等于不启用章节编号）。
+function buildSectionResolver(content) {
+  const lines = String(content == null ? '' : content).split('\n');
+  const heads = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(?:```|~~~)/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = /^(#{1,6})\s+\S/.exec(line);
+    if (m) heads.push({ line: i + 1, level: m[1].length });
+  }
+  const useLevel = heads.some((h) => h.level === 2) ? 2 : (heads.some((h) => h.level === 1) ? 1 : 0);
+  if (!useLevel) return null;
+  const marks = [];
+  let n = 0;
+  for (let i = 0; i < heads.length; i++) {
+    if (heads[i].level !== useLevel) continue;
+    n += 1;
+    marks.push({ line: heads[i].line, section: String(n) });
+  }
+  if (!marks.length) return null;
+  return function sectionAt(line) {
+    let cur = null;
+    for (let i = 0; i < marks.length; i++) {
+      if (marks[i].line <= line) cur = marks[i].section;
+      else break;
+    }
+    return cur;
+  };
+}
+
 module.exports = {
   expandSiunitx,
   expandSiUnit,
@@ -588,4 +644,5 @@ module.exports = {
   expandEqref,
   expandProseEqref,
   insertEquationTag,
+  buildSectionResolver,
 };

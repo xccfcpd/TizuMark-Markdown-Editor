@@ -24,6 +24,45 @@ test('domToDocxStructure: 标题/段落/加粗映射', () => {
   assert.ok(structure[1].runs.some(r => r.bold && r.text === '加粗'), '加粗 run 应有 bold 标记');
 });
 
+// 回归：KaTeX 把 \tag 编号渲染在 .katex-html 侧的 <span class="tag">，而 Word 主路径只取
+// .katex-mathml 的 <math> → 编号进不了 MathML，导出的 Word 里公式编号会整块消失。
+// 修法：按 data-eq-number / data-eq-tag 显式补一个文本 run。
+test('domToDocxStructure: 公式编号补成文本 run（Word 里不再丢编号）', () => {
+  const dom = new JSDOM(
+    '<div id="root">' +
+    '<span class="math-display" data-eq-number="1">' +
+    '<span class="katex"><span class="katex-mathml"><math><mi>a</mi></math></span>' +
+    '<span class="katex-html"><span class="tag">(1)</span></span></span></span>' +
+    '<span class="math-display" data-eq-tag="3\u2032">' +
+    '<span class="katex"><span class="katex-mathml"><math><mi>b</mi></math></span></span></span>' +
+    '<span class="math-display"><span class="katex">' +
+    '<span class="katex-mathml"><math><mi>c</mi></math></span></span></span>' +
+    '</div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const texts = structure.map((n) => (n.runs || []).map((r) => r.text || '').join(''));
+  assert.strictEqual(texts[0], ' (1)', '自动编号应补 (1)');
+  assert.strictEqual(texts[1], ' (3\u2032)', '自定义 \\tag 应补 (3\u2032)');
+  assert.strictEqual(texts[2], '', '没有编号的公式不得凭空多出编号');
+  assert.ok(JSON.stringify(structure).includes('mathml'), '公式本体仍走 MathML（Word 可编辑）');
+});
+
+test('domToDocxStructure: 表格单元格里的公式编号同样补 run', () => {
+  const dom = new JSDOM(
+    '<div id="root"><table><tr><td>' +
+    '<span class="math-display" data-eq-number="7">' +
+    '<span class="katex"><span class="katex-mathml"><math><mi>x</mi></math></span></span></span>' +
+    '</td></tr></table></div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const cellRuns = structure[0].rows[0].cells[0].paragraphs[0].runs || [];
+  const joined = cellRuns.map((r) => r.text || '').join('');
+  assert.strictEqual(joined, ' (7)', '单元格内的编号不得丢');
+  assert.ok(cellRuns.some((r) => r.mathml), '公式本体仍为 mathml run');
+});
+
 test('domToDocxStructure: 任务列表 checkbox 转成可读 run（不产出 input 节点）', () => {
   const dom = new JSDOM('<div id="root"><ul><li><input type="checkbox" checked> 已完成</li></ul></div>', { runScripts: 'dangerously' });
   const w = dom.window;

@@ -127,6 +127,7 @@
         setRowLabel('set-scroll-sync', t('scrollSync'));
         setRowLabel('set-soft-breaks', t('softBreaks'));
         setRowLabel('set-extended-syntax', t('extendedSyntax'));
+        setRowLabel('set-equation-section-numbering', t('equationSectionNumbering'));
         setRowLabel('set-code-line-numbers', t('codeLineNumbers'));
         setRowLabel('set-code-wrap', t('codeBlockWrap'));
         setRowLabel('set-code-scroll', t('codeScroll'));
@@ -159,6 +160,8 @@
         if (ctoqHint) ctoqHint.textContent = t('clearTabsOnQuitHint');
         const extendedSyntaxHint = document.querySelector('#setting-extended-syntax-hint .hint-text');
         if (extendedSyntaxHint) extendedSyntaxHint.textContent = t('extendedSyntaxHint');
+        const eqSecHint = document.querySelector('#setting-equation-section-numbering-hint .hint-text');
+        if (eqSecHint) eqSecHint.textContent = t('equationSectionNumberingHint');
         const tabSizeHint = document.querySelector('#setting-tab-size-hint .hint-text');
         if (tabSizeHint) tabSizeHint.textContent = t('tabSizeHint');
         const codeScrollHint = document.querySelector('#setting-code-scroll-hint .hint-text');
