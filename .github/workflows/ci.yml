@@ -42,8 +42,25 @@ jobs:
 
       # npm test 的 pretest 钩子会自动执行 build:renderer 构建 unified-bundle，
       # 之后 run-tests.cjs 跑全部 test/*.test.cjs（含需 eval bundle 的集成用例）。
+      #
+      # 失败时把「失败用例名 + 失败摘要」写成 ::error:: 注解。原因：Actions 的原始日志
+      # 需要登录才能查看，而注解可经 check-runs API 匿名读取 —— 这是无凭据环境下定位
+      # 失败用例的唯一通道（曾因此只能靠猜）。注意 set +e：不让管道提前中止本步骤。
       - name: Run tests
-        run: npm test
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/tm-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            names=$(grep -E '^[[:space:]]*not ok ' /tmp/tm-test.log | head -8 | tr '\n' ';' | cut -c1-900)
+            [ -z "$names" ] && names="(未匹配到 not ok)"
+            echo "::error title=失败用例::${names}"
+            detail=$(grep -nE 'AssertionError|Error:|failing tests|# fail' /tmp/tm-test.log | tail -8 | tr '\n' '|' | cut -c1-2500)
+            [ -z "$detail" ] && detail=$(tail -n 30 /tmp/tm-test.log | tr '\n' '|' | cut -c1-2500)
+            echo "::error title=失败摘要::${detail}"
+            exit 1
+          fi
 
       # P2-3：release 前端聚合冒烟——验证 dist/ 可生成（beforeBuildCommand 关键一环，
       # 若 build-frontend 在 CI 上坏掉，tauri build 会直接失败）

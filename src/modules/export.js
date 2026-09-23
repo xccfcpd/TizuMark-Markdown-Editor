@@ -1066,14 +1066,18 @@
           // mermaid.initialize 失败不致命：下方 mermaid.render 有独立 try/catch，且初始化异常不应阻断导出
           try { mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } }); } catch (e) { console.error('[export] mermaid.initialize 失败（不影响导出）:', e); }
         }
-        // 只挑真正的 mermaid 容器 —— 我们的图表容器也带 `.mermaid-container` 类，
-        // 若一并送进 mermaid.render，它们的源码（DOT / ECharts option / WaveDrom / ABC …）
-        // 会被当成 Mermaid 语法解析、并可能被错误图覆盖（见 _mermaidContainersForRerender）。
-        const mermaidContainers = this._mermaidContainersForRerender(clone);
+        // 注意：本循环**必须遍历所有 `.mermaid-container`** —— 它除了「重渲染 Mermaid」，还负责
+        // 把容器截图成 PNG（Word 的 HTML 导入器不支持内联 SVG）。我们的图表容器（Graphviz /
+        // ECharts / WaveDrom / abcjs / Markmap / TikZ / plot）复用了该类名，同样需要被截图，
+        // 但**不能**被送进 mermaid.render —— 它们的源码不是 Mermaid 语法，会被当成语法错误、
+        // 并可能被错误图整块覆盖。故只对「真正的 mermaid 容器」开重渲染闸门（见
+        // _mermaidContainersForRerender），其余容器照常走下面的截图逻辑。
+        const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
+        const rerenderable = new Set(this._mermaidContainersForRerender(clone));
         for (let mi = 0; mi < mermaidContainers.length; mi++) {
           const container = mermaidContainers[mi];
-          // 重渲染确保 SVG 就绪
-          if (typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
+          // 重渲染确保 SVG 就绪（仅真 mermaid 容器）
+          if (rerenderable.has(container) && typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
             try {
               const code = (container.getAttribute('data-code') || '').trim();
               if (code) {
