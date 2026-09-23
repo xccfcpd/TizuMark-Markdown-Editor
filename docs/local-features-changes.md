@@ -302,6 +302,35 @@
 > 该测试稿（`test.md`）是**用户本地文件、未纳入版本库**，复查时已不在工作区，故本仓库未改动它；
 > 若要彻底消除误报，把稿件里的占位图 URL 换成可用图床（如 `placehold.co`）或改成随文档的本地图片即可。
 
+### 2.13 siunitx 支持现状盘点与补漏（2026-09-23）
+
+**问题**：「siunitx 是否已全部完全支持？」—— **不是**。KaTeX 无 siunitx 包，这里是**常用子集
+兼容层**。本次按真实写法逐条实测后，补掉了三类**疏漏**（是漏做，不是没打算做）：
+
+| 问题（实测） | 原状 | 现状态 |
+|------|------|------|
+| `\square` / `\cubic` | 未实现 → `\si{\newton\per\square\meter}` 残留 `\squarem` → **KaTeX 红字** | 支持，且指数落到**单位之后**：`N/m^{2}`、`m^{3}` |
+| 花括号嵌套 | 参数正则 `\{([^{}]*)\}` 遇嵌套即**整条不匹配** → `\si{\metre\tothe{3}}` 原样不展开 → 红字 | 改为**配对花括号扫描器**（`readBracedArg` / `skipSiOption`）：`\SI{1}{\metre\tothe{3}}` → `1\,\mathrm{m^{3}}`；选项里含 `{}` 也能跳过 |
+| 单位宏漏登记 | `\kWh` / `\decibel` / `\kVA` 等残留 → 红字（与 `\coulomb` 同一类） | 补登记 `Wh kWh MWh GWh VA kVA dB Np` 等 |
+| 相邻单位无间隔 | `\kilogram\metre` → `kgm`（错拼） | `kg\,m`（前缀+单位之间仍不插空格，`\kilo\meter` → `km`） |
+
+**仍然不支持**（有意保留原样交给 KaTeX 降级，不静默丢弃）：`\sisetup`、`\numrange`、
+`\complexnum`、`\qtyproduct`；选项**语义**（`per-mode=reciprocal` 仍输出 `m/s`；`round-mode` /
+`round-precision` 不舍入；`list-*-separator` 被忽略）；不确定度 `\num{1.2(3)}`；siunitx 的表格
+对齐与全局配置系统（这些属于"未实现特性"，不是本次的疏漏范围）。
+
+> 若要把覆盖再推进一档，按收益/成本排序：① `\sisetup` **安全吞掉**（消除红字，不实现语义）；
+> ② 补 `\numrange` / `\complexnum` / `\qtyproduct`；③ 选项白名单化（当前是无条件吞掉，
+> 既不报错也不生效）。彻底"完全支持 siunitx"不在兼容层目标内 —— 那是把整个宏包搬过来。
+
+**自查方式**（模块零依赖，未 npm install 也能跑）：
+
+```bash
+node -e "console.log(require('./src/unified-math.js').expandSiunitx('\\si{\\newton\\per\\square\\meter}'))"
+```
+
+测试：`test/unified-math.test.cjs` 32 → **37 例**（新增 5 例锁住上述补漏，含"参数不全原样保留"）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

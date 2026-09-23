@@ -251,3 +251,38 @@ test('siunitx: 派生单位宏齐全（\\coulomb 曾漏登记 → KaTeX 红字�
   assert.strictEqual(M.expandSiunitx('\\si{\\joule}'), '\\,\\mathrm{J}');
   assert.strictEqual(M.expandSiunitx('\\si{\\metre\\per\\second}'), '\\,\\mathrm{m/s}');
 });
+
+/* ---- 2026-09 补漏：三类「疏漏」（非未实现特性），此前均会残留未知宏 → KaTeX 红字 ---- */
+
+test('siunitx: \\square / \\cubic 作用于其后单位（指数落到单位之后）', () => {
+  assert.strictEqual(M.expandSiunitx('\\si{\\newton\\per\\square\\meter}'), '\\,\\mathrm{N/m^{2}}');
+  assert.strictEqual(M.expandSiunitx('\\si{\\cubic\\metre}'), '\\,\\mathrm{m^{3}}');
+});
+
+test('siunitx: 花括号嵌套可展开（配对扫描，不再整条跳过）', () => {
+  assert.strictEqual(M.expandSiunitx('\\si{\\metre\\tothe{3}}'), '\\,\\mathrm{m^{3}}');
+  assert.strictEqual(M.expandSiunitx('\\SI{1}{\\metre\\tothe{3}}'), '1\\,\\mathrm{m^{3}}');
+  // 选项里含 {} 也要能跳过（list-final-separator={, }）
+  assert.strictEqual(
+    M.expandSiunitx('\\SIlist[list-final-separator={, }]{1;2;3}{\\metre}'),
+    '1,\\;2,\\;3\\,\\mathrm{m}'
+  );
+});
+
+test('siunitx: 相邻单位之间补细空格（\\kilogram\\metre → kg\\,m）', () => {
+  assert.strictEqual(M.expandSiunitx('\\si{\\kilogram\\metre}'), '\\,\\mathrm{kg\\,m}');
+  // 前缀+单位不算相邻，不能插空格
+  assert.strictEqual(M.expandSiunitx('\\SI{3.0}{\\kilo\\meter\\per\\hour}'), '3.0\\,\\mathrm{km/h}');
+});
+
+test('siunitx: 补登记的单位宏不再残留（kWh / 分贝 / 伏安）', () => {
+  assert.strictEqual(M.expandSiunitx('\\qty{5}{\\kWh}'), '5\\,\\mathrm{kWh}');
+  assert.strictEqual(M.expandSiunitx('\\qty{60}{\\decibel}'), '60\\,\\mathrm{dB}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\kilovoltampere}'), '1\\,\\mathrm{kVA}');
+});
+
+test('siunitx: \\SI* 可用；参数不全或不支持的命令一律原样保留（不猜）', () => {
+  assert.strictEqual(M.expandSiunitx('\\SI*{2}{\\metre}'), '2\\,\\mathrm{m}');
+  assert.strictEqual(M.expandSiunitx('\\si'), '\\si');
+  assert.strictEqual(M.expandSiunitx('\\numrange{1}{5}'), '\\numrange{1}{5}');
+});

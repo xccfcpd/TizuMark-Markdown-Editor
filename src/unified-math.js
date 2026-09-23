@@ -44,6 +44,11 @@ const SI_UNIT = {
   astronomicalunit: 'au', nauticalmile: 'M', knot: 'kn', angstrom: '\\mathring{A}',
   minute: 'min', hour: 'h', day: 'd', arcminute: '\\prime', arcsecond: '\\prime\\prime',
   degree: '^{\\circ}', percent: '\\%', rpm: 'rpm',
+  // 2026-09 补齐：此前漏登记 → `\kWh` / `\decibel` 等会以未知宏形式残留，被 KaTeX 标红
+  // （与 `\coulomb` 同一类问题；凡「拼写无前缀、无法由前缀+基本单位拆出」的单位都需在此登记）
+  wh: 'Wh', watthour: 'Wh', kwh: 'kWh', kilowatthour: 'kWh',
+  mwh: 'MWh', gwh: 'GWh', va: 'VA', voltampere: 'VA', kva: 'kVA', kilovoltampere: 'kVA',
+  db: 'dB', decibel: 'dB', np: 'Np', neper: 'Np',
 };
 
 // siunitx v2 风格的单位简写（区分大小写，与规范符号一致）
@@ -93,8 +98,18 @@ function expandSiUnit(raw) {
   const s = String(raw == null ? '' : raw);
   let out = '';
   let i = 0;
-  let pending = '';
+  let pending = '';        // 待拼接的前缀（\kilo 等）
+  let pendingExp = '';     // 待拼接的指数（\square / \cubic，作用于**紧随其后的单位**）
+  let lastWasUnit = false; // 上一个原子是否为单位 → 相邻单位之间补细空格（siunitx 惯例）
   const flush = () => { if (pending) { out += pending; pending = ''; } };
+  // 单位原子落地：前缀 + 符号 + 指数；相邻单位补 `\,`（\kilogram\metre → kg\,m，而非 kgm）
+  const emitUnit = (sym) => {
+    if (lastWasUnit) out += '\\,';
+    out += pending + sym + pendingExp;
+    pending = '';
+    pendingExp = '';
+    lastWasUnit = true;
+  };
   while (i < s.length) {
     const c = s[i];
     if (c === '\\') {
@@ -103,9 +118,12 @@ function expandSiUnit(raw) {
       const name = m[1];
       const lower = name.toLowerCase();
       i += m[0].length;
-      if (lower === 'per') { flush(); out += '/'; continue; }
+      if (lower === 'per') { flush(); out += '/'; lastWasUnit = false; continue; }
       if (lower === 'squared') { out += '^{2}'; continue; }
       if (lower === 'cubed') { out += '^{3}'; continue; }
+      // \square\metre → m^{2} / \cubic\metre → m^{3}：**前置于单位**，指数要落到单位之后
+      if (lower === 'square') { pendingExp = '^{2}'; continue; }
+      if (lower === 'cubic') { pendingExp = '^{3}'; continue; }
       if (lower === 'tothe' || lower === 'raiseto') {
         const bm = s.slice(i).match(/^\s*\{([^{}]*)\}/);
         if (bm) { out += '^{' + bm[1] + '}'; i += bm[0].length; }
@@ -121,18 +139,17 @@ function expandSiUnit(raw) {
         continue;
       }
       if (Object.prototype.hasOwnProperty.call(SI_UNIT, lower)) {
-        out += pending + SI_UNIT[lower];
-        pending = '';
+        emitUnit(SI_UNIT[lower]);
         continue;
       }
       if (Object.prototype.hasOwnProperty.call(SI_SHORTHAND, name)) {
-        out += pending + SI_SHORTHAND[name];
-        pending = '';
+        emitUnit(SI_SHORTHAND[name]);
         continue;
       }
-      // 未知宏：原样保留
+      // 未知宏：原样保留（交由 KaTeX 降级显示，不静默丢弃）
       flush();
       out += '\\' + name;
+      lastWasUnit = false;
       continue;
     }
     if (c === '{') {
@@ -170,40 +187,91 @@ function siFormatList(raw) {
     .join(',\\;');
 }
 
-// siunitx 命令展开（仅在数学块内调用）
+// ---- siunitx 命令展开 ----
+// 为什么不用一串正则：原实现的参数匹配是 `\{([^{}]*)\}`，**遇到花括号嵌套就整条不匹配**，
+// 于是 `\si{\metre\tothe{3}}`、`\SI{1}{\frac{a}{b}}` 这类会原样留给 KaTeX → 报未知命令（红字）。
+// 改为**配对花括号扫描**：天然支持嵌套，同时顺带支持 `\SI*` 与 `[选项]`（选项内也可含 {}）。
+const SI_COMMANDS = {
+  SI: { args: ['num', 'unit'] },
+  qty: { args: ['num', 'unit'] },
+  SIrange: { args: ['num', 'num', 'unit'] },
+  qtyrange: { args: ['num', 'num', 'unit'] },
+  SIlist: { args: ['list', 'unit'] },
+  qtylist: { args: ['list', 'unit'] },
+  si: { args: ['unit'] },
+  unit: { args: ['unit'] },
+  num: { args: ['num'] },
+  ang: { args: ['ang'] },
+};
+
+// 取一个配对参数 {…}；不是参数或括号不配对时返回 null
+function readBracedArg(s, i) {
+  let j = i;
+  while (j < s.length && /\s/.test(s[j])) j++;
+  if (s[j] !== '{') return null;
+  const end = findMatchingBrace(s, j);
+  if (end < 0) return null;
+  return { value: s.slice(j + 1, end), next: end + 1 };
+}
+
+// 跳过 [选项]（选项内可能含 {}，如 list-final-separator={, }）；没有选项则原样返回 i
+function skipSiOption(s, i) {
+  let j = i;
+  while (j < s.length && /\s/.test(s[j])) j++;
+  if (s[j] !== '[') return i;
+  let depth = 0;
+  for (; j < s.length; j++) {
+    if (s[j] === '{') { const e = findMatchingBrace(s, j); if (e < 0) return i; j = e; continue; }
+    if (s[j] === '[') depth++;
+    else if (s[j] === ']') { depth--; if (depth === 0) return j + 1; }
+  }
+  return i;
+}
+
+function renderSiCommand(name, args) {
+  const spec = SI_COMMANDS[name];
+  const parts = spec.args.map((kind, k) => {
+    const a = args[k] == null ? '' : args[k];
+    if (kind === 'num') return formatSiNumber(a);
+    if (kind === 'list') return siFormatList(a);
+    if (kind === 'ang') {
+      const marks = ['^{\\circ}', '^{\\prime}', '^{\\prime\\prime}'];
+      return String(a).split(';').map((p, idx) => String(p).trim() + (marks[idx] || '')).join('');
+    }
+    return siWrapUnit(expandSiUnit(a));
+  });
+  if (name === 'SIrange' || name === 'qtyrange') return parts[0] + '\\text{--}' + parts[1] + parts[2];
+  return parts.join('');
+}
+
+// 逐字符扫描展开（仅在数学块内调用）。未知命令一律原样保留，交由 KaTeX 降级显示。
 function expandSiunitx(tex) {
   if (!tex || tex.indexOf('\\') === -1) return tex;
-  let out = String(tex);
-  // \SIrange / \qtyrange {a}{b}{unit}（先处理带选项形式，再处理无选项形式）
-  out = out.replace(/\\(?:SIrange|qtyrange)\s*\[[^\]]*\]\s*\{([^{}]*)\}\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, a, b, u) => formatSiNumber(a) + '\\text{--}' + formatSiNumber(b) + siWrapUnit(expandSiUnit(u)));
-  out = out.replace(/\\(?:SIrange|qtyrange)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, a, b, u) => formatSiNumber(a) + '\\text{--}' + formatSiNumber(b) + siWrapUnit(expandSiUnit(u)));
-  // \SIlist / \qtylist {a;b;c}{unit}（数值列表；分号或逗号分隔）
-  out = out.replace(/\\(?:SIlist|qtylist)\s*\[[^\]]*\]\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, vals, u) => siFormatList(vals) + siWrapUnit(expandSiUnit(u)));
-  out = out.replace(/\\(?:SIlist|qtylist)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, vals, u) => siFormatList(vals) + siWrapUnit(expandSiUnit(u)));
-  // \SI / \qty {value}{unit}
-  out = out.replace(/\\(?:SI|qty)\s*\[[^\]]*\]\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, a, u) => formatSiNumber(a) + siWrapUnit(expandSiUnit(u)));
-  // \SI* / \qty* 无选项形式
-  out = out.replace(/\\(?:SI|qty)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g,
-    (m, a, u) => formatSiNumber(a) + siWrapUnit(expandSiUnit(u)));
-  // \si / \unit {unit}
-  out = out.replace(/\\(?:si|unit)\s*\[[^\]]*\]\s*\{([^{}]*)\}/g,
-    (m, u) => siWrapUnit(expandSiUnit(u)));
-  out = out.replace(/\\(?:si|unit)\*?\s*\{([^{}]*)\}/g,
-    (m, u) => siWrapUnit(expandSiUnit(u)));
-  // \ang{12;30;0} → 12^\circ30^\prime0^\prime\prime（分号分隔度分秒）
-  out = out.replace(/\\ang\s*\{([^{}]*)\}/g, (m, v) => {
-    const parts = String(v).split(';');
-    const marks = ['^{\\circ}', '^{\\prime}', '^{\\prime\\prime}'];
-    return parts.map((p, idx) => String(p).trim() + (marks[idx] || '')).join('');
-  });
-  // \num{...}
-  out = out.replace(/\\num\s*\[[^\]]*\]\s*\{([^{}]*)\}/g, (m, v) => formatSiNumber(v));
-  out = out.replace(/\\num\s*\{([^{}]*)\}/g, (m, v) => formatSiNumber(v));
+  const s = String(tex);
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] !== '\\') { out += s[i]; i++; continue; }
+    const m = /^\\([A-Za-z]+)\*?/.exec(s.slice(i));
+    if (!m || !Object.prototype.hasOwnProperty.call(SI_COMMANDS, m[1])) {
+      out += m ? m[0] : '\\';
+      i += m ? m[0].length : 1;
+      continue;
+    }
+    const name = m[1];
+    let j = skipSiOption(s, i + m[0].length);
+    const args = [];
+    let ok = true;
+    for (let k = 0; k < SI_COMMANDS[name].args.length; k++) {
+      const arg = readBracedArg(s, j);
+      if (!arg) { ok = false; break; }
+      args.push(arg.value);
+      j = arg.next;
+    }
+    if (!ok) { out += m[0]; i += m[0].length; continue; } // 参数不全 → 原样保留，不猜
+    out += renderSiCommand(name, args);
+    i = j;
+  }
   return out;
 }
 
