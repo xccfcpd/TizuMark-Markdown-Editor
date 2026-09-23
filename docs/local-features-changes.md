@@ -180,7 +180,7 @@
 `test/unified-math.test.cjs` 26 → **31**（`\SIlist` ×2、正文 `\eqref` ×3），
 `test/diagrams.test.cjs` 23 → **25**（数据文件、负号不误判）。
 
-**仍未支持（需决策，见 §3）**：PlantUML `@startgantt`、TikZ 命名节点/相对布局、`:::` 容器语法。
+**仍未支持（需决策，见 §3）**：PlantUML `@startgantt`（**已于 §2.14 支持**）、TikZ 命名节点/相对布局、`:::` 容器语法（后已补，见 §2.13）。
 
 ### 2.9 修复：lightbox 用 flex 导致「其它图点开空白」+ 渲染逐图隔离（2026-09-22）
 
@@ -346,6 +346,54 @@ node -e "console.log(require('./src/unified-math.js').expandSiunitx('\\si{\\newt
 
 测试：`test/unified-math.test.cjs` 37 → **43 例**（本地 43/43 通过，含"`\numproduct` 仍未实现必须原样保留"这类防猜断言）。
 
+### 2.14 补自研：PlantUML 甘特图 + 「超出子集」提示精确化（2026-09-23）
+
+范围由用户指定：**只做这两项**（不做 TikZ 相对定位/自定义样式，也不引入真引擎）。
+实现**以语法面为准，不针对任何示例文档**（测试样例会变），验证全部用**合成语法**的纯函数单测。
+
+#### ① `@startgantt` → Mermaid gantt（`src/modules/diagram-converters.js`）
+
+| 支持的 PlantUML 语句 | 语义 |
+|---|---|
+| `Project starts <date>` | 基准起点。日期支持 ISO（`2024-01-01`、`2024/1/1`）与英文写法（`the 1st of January 2024`、`January 1, 2024`） |
+| `[T] lasts N days\|weeks` | 工期（`takes` 同义） |
+| `[T] starts <date>` / `starts at [U]'s end` / `starts at [U]'s start` / `starts N days after [U]'s end` | 起点（`before` 表负偏移） |
+| `[T] ends <同上参照>` | 终点（并由工期反推起点） |
+| `[T] happens at <date>` | 里程碑 → Mermaid `milestone` + `0d` |
+| `[T] -> [U]` | 依赖：`U` 不得早于 `T` 结束 |
+| `[T] is done` | 完成 → Mermaid `done` 标签 |
+| `-- 分组 --` | 分组 → Mermaid `section` |
+| `title …` | 标题 |
+
+- **未给起点的任务按声明顺序接在前一任务之后** —— 这是 PlantUML gantt 的默认排布行为，不是我们的发明。
+- 有意忽略（Mermaid 无对应语义，属表现层）：`skinparam` / `zoom` / `printscale` / `hide`、
+  颜色（`is colored in …`）、星期开关（`saturday are closed`）。
+- **推不出起点、或遇到子集外的任务语句 → 返回 `null`**（保留原代码块 + 提示），不猜、不静默丢弃。
+- 顺带把 `@startjson` / `@startyaml` / `@startsalt` 明确判为 `unsupported`，避免它们落到某个图种
+  分支里"被猜着转换"出看似成功却错误的结果。
+
+#### ④ 「超出本地支持子集」→ 明确指出缺哪条语法
+
+新增 `DiagramConverters.unsupportedHints(type, source)`：**只做关键字识别**，识别不到返回 `[]`
+（不编造原因）。
+
+| 使用点 | 变化 |
+|---|---|
+| `preview-post.js` 提示条 | `⚠ plantuml 未转换：超出本地支持的语法子集，已保留原始源码` → `⚠ plantuml 未转换：检测到未支持语法 @startjson，已保留原始源码` |
+| `diagram-renderers.js` TikZ 报错 | 追加识别结果，如 `TikZ 解析失败：检测到未支持语法 自定义样式（.style=…）、相对定位（node distance / right of…）` |
+
+特征表 —— plantuml：`@startjson` / `@startyaml` / `@startsalt`、活动图 `fork|split|repeat`、
+时序图 `create|destroy`、`skinparam|!include|!define|!theme|!pragma`、`autonumber`；
+tikz：`\begin{axis}`、`\matrix`、`\tikzset`、`.style=`、`\usetikzlibrary`、相对定位
+（`node distance` / `right of…`）、弧线/贝塞尔/`to[…]`、`rotate|skew`、`\clip|\shade|\pattern|decorate`。
+特征表集中在一处维护，避免"提示条"与"引擎报错"两处口径漂移。
+
+**测试**：`test/diagrams.test.cjs` 31 → **41 例**（7 例甘特 + 3 例提示），含
+「推不出起点 → null」「子集外语句 → null」「子集内不得乱报」这类**防猜断言**。本地 41/41 通过。
+
+**仍未支持（本次有意不做）**：TikZ 相对定位（`node distance` / `right of`）与自定义样式
+（`.style=` / `\tikzset`）—— 需要两阶段布局 pass，估 2–4 天，另行排期。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
@@ -354,10 +402,11 @@ node -e "console.log(require('./src/unified-math.js').expandSiunitx('\\si{\\newt
 **支持**：PlantUML 类图（含 `as` 别名、构造型、成员可见性与类型重排、基数与关系标签、方向词）、
 时序图（participant/actor、消息、`activate`、`alt/else/loop/opt/par/end`、单行与块注释）、
 状态图（`[*]`、`state … as`、状态描述、转移标签）、活动图（`start/stop`、`:动作;`、
-`if/elseif/else/endif`、`while/endwhile`）、思维导图（`*`/`+` 层级、`[#color]`）、组件与用例图；
+`if/elseif/else/endif`、`while/endwhile`）、思维导图（`*`/`+` 层级、`[#color]`）、组件与用例图、
+**甘特图（见 §2.14）**；
 D2：`direction`、`->` / `<-` / `<->` / `--`、`key: label`、`key.shape:`、嵌套块 → `subgraph`。
 
-**不支持**（保留原代码块 + 顶部提示条，绝不静默丢弃）：PlantUML `@startgantt` / `@startwbs` /
+**不支持**（保留原代码块 + 顶部提示条，绝不静默丢弃）：PlantUML `@startwbs`（按思维导图近似）/
 `@startjson` / `@startyaml` / salt、时序图 `create`/`destroy` 精确语义、活动图 `fork`/`split`/`repeat`；
 D2 `style.*` / `class` / `icon` / `markdown` 块 / `vars` / `imports`。
 

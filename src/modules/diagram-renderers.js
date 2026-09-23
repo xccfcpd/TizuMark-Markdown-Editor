@@ -230,7 +230,14 @@ function renderTikz(container, code, opts) {
     throw new Error('TikZ 转换器未加载（modules/diagram-converters.js）');
   }
   const svg = DC.tikzToSvg(code, { width: DEFAULT_SVG_WIDTH });
-  if (!svg) throw new Error('TikZ 解析失败（超出本地支持子集：\\draw / \\fill / \\node / circle / rectangle / --）');
+  if (!svg) {
+    // 错误信息尽量指出**哪条语法**超出子集（特征由 diagram-converters 统一维护，避免两处口径漂移）；
+    // 识别不到时才退回"支持清单"式的笼统说法。
+    const hints = typeof DC.unsupportedHints === 'function' ? DC.unsupportedHints('tikz', code) : [];
+    throw new Error('TikZ 解析失败' + (hints.length
+      ? '：检测到未支持语法 ' + hints.join('、')
+      : '（超出本地支持子集：\\draw / \\fill / \\node / circle / rectangle / --）'));
+  }
   container.style.height = '';
   container.innerHTML = svg;
   if (!container.querySelector('svg')) throw new Error('TikZ 渲染结果异常（未生成 <svg>）');

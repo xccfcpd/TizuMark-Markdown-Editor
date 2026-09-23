@@ -36,6 +36,130 @@ test('classify：仅 plantuml / d2 归 Mermaid，其余图表语言一律不接�
   assert.deepStrictEqual(Object.keys(D.SVG_ALIASES).sort(), ['gnuplot', 'pgf', 'plot', 'tikz', 'tikzpicture']);
 });
 
+/* ---------------- PlantUML 甘特图（@startgantt → Mermaid gantt） ---------------- */
+
+// 这些用例全部使用**合成语法**，不引用任何示例文档 —— 文档会变，语法面不变。
+test('plantuml 甘特：Project starts + lasts → 顺序排布（绝对日期）', () => {
+  const src = [
+    '@startgantt',
+    'Project starts 2024-01-01',
+    '[需求分析] lasts 10 days',
+    '[设计] lasts 15 days',
+    '@endgantt',
+  ].join('\n');
+  assert.strictEqual(D.toMermaid('plantuml', src), [
+    'gantt',
+    '    dateFormat YYYY-MM-DD',
+    '    需求分析 :t1, 2024-01-01, 10d',
+    '    设计 :t2, 2024-01-11, 15d',
+  ].join('\n'));
+});
+
+test('plantuml 甘特：依赖 / 相对起点 / 周 / 里程碑 / 分组 / done / 颜色忽略', () => {
+  const src = [
+    '@startgantt',
+    "Project starts 2024-01-01",
+    '-- 第一阶段 --',
+    '[A] lasts 2 weeks',
+    "[B] starts at [A]'s end",
+    '[B] lasts 3 days',
+    '[A] -> [B]',
+    '[C] happens at 2024-03-01',
+    '[A] is colored in red',
+    '[B] is done',
+    '@endgantt',
+  ].join('\n');
+  assert.strictEqual(D.toMermaid('plantuml', src), [
+    'gantt',
+    '    dateFormat YYYY-MM-DD',
+    '    section 第一阶段',
+    '    A :t1, 2024-01-01, 14d',
+    '    B :done, t2, 2024-01-15, 3d',
+    '    C :milestone, t3, 2024-03-01, 0d',
+  ].join('\n'));
+});
+
+test('plantuml 甘特：英文日期写法与「N days after」', () => {
+  const src = [
+    '@startgantt',
+    'Project starts the 1st of January 2024',
+    '[A] lasts 2 days',
+    "[B] starts 3 days after [A]'s end",
+    '[B] lasts 1 day',
+    '@endgantt',
+  ].join('\n');
+  assert.strictEqual(D.toMermaid('plantuml', src), [
+    'gantt',
+    '    dateFormat YYYY-MM-DD',
+    '    A :t1, 2024-01-01, 2d',
+    '    B :t2, 2024-01-06, 1d',
+  ].join('\n'));
+});
+
+test('plantuml 甘特：日历/皮肤等噪声行忽略，不影响任务解析', () => {
+  const src = [
+    '@startgantt',
+    'Project starts 2024-01-01',
+    'saturday are closed',
+    'skinparam monochrome true',
+    'title 版本计划',
+    '[A] lasts 1 week',
+    '@endgantt',
+  ].join('\n');
+  assert.strictEqual(D.toMermaid('plantuml', src), [
+    'gantt',
+    '    title 版本计划',
+    '    dateFormat YYYY-MM-DD',
+    '    A :t1, 2024-01-01, 7d',
+  ].join('\n'));
+});
+
+test('plantuml 甘特：无法确定起点 / 无法解析的语句 → 返回 null（保留原块，不猜）', () => {
+  // 没有 Project starts，也没有任何绝对日期 → 推不出起点
+  assert.strictEqual(D.toMermaid('plantuml', '@startgantt\n[A] lasts 5 days\n@endgantt'), null);
+  // 任务语句不在子集内 → 不猜、整体交回调用方
+  assert.strictEqual(
+    D.toMermaid('plantuml', '@startgantt\nProject starts 2024-01-01\n[A] frobnicates 5 days\n@endgantt'),
+    null
+  );
+});
+
+test('plantuml 甘特：仍不支持图种原样返回 null（json / yaml / salt）', () => {
+  assert.strictEqual(D.toMermaid('plantuml', '@startjson\n{"a":1}\n@endjson'), null);
+  assert.strictEqual(D.toMermaid('plantuml', '@startsalt\n{+\n}\n@endsalt'), null);
+});
+
+/* ---------------- 「超出子集」特征提示 ---------------- */
+
+test('unsupportedHints：plantuml 识别出具体缺哪条语法', () => {
+  assert.deepStrictEqual(D.unsupportedHints('plantuml', '@startjson\n{}\n@endjson'), ['@startjson']);
+  assert.deepStrictEqual(D.unsupportedHints('plantuml', 'skinparam monochrome true'),
+    ['skinparam / 预处理指令']);
+  assert.deepStrictEqual(D.unsupportedHints('plantuml', '@startuml\nfork\n@enduml'),
+    ['活动图 fork/split 并发分支']);
+  // 已在子集内 → 不得乱报
+  assert.deepStrictEqual(D.unsupportedHints('plantuml', '@startuml\nAlice -> Bob: hi\n@enduml'), []);
+});
+
+test('unsupportedHints：tikz 识别出具体缺哪条语法', () => {
+  assert.deepStrictEqual(
+    D.unsupportedHints('tikz', '\\begin{tikzpicture}[node distance=1.5cm, block/.style={draw}]\n\\end{tikzpicture}'),
+    ['自定义样式（.style=…）', '相对定位（node distance / right of…）']
+  );
+  assert.deepStrictEqual(D.unsupportedHints('tikz', '\\begin{tikzpicture}\n\\matrix { \\node {a}; };\n\\end{tikzpicture}'),
+    ['\\matrix 矩阵布局']);
+  assert.deepStrictEqual(D.unsupportedHints('tikz', '\\begin{tikzpicture}\n\\draw (0,0) arc (0:90:1);\n\\end{tikzpicture}'),
+    ['弧线 / 贝塞尔曲线 / to[…]']);
+  // 子集内 → 空
+  assert.deepStrictEqual(D.unsupportedHints('tikz', '\\draw (0,0) -- (1,1);'), []);
+});
+
+test('unsupportedHints：未知类型/无匹配一律返回空数组（不编造原因）', () => {
+  assert.deepStrictEqual(D.unsupportedHints('echarts', '{"a":1}'), []);
+  assert.deepStrictEqual(D.unsupportedHints(undefined, 'x'), []);
+  assert.deepStrictEqual(D.unsupportedHints('tikz', ''), []);
+});
+
 /* ---------------- PlantUML ---------------- */
 
 test('plantuml: 类图（继承 / 组合 / 成员）', () => {

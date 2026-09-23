@@ -159,10 +159,10 @@
   /* ============================================================
    * 2. PlantUML → Mermaid
    * ------------------------------------------------------------
-   * 覆盖：类图 / 时序图 / 活动图 / 状态图 / 思维导图 / 组件与用例图。
+   * 覆盖：类图 / 时序图 / 活动图 / 状态图 / 思维导图 / 组件与用例图 / 甘特图。
    * 判定顺序即下方 plantumlKind 的分支顺序（先特征更明确的图种）。
-   * 不覆盖：甘特图（@startgantt，返回 null 保留代码块）、WBS、JSON/YAML 视图、
-   *         salt、时序图的 create/destroy 精确语义、活动图的 fork/split 并发分支。
+   * 不覆盖：JSON/YAML 视图、salt、时序图的 create/destroy 精确语义、
+   *         活动图的 fork/split 并发分支（超出时返回 null 保留代码块并提示）。
    * ============================================================ */
 
   function stripPlantumlDecorations(src) {
@@ -217,7 +217,10 @@
 
   function plantumlKind(text) {
     if (/@startmindmap|@startwbs/i.test(text)) return 'mindmap';
-    if (/@startgantt/i.test(text)) return 'unsupported';
+    if (/@startgantt/i.test(text)) return 'gantt';
+    // 明确不属于图种的非渲染视图：直接判为 unsupported（toMermaid 的 default 分支 → null），
+    // 免得它们落到后面某个图种分支里"被猜着转换"，产出看似成功却错误的结果。
+    if (/@start(?:json|yaml|salt)\b/i.test(text)) return 'unsupported';
 
     // 状态图优先于时序图：`Idle --> Running : ev` 与时序图 `A -> B : msg` 形态相近，
     // 但状态图必带 [*] 起止或 state 关键字，故先用它们消歧（否则状态图会被误判为时序图）。
@@ -708,6 +711,242 @@
     return out.join('\n');
   }
 
+  /* ---- 甘特图：@startgantt → Mermaid gantt ---- */
+  // 依据 PlantUML Gantt 语言的**常见语句**实现（按语法面，不针对任何示例文档）：
+  //   Project starts <date> / [T] lasts N days|weeks / [T] starts <date|[U]'s end|N days after …>
+  //   / [T] ends <…> / [T] happens at <…>（里程碑）/ [T] -> [U]（依赖）/ [T] is done
+  //   / -- 分组 --（→ Mermaid section）/ title。
+  // **无法可靠解析时返回 null**（调用方保留原代码块 + 提示），不猜、也不静默丢弃任务。
+  // 有意忽略（Mermaid gantt 无对应语义，属表现层）：skinparam / zoom / printscale / hide /
+  //   颜色（is colored in）/ 星期开关（saturday are closed 之类）。
+  const PM_GANTT_MONTHS = {
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6,
+    august: 7, september: 8, october: 9, november: 10, december: 11,
+  };
+  const PM_GANTT_DAY = 86400000;
+
+  // 支持 ISO（2024-01-01 / 2024/1/1）与英文写法（1st of January 2024 / January 1, 2024）
+  function ganttParseDate(raw) {
+    const t = String(raw == null ? '' : raw).trim().replace(/^the\s+/i, '');
+    let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(t);
+    if (m) return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    m = /^(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([A-Za-z]+),?\s+(\d{4})$/.exec(t);
+    if (m && PM_GANTT_MONTHS[m[2].toLowerCase()] !== undefined) {
+      return new Date(Date.UTC(+m[3], PM_GANTT_MONTHS[m[2].toLowerCase()], +m[1]));
+    }
+    m = /^([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(t);
+    if (m && PM_GANTT_MONTHS[m[1].toLowerCase()] !== undefined) {
+      return new Date(Date.UTC(+m[3], PM_GANTT_MONTHS[m[1].toLowerCase()], +m[2]));
+    }
+    return null;
+  }
+
+  function ganttFmtDate(d) { return d.toISOString().slice(0, 10); }
+
+  function ganttDurationDays(raw) {
+    const m = /^(\d+)\s*(day|days|week|weeks)$/i.exec(String(raw == null ? '' : raw).trim());
+    if (!m) return null;
+    return /week/i.test(m[2]) ? parseInt(m[1], 10) * 7 : parseInt(m[1], 10);
+  }
+
+  // 时间参照：绝对日期 / [U]'s start / [U]'s end / N days (after|before) [U]'s end
+  function ganttParseRef(raw) {
+    const t = String(raw == null ? '' : raw).trim().replace(/^at\s+/i, '');
+    const direct = ganttParseDate(t);
+    if (direct) return { kind: 'date', date: direct };
+    let m = /^\[([^\]]+)\]\s*'s\s*(start|end)$/i.exec(t);
+    if (m) return { kind: m[2].toLowerCase() === 'start' ? 'atStart' : 'afterEnd', name: m[1], offset: 0 };
+    m = /^(\d+)\s*(day|days|week|weeks)\s+(after|before)\s+\[([^\]]+)\]\s*'s\s*(start|end)$/i.exec(t);
+    if (m) {
+      const n = /week/i.test(m[2]) ? parseInt(m[1], 10) * 7 : parseInt(m[1], 10);
+      return {
+        kind: m[5].toLowerCase() === 'start' ? 'atStart' : 'afterEnd',
+        name: m[4],
+        offset: /before/i.test(m[3]) ? -n : n,
+      };
+    }
+    return null;
+  }
+
+  function plantumlGanttToMermaid(src) {
+    const lines = stripPlantumlDecorations(src).split('\n');
+    const tasks = [];
+    const byName = new Map();
+    const NOISE = /^(skinparam|zoom|printscale|hide\b|show\b|language\b|today\b|!|')/i;
+    let projectStart = null;
+    let title = '';
+    let section = '';
+    const taskOf = (name) => {
+      const key = String(name).trim().toLowerCase();
+      if (!byName.has(key)) {
+        const t = { key: key, name: String(name).trim(), deps: [] };
+        byName.set(key, t);
+        tasks.push(t);
+      }
+      return byName.get(key);
+    };
+
+    for (const raw of lines) {
+      const line = String(raw).trim();
+      if (!line || /^@(start|end)/i.test(line)) continue;
+      if (line.charAt(0) === "'") continue;
+      if (/^--.*--$/.test(line)) { section = line.replace(/^--\s*/, '').replace(/\s*--$/, '').trim(); continue; }
+      if (/^title\s+/i.test(line)) { title = line.replace(/^title\s+/i, '').trim(); continue; }
+      if (/^project\s+starts?\b/i.test(line)) {
+        const d = ganttParseDate(line.replace(/^project\s+starts?\s+(?:at\s+|the\s+)?/i, ''));
+        if (!d) return null;
+        projectStart = d;
+        continue;
+      }
+      // 日历设置：Mermaid gantt 无对应语义
+      if (/^[A-Za-z]+\s+are\s+(closed|open|working)/i.test(line)) continue;
+      if (NOISE.test(line)) continue;
+      const dep = /^\[([^\]]+)\]\s*-{1,2}>{1,2}\s*\[([^\]]+)\]\s*$/.exec(line);
+      if (dep) { taskOf(dep[2]).deps.push(taskOf(dep[1]).key); continue; }
+      const m = /^\[([^\]]+)\]\s+(.+)$/.exec(line);
+      if (!m) continue;                    // 其它指令（日历、皮肤等）：忽略
+      const t = taskOf(m[1]);
+      const rest = m[2].trim();
+      if (t.section === undefined && section) t.section = section;
+      let mm;
+      if ((mm = /^(?:lasts|takes?)\s+(.+)$/i.exec(rest))) {
+        const d = ganttDurationDays(mm[1]);
+        if (d === null) return null;
+        t.days = d;
+        continue;
+      }
+      if ((mm = /^starts?\s+(.+)$/i.exec(rest))) {
+        const ref = ganttParseRef(mm[1]);
+        if (!ref) return null;
+        t.startRef = ref;
+        continue;
+      }
+      if ((mm = /^ends?\s+(.+)$/i.exec(rest))) {
+        const ref = ganttParseRef(mm[1]);
+        if (!ref) return null;
+        t.endRef = ref;
+        continue;
+      }
+      if ((mm = /^happens\s+(?:at|on|in)\s+(.+)$/i.exec(rest))) {
+        const ref = ganttParseRef(mm[1]);
+        if (!ref) return null;
+        t.milestone = true;
+        t.days = 0;
+        t.startRef = ref;
+        continue;
+      }
+      if (/^is\s+colou?red\s+in\s+/i.test(rest)) continue;     // 颜色：表现层，忽略
+      if (/^is\s+(done|completed|finished)\b/i.test(rest)) { t.done = true; continue; }
+      if (/^is\s+(closed|open)\b/i.test(rest)) continue;        // 日历
+      return null;   // 无法解析的任务语句 → 保留原代码块（不猜）
+    }
+    if (!tasks.length) return null;
+
+    const addDays = (d, n) => new Date(d.getTime() + n * PM_GANTT_DAY);
+    const resolveRef = (ref) => {
+      if (ref.kind === 'date') return ref.date;
+      const other = byName.get(String(ref.name).trim().toLowerCase());
+      if (!other) return null;
+      if (ref.kind === 'afterEnd') return other.end ? addDays(other.end, ref.offset) : null;
+      return other.start ? addDays(other.start, ref.offset) : null;
+    };
+
+    // ① 显式绝对起点；② 迭代消解引用（含由 lasts 推出的终点），最多 tasks.length + 2 轮
+    for (const t of tasks) if (t.startRef && t.startRef.kind === 'date') t.start = t.startRef.date;
+    if (projectStart && !tasks.some((t) => t.start)) tasks[0].start = projectStart;
+    for (let pass = 0; pass < tasks.length + 2; pass++) {
+      let moved = false;
+      for (const t of tasks) {
+        if (!t.start && t.startRef) {
+          const d = resolveRef(t.startRef);
+          if (d) { t.start = d; moved = true; }
+        }
+        if (t.start && t.days != null && !t.end) { t.end = addDays(t.start, t.days); moved = true; }
+        if (t.endRef) {
+          const d = resolveRef(t.endRef);
+          if (d && (!t.end || t.end.getTime() !== d.getTime())) {
+            t.end = d;
+            if (!t.start) t.start = addDays(d, -(t.days || 0));
+            moved = true;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+    // ③ 仍无起点者：按声明顺序接在前一任务之后（PlantUML gantt 的默认行为），
+    //    且不得早于其依赖任务的结束。
+    let prevEnd = projectStart;
+    for (const t of tasks) {
+      if (!t.start) {
+        const depEnds = t.deps.map((k) => (byName.get(k) || {}).end).filter(Boolean);
+        const base = depEnds.length
+          ? new Date(Math.max.apply(null, depEnds.map((d) => d.getTime())))
+          : prevEnd;
+        if (!base) return null;
+        t.start = base;
+      }
+      if (t.days == null) t.days = t.milestone ? 0 : 1;
+      if (!t.end) t.end = addDays(t.start, t.days);
+      prevEnd = t.end;
+    }
+
+    // 输出 Mermaid gantt（统一用绝对日期，确定性输出，便于单测）
+    const esc = (s) => String(s).replace(/[:;,]/g, ' ').replace(/\s+/g, ' ').trim() || '任务';
+    const out = ['gantt'];
+    if (title) out.push('    title ' + esc(title));
+    out.push('    dateFormat YYYY-MM-DD');
+    let curSection = null;
+    tasks.forEach((t, i) => {
+      const sec = t.section || '';
+      if (sec !== curSection) { if (sec) out.push('    section ' + esc(sec)); curSection = sec; }
+      const tags = [];
+      if (t.milestone) tags.push('milestone');
+      if (t.done) tags.push('done');
+      const days = t.milestone ? 0 : Math.max(1, Math.round((t.end - t.start) / PM_GANTT_DAY));
+      out.push('    ' + esc(t.name) + ' :' + (tags.length ? tags.join(', ') + ', ' : '') +
+        't' + (i + 1) + ', ' + ganttFmtDate(t.start) + ', ' + days + 'd');
+    });
+    return out.join('\n');
+  }
+
+  /* ---- 「超出本地子集」特征指纹 → 人类可读提示 ---- */
+  // 用途：把「超出本地支持的语法子集」这种笼统说法，换成"检测到哪条语法"，
+  // 既出现在预览的提示条，也拼进引擎抛出的错误信息。
+  // 原则：**只做关键字识别**，识别不到就返回空数组（不编造原因）。
+  const UNSUPPORTED_HINTS = {
+    plantuml: [
+      [/@startjson/i, '@startjson'],
+      [/@startyaml/i, '@startyaml'],
+      [/@startsalt/i, '@startsalt'],
+      [/^\s*(?:fork|split|repeat)\b/im, '活动图 fork/split 并发分支'],
+      [/\b(?:create|destroy)\s+\w/i, '时序图 create/destroy'],
+      [/^\s*(?:skinparam|!include|!define|!theme|!pragma)\b/im, 'skinparam / 预处理指令'],
+      [/^\s*autonumber\b/im, '时序图 autonumber'],
+    ],
+    tikz: [
+      [/\\begin\{axis\}/, 'pgfplots 的 \\begin{axis}'],
+      [/\\matrix\b/, '\\matrix 矩阵布局'],
+      [/\\tikzset\b/, '\\tikzset 自定义样式'],
+      [/\.style\s*=/, '自定义样式（.style=…）'],
+      [/\\usetikzlibrary/, '\\usetikzlibrary'],
+      [/\b(?:node\s+distance|right\s+of|left\s+of|above\s+of|below\s+of)\b/i, '相对定位（node distance / right of…）'],
+      [/(?:\barc\b|\.\.\s*controls|\]\s*to\s*\[)/, '弧线 / 贝塞尔曲线 / to[…]'],
+      [/\b(?:rotate|skew\s*[xy])\s*=/, 'rotate / skew'],
+      [/\\(?:clip|shade|pattern|decorate)\b/, '\\clip / \\shade / \\pattern / decorations'],
+    ],
+  };
+
+  function unsupportedHints(type, source) {
+    const table = UNSUPPORTED_HINTS[String(type == null ? '' : type).toLowerCase()];
+    if (!table) return [];
+    const text = String(source == null ? '' : source);
+    const out = [];
+    for (let i = 0; i < table.length; i++) {
+      if (table[i][0].test(text) && out.indexOf(table[i][1]) === -1) out.push(table[i][1]);
+    }
+    return out;
+  }
+
   // 统一入口：PlantUML → Mermaid；不支持时返回 null（调用方保留原代码块）
   function plantumlToMermaid(src) {
     const text = stripPlantumlDecorations(src);
@@ -720,6 +959,7 @@
       case 'usecase':
       case 'component': return plantumlComponentToMermaid(src);
       case 'class': return plantumlClassToMermaid(src);
+      case 'gantt': return plantumlGanttToMermaid(src);
       default: return null;
     }
   }
@@ -1900,6 +2140,8 @@
     classify: classify,
     toMermaid: toMermaid,
     toSvg: toSvg,
+    // 「超出子集」的特征提示（供预览提示条与引擎错误信息使用）
+    unsupportedHints: unsupportedHints,
     MERMAID_ALIASES: MERMAID_ALIASES,
     SVG_ALIASES: SVG_ALIASES,
   };

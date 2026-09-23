@@ -463,7 +463,14 @@ function convertMermaidSources(preview) {
         if (doc) {
           const note = doc.createElement('div');
           note.className = 'diagram-fallback-note';
-          note.textContent = '⚠ ' + info.type + ' 未转换：超出本地支持的语法子集，已保留原始源码';
+          // 提示尽量具体：能识别出是哪条语法超集就写出来（识别不到才退回笼统说法）。
+          // 目的：用户不必来问"为什么没渲染"，提示条本身就说清了缺哪条语法。
+          const hints = (DC && typeof DC.unsupportedHints === 'function')
+            ? DC.unsupportedHints(info.type, block.textContent)
+            : [];
+          note.textContent = '⚠ ' + info.type + ' 未转换' +
+            (hints.length ? '：检测到未支持语法 ' + hints.join('、') : '：超出本地支持的语法子集') +
+            '，已保留原始源码';
           if (pre.parentNode) pre.parentNode.insertBefore(note, pre);
         }
       }
