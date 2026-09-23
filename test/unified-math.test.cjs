@@ -104,11 +104,22 @@ test('公式编号: \\notag / \\nonumber 关闭编号', () => {
   assert.strictEqual(list[0].text.indexOf('\\notag'), -1, '\\notag 应被剥离');
 });
 
-test('公式编号: 用户自带 \\tag 时不覆盖', () => {
-  const list = [ph('$$a=1\\label{eq:a}\\tag{A}$$')];
+test('公式编号: 用户自带 \\tag 时不占流水号，但 label 仍可被引用（LaTeX 语义）', () => {
+  const list = [ph('$$a=1\\label{eq:a}\\tag{A}$$'), ph('$$b=2\\label{eq:b}$$')];
   const labels = M.assignEquationNumbers(list);
-  assert.strictEqual(list[0].eqNumber, undefined);
-  assert.strictEqual(labels.has('eq:a'), false);
+  assert.strictEqual(list[0].eqNumber, undefined, '自定义 tag 不占自动流水号');
+  assert.strictEqual(labels.get('eq:a'), 'A', '自定义编号仍要注册 label（否则 \\eqref 得 (?)）');
+  assert.strictEqual(list[0].eqTag, 'A');
+  assert.strictEqual(list[0].eqAnchor, 'eql-A', '自定义 tag 走 eql- 命名空间，避免与自动序号撞 id');
+  assert.strictEqual(list[1].eqNumber, 1, '自动编号不受自定义 tag 影响');
+  assert.strictEqual(M.expandEqref('\\eqref{eq:a}', labels), '\\href{\\#eql-A}{(\\text{A})}');
+});
+
+test('公式编号: 自动编号同时给出统一锚点与 label 名（供预览落 id 与点击复制）', () => {
+  const list = [ph('$$a=1\\label{eq:a}$$')];
+  M.assignEquationNumbers(list);
+  assert.strictEqual(list[0].eqAnchor, 'eq-1');
+  assert.strictEqual(list[0].eqLabelName, 'eq:a');
 });
 
 test('公式编号: 行内公式的 \\label 也剥离但不编号', () => {
@@ -149,6 +160,54 @@ test('交叉引用: 未定义 label 渲染为 (?) 而不抛错', () => {
 
 test('交叉引用: 无引用时不改动原文', () => {
   assert.strictEqual(M.expandEqref('$$x=1$$', new Map()), '$$x=1$$');
+});
+
+test('交叉引用: \\cref 合并多标签，连续 ≥3 压成区间', () => {
+  const labels = new Map([['eq:a', 1], ['eq:b', 2], ['eq:c', 3], ['eq:d', 7]]);
+  assert.strictEqual(M.expandEqref('\\cref{eq:a,eq:b,eq:c}', labels), '\\text{公式 (1\u20133)}');
+  assert.strictEqual(M.expandEqref('\\cref{eq:a,eq:d}', labels), '\\text{公式 (1, 7)}');
+  assert.strictEqual(M.expandEqref('\\Cref{eq:a,eq:b}', labels, { lang: 'en' }), '\\text{Equations (1, 2)}');
+  assert.strictEqual(M.expandEqref('\\Cref{eq:a}', labels, { lang: 'en' }), '\\text{Equation (1)}');
+});
+
+test('交叉引用: \\autoref 带类型词（中/英），编号可点击', () => {
+  const labels = new Map([['eq:a', 2]]);
+  assert.strictEqual(M.expandEqref('\\autoref{eq:a}', labels),
+    '\\text{公式}~\\href{\\#eq-2}{\\text{2}}');
+  assert.strictEqual(M.expandEqref('\\autoref{eq:a}', labels, { lang: 'en' }),
+    '\\text{Equation}~\\href{\\#eq-2}{\\text{2}}');
+});
+
+test('交叉引用: 自定义 \\tag 的编号不参与区间压缩（原样列出）', () => {
+  const labels = new Map([['eq:a', "1'"], ['eq:b', "2'"]]);
+  assert.strictEqual(M.expandEqref('\\cref{eq:a,eq:b}', labels), "\\text{公式 (1', 2')}");
+});
+
+test('诊断: 未定义引用 / 重复 label / \\notag 与行内 label 都记入 warnings', () => {
+  const list = [
+    ph('$$a=1\\label{eq:dup}$$'),
+    ph('$$b=2\\label{eq:dup}$$'),
+    ph('$$c=3\\label{eq:mute}\\notag$$'),
+    ph('$x\\label{eq:inline}$', false),
+  ];
+  const labels = M.assignEquationNumbers(list);
+  M.expandEqref('见\\eqref{nope}', labels);
+  assert.deepStrictEqual(labels.warnings.map((w) => w.type).sort(),
+    ['duplicate-label', 'inline-label', 'notag-label', 'undefined-ref']);
+  // 同一 label 的同一类诊断只记一次
+  M.expandEqref('再看\\eqref{nope}', labels);
+  assert.strictEqual(labels.warnings.filter((w) => w.type === 'undefined-ref').length, 1);
+  // 传入普通 Map（无 warnings 容器）时不得抛错
+  assert.strictEqual(M.expandEqref('\\eqref{x}', new Map()), '\\text{?}');
+});
+
+test('prose 引用: \\cref 多标签各自成链（区间压缩），\\autoref 带类型词', () => {
+  const labels = new Map([['eq:a', 1], ['eq:b', 2], ['eq:c', 3]]);
+  const out = M.expandProseEqref('见 \\cref{eq:a,eq:b,eq:c} 与 \\autoref{eq:a}', labels);
+  assert.ok(out.indexOf('<a class="eq-ref" href="#eq-1">1</a>\u2013<a class="eq-ref" href="#eq-3">3</a>') !== -1, out);
+  assert.ok(out.indexOf('<span class="eq-autoref">公式 <a class="eq-ref" href="#eq-1">1</a></span>') !== -1, out);
+  assert.strictEqual(out.indexOf('\\cref'), -1, '不应残留命令');
+  assert.strictEqual(out.indexOf('\\autoref'), -1, '不应残留命令');
 });
 
 /* ---------------- \\tag 注入 ---------------- */

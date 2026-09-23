@@ -394,6 +394,33 @@ tikz：`\begin{axis}`、`\matrix`、`\tikzset`、`.style=`、`\usetikzlibrary`�
 **仍未支持（本次有意不做）**：TikZ 相对定位（`node distance` / `right of`）与自定义样式
 （`.style=` / `\tikzset`）—— 需要两阶段布局 pass，估 2–4 天，另行排期。
 
+### 2.15 公式编号/引用增强（A 组：G1/G4/G5/G6）+ 导出侧引用实测（2026-09-23）
+
+用户指定：先做 A 组，并把 G8 的三条实测一起出结论。实现仍按**语法面**（LaTeX 语义）为准，
+验证用**合成语法**的纯函数单测。
+
+#### A 组实现
+
+| 项 | 内容 |
+|---|---|
+| **G1 自定义 `\tag` 的 label 可被引用** | 此前命中 `\tag{}` 就 `continue`，且在**注册 label 之前** → `\tag{3'}\label{eq:a}` 的 `\eqref{eq:a}` 只能得 `(?)`。现在：不占自动流水号，但**注册 label**（值为 tag 文本），引用显示 `(3')`。锚点分两个命名空间：自动编号 `eq-N`、自定义 tag `eql-<slug>`，避免 "3'" 与自动序号 3 撞 id |
+| **G4 `\cref` / `\Cref` / `\autoref`** | `\cref{eq:a,eq:b,eq:c}` → `(1–3)`（连续 ≥3 压成 en dash；两个则 `(1, 2)`）；`\autoref` → `公式 (1)`（`opts.lang === 'en'` 时为 `Equation (1)`）；正文侧同样支持，且多标签**各自成链**、可分别点击 |
+| **G5 引用诊断** | `assignEquationNumbers` 收集 `labels.warnings`：`undefined-ref` / `duplicate-label`（保留首次）/ `notag-label`（`\notag` 使 label 失效）/ `inline-label`（行内公式的 label 无意义），同 label 同类去重。`renderMarkdown` 完成时打一条控制台汇总；`unified-renderer` 另导出 `getEquationWarnings()` 供界面接入；正文里的未定义引用带 `title="未定义的标签：eq:x"` |
+| **G6 点编号复制 `\eqref{label}`** | 新增 `data-eq-label`（label 名）与 `data-eq-anchor`（统一锚点）；预览给 KaTeX 的 `.tag` 绑点击 → 复制 `\eqref{eq:a}`（`navigator.clipboard`，失败退 `execCommand`，与代码块复制按钮同一套降级）。反馈为纯 CSS：`cursor: copy` + 悬停虚线框 + 复制后绿框（不注入文字，免 i18n） |
+
+**测试**：`test/unified-math.test.cjs` 44 → **49 例**（G1 改写 1 例 + 新增 5 例：锚点与 label 名、
+区间压缩、`\autoref` 中英、诊断去重、prose 多标签），本地 **49/49 通过**。
+
+#### G8 三条实测结论
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| ① **导出 HTML 的锚点** | **有，引用可跳转 —— 无需修补** | 导出走 `_clonePreviewForExport()`（= `this.preview.cloneNode(true)`），预览侧已把 `data-eq-anchor` 落成 `id`。实测两份导出产物：`href="#eq-` × 6、`class="eq-ref"` × 6、`<span class="math-display" … id="eq-1">`，且 `styles.css` 早有 `.math-display:target` 高亮规则 |
+| ② **PDF 打印** | **理论保留**（同一份克隆 DOM，锚点 id 在），**内部链接能否点在 PDF 里由打印引擎决定 → 需真机点一次** | PDF 路径同用 `_clonePreviewForExport`；无 GUI 环境无法验证 |
+| ③ **Word（.docx）** | **公式编号会丢、引用链接退化为纯文本 —— 真缺口（建议 B 组）** | `export-docx.js` 的 `elementToNode` 对 `.math-display` **只取 `.katex-mathml math`**（`runs: [{ mathml }]`），而 KaTeX 的 `\tag` 编号渲染在 **`.katex-html`** 侧的 `<span class="tag">` → 进不了 MathML → Word 里编号消失。修法：该分支在 `data-eq-number` / `data-eq-tag` 存在时追加一个文本 run（如 `(1)`） |
+
+> ③ 的修法很小（一个分支内追加 run），但需真机导出一次看版式 —— 本次**先出结论、不动手**。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

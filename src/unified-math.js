@@ -328,20 +328,49 @@ function expandSiunitx(tex) {
 }
 
 // ============================================================
-// 公式自动编号（\label / \eqref / \ref / \tag / \notag）
+// 公式自动编号（\label / \eqref / \ref / \cref / \Cref / \autoref / \tag / \notag）
 // ------------------------------------------------------------
-// 规则（与 LaTeX 习惯一致，且对既有文档零破坏）：
+// 规则（与 LaTeX 语义对齐，且对既有文档零破坏）：
 //   - 只有**写了 \label{}** 的块级公式才自动编号；未写 label 的公式保持原样。
-//   - 用户自带 \tag{} 时尊重自定义编号，不覆盖。
-//   - \notag / \nonumber 显式关闭编号。
-//   - \eqref{x} → 可点击的 (n)（经 \href + KaTeX trust 白名单）；
-//     \ref{x} → 可点击的 n；标签不存在时渲染为 (?)。
+//   - 用户自带 \tag{} 时尊重自定义编号：**不占自动流水号，但 label 仍注册** ——
+//     于是 `\tag{3'}\label{eq:a}` 之后 `\eqref{eq:a}` 能显示 (3')（LaTeX 语义）。
+//   - \notag / \nonumber 关闭编号（该式的 \label 随之失效，与 LaTeX 一致）。
+//   - 引用：\eqref{x} → 可点击 (n)；\ref{x} → 可点击 n；\cref{a,b,c} → (1, 2)，
+//     连续 ≥3 压成 (1)–(3)；\Cref / \autoref 带类型词（公式 (1) / Equation (1)）；
+//     标签不存在 → (?) 并记入 warnings。
+//   - 锚点：自动编号 → `eq-N`；自定义 \tag → `eql-<slug>`。分两个命名空间，
+//     避免 tag 文本（如 "3'"）与自动序号（3）撞 id。
 // 编号按文档顺序、跨全文连续。
+// labels.warnings：未定义引用 / 重复 label / 无效 \label（供界面提示，见 unified-renderer）
 // ============================================================
+
+// 锚点 id：数字走 eq-N，自定义 tag 走 eql-<slug>
+function equationAnchor(value) {
+  if (value == null) return '';
+  if (typeof value === 'number') return 'eq-' + value;
+  const slug = String(value).trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return 'eql-' + (slug || 'tag');
+}
+
+// 收集诊断（同一 label + 同一类型只记一次）
+function pushWarning(labels, type, label, detail) {
+  if (!labels || !Array.isArray(labels.warnings)) return;
+  const key = type + '|' + label;
+  for (let i = 0; i < labels.warnings.length; i++) if (labels.warnings[i].key === key) return;
+  labels.warnings.push({ key: key, type: type, label: label, detail: detail || '' });
+}
 
 function assignEquationNumbers(placeholders) {
   const labels = new Map();
+  labels.warnings = [];
   let counter = 0;
+  const register = (key, value) => {
+    if (labels.has(key)) {
+      pushWarning(labels, 'duplicate-label', key, '重复定义，保留首次出现的 ' + labels.get(key));
+      return;
+    }
+    labels.set(key, value);
+  };
   for (const ph of placeholders) {
     const found = [];
     // \label 从**所有**数学块剥离（行内数学里的 \label 无意义，留着只会让 KaTeX 报未知命令）
@@ -352,51 +381,184 @@ function assignEquationNumbers(placeholders) {
     });
     const noNumber = /\\notag\b|\\nonumber\b/.test(ph.text);
     if (noNumber) ph.text = ph.text.replace(/\\notag\b|\\nonumber\b/g, '');
-    // 只有块级公式参与自动编号
-    if (!ph.display) continue;
-    const hasTag = /\\tag\*?\s*\{/.test(ph.text);
-    if (found.length === 0 || noNumber || hasTag) continue;
+    if (found.length === 0) continue;
+    // 行内数学不参与编号（LaTeX 同理），其 \label 无效
+    if (!ph.display) {
+      pushWarning(labels, 'inline-label', found[0], '行内公式的 \\label 被忽略（仅块级公式参与编号）');
+      continue;
+    }
+    if (noNumber) {
+      pushWarning(labels, 'notag-label', found[0], '\\notag 关闭了编号，该 \\label 无法被引用');
+      continue;
+    }
+    // 用户自带 \tag：不占自动流水号，但注册 label（引用显示用户写的编号）
+    const tagMatch = /\\tag\*?\s*\{([^{}]*)\}/.exec(ph.text);
+    if (tagMatch) {
+      const shown = String(tagMatch[1]).trim();
+      if (shown) {
+        ph.eqTag = shown;
+        ph.eqLabelName = found[0];
+        ph.eqAnchor = equationAnchor(shown);
+        for (const k of found) register(k, shown);
+      }
+      continue;
+    }
     counter += 1;
     ph.eqNumber = counter;
-    for (const k of found) if (!labels.has(k)) labels.set(k, counter);
+    ph.eqAnchor = equationAnchor(counter);
+    ph.eqLabelName = found[0];
+    for (const k of found) register(k, counter);
   }
   return labels;
 }
 
-function eqrefHtml(name, labels, parens) {
+// ---- 数学侧引用（KaTeX 片段，依赖 trust 只放行 # 锚点）----
+
+function eqrefOne(name, labels, mode) {
   const key = String(name == null ? '' : name).trim();
-  const n = labels.get(key);
-  if (!n) return '\\text{?}';
-  const body = '\\text{' + n + '}';
-  const shown = parens ? '(' + body + ')' : body;
-  return '\\href{\\#eq-' + n + '}{' + shown + '}';
+  const v = labels.get(key);
+  if (v == null) {
+    pushWarning(labels, 'undefined-ref', key, '未定义的标签');
+    return '\\text{?}';
+  }
+  const body = '\\text{' + v + '}';
+  const shown = mode === 'ref' ? body : '(' + body + ')';
+  return '\\href{\\#' + equationAnchor(v) + '}{' + shown + '}';
 }
 
-function expandEqref(tex, labels) {
-  if (!tex || (tex.indexOf('\\eqref') === -1 && tex.indexOf('\\ref') === -1)) return tex;
-  let out = String(tex).replace(/\\eqref\s*\{([^{}]*)\}/g, (m, name) => eqrefHtml(name, labels, true));
+// 编号列表压缩："1,2,3" → "1–3"；含自定义 tag 文本时不压缩
+function compactNumbers(values) {
+  if (!values.length) return '';
+  if (!values.every((v) => typeof v === 'number')) return values.join(', ');
+  const nums = values.slice().sort((a, b) => a - b);
+  const out = [];
+  let i = 0;
+  while (i < nums.length) {
+    let j = i;
+    while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++;
+    if (j - i >= 2) out.push(nums[i] + '\u2013' + nums[j]);
+    else for (let k = i; k <= j; k++) out.push(String(nums[k]));
+    i = j + 1;
+  }
+  return out.join(', ');
+}
+
+function refWord(lang, count) {
+  if (lang === 'en') return count > 1 ? 'Equations' : 'Equation';
+  return '公式';
+}
+
+function expandEqref(tex, labels, opts) {
+  if (!tex || (tex.indexOf('\\eqref') === -1 && tex.indexOf('\\ref') === -1 &&
+    tex.indexOf('\\cref') === -1 && tex.indexOf('\\Cref') === -1 && tex.indexOf('\\autoref') === -1)) {
+    return tex;
+  }
+  const map = labels || new Map();
+  const lang = (opts && opts.lang) === 'en' ? 'en' : 'zh';
+  let out = String(tex);
+  // \cref / \Cref：合并多标签，可带类型词
+  out = out.replace(/\\(Cref|cref)\s*\{([^{}]*)\}/g, (m, cmd, list) => {
+    const names = String(list).split(',').map((s) => s.trim()).filter(Boolean);
+    if (!names.length) return m;
+    const vals = [];
+    for (const n of names) {
+      const v = map.get(n);
+      if (v == null) { pushWarning(map, 'undefined-ref', n, '未定义的标签'); continue; }
+      vals.push(v);
+    }
+    if (!vals.length) return '\\text{?}';
+    const body = compactNumbers(vals);
+    const word = (cmd === 'Cref' || lang !== 'en') ? refWord(lang, vals.length) + ' ' : '';
+    return '\\text{' + word + '(' + body + ')}';
+  });
+  // \autoref：类型词 + 可点击编号
+  out = out.replace(/\\autoref\s*\{([^{}]*)\}/g, (m, name) => {
+    const key = String(name).trim();
+    const v = map.get(key);
+    if (v == null) {
+      pushWarning(map, 'undefined-ref', key, '未定义的标签');
+      return '\\text{?}';
+    }
+    return '\\text{' + refWord(lang, 1) + '}~\\href{\\#' + equationAnchor(v) + '}{\\text{' + v + '}}';
+  });
+  out = out.replace(/\\eqref\s*\{([^{}]*)\}/g, (m, name) => eqrefOne(name, map, 'eqref'));
   out = out.replace(/(^|[^A-Za-z\\])\\ref\s*\{([^{}]*)\}/g,
-    (m, pre, name) => pre + eqrefHtml(name, labels, false));
+    (m, pre, name) => pre + eqrefOne(name, map, 'ref'));
   return out;
 }
 
-// 正文（非数学）中的 \eqref / \ref。
+// ---- 正文侧引用（已还原的 HTML；不依赖 KaTeX trust）----
+
+function escapeAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 正文（非数学）中的 \eqref / \ref / \cref / \autoref。
 // 为什么需要单独一趟：KaTeX 的 delimiters 只认 $...$，写在正文里的 `\eqref{eq:x}`
 // 根本进不了数学占位符，于是原样显示成反斜杠命令（最典型的写法就是
 // 「由式 \eqref{eq:a} 可知…」）。本趟在**已还原的 HTML** 上做替换，
-// 跳过 <pre>/<code> 以免误改代码块里的示例文本；输出普通 HTML 链接，
-// 不依赖 KaTeX 的 trust 白名单（也就无需 \href）。
-function expandProseEqref(html, labels) {
+// 跳过 <pre>/<code> 以免误改代码块里的示例文本。
+function expandProseEqref(html, labels, opts) {
   if (!html || html.indexOf('\\') === -1) return html;
   const map = labels || new Map();
+  const lang = (opts && opts.lang) === 'en' ? 'en' : 'zh';
+  const missing = (key, parens) =>
+    '<span class="eq-ref-missing" title="' + escapeAttr('未定义的标签：' + key) + '">' +
+    (parens ? '(?)' : '?') + '</span>';
+  // 已知编号 → 链接（parens=true 时含括号）
+  const linkValue = (v, parens) =>
+    '<a class="eq-ref" href="#' + equationAnchor(v) + '">' + (parens ? '(' + v + ')' : String(v)) + '</a>';
   const link = (name, parens) => {
     const key = String(name == null ? '' : name).trim();
-    const n = map.get(key);
-    if (!n) return '<span class="eq-ref-missing">' + (parens ? '(?)' : '?') + '</span>';
-    const shown = parens ? '(' + n + ')' : String(n);
-    return '<a class="eq-ref" href="#eq-' + n + '">' + shown + '</a>';
+    const v = map.get(key);
+    if (v == null) {
+      pushWarning(map, 'undefined-ref', key, '未定义的标签');
+      return missing(key, parens);
+    }
+    return linkValue(v, parens);
   };
   const expand = (seg) => String(seg)
+    // \cref / \Cref：多标签，各自成链，连续 ≥3 用 en dash
+    .replace(/\\(Cref|cref)\s*\{([^{}]*)\}/g, (m, cmd, list) => {
+      const names = String(list).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!names.length) return m;
+      const known = [];
+      for (const n of names) {
+        const v = map.get(n);
+        if (v == null) { pushWarning(map, 'undefined-ref', n, '未定义的标签'); continue; }
+        known.push(v);
+      }
+      if (!known.length) return missing(names[0], true);
+      let body;
+      if (known.every((v) => typeof v === 'number')) {
+        const nums = known.slice().sort((a, b) => a - b);
+        const groups = [];
+        let i = 0;
+        while (i < nums.length) {
+          let j = i;
+          while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++;
+          if (j - i >= 2) groups.push(linkValue(nums[i], false) + '\u2013' + linkValue(nums[j], false));
+          else for (let k = i; k <= j; k++) groups.push(linkValue(nums[k], false));
+          i = j + 1;
+        }
+        body = groups.join(', ');
+      } else {
+        body = known.map((v) => linkValue(v, false)).join(', ');
+      }
+      const word = (cmd === 'Cref' || lang !== 'en') ? refWord(lang, known.length) + ' ' : '';
+      return '<span class="eq-ref-group">' + word + '(' + body + ')</span>';
+    })
+    .replace(/\\autoref\s*\{([^{}]*)\}/g, (m, name) => {
+      const key = String(name).trim();
+      const v = map.get(key);
+      if (v == null) {
+        pushWarning(map, 'undefined-ref', key, '未定义的标签');
+        return missing(key, false);
+      }
+      return '<span class="eq-autoref">' + refWord(lang, 1) + ' ' + linkValue(v, false) + '</span>';
+    })
     .replace(/\\eqref\s*\{([^{}]*)\}/g, (m, name) => link(name, true))
     .replace(/(^|[^A-Za-z\\])\\ref\s*\{([^{}]*)\}/g, (m, pre, name) => pre + link(name, false));
   // 以 <pre>/<code> 为界分段，命中片段原样保留

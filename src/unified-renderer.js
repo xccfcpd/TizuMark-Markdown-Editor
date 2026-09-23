@@ -849,8 +849,25 @@ function decodeHtmlEntities(s) {
     .replace(/&nbsp;/g, '\u00A0');
 }
 
+// 最近一次渲染收集到的公式引用诊断（未定义引用 / 重复 label / 无效 \label）。
+// 供界面按需展示；同时向控制台打一条汇总，便于用户自查（不静默吞掉引用错误）。
+let _lastEquationWarnings = [];
+function getEquationWarnings() { return _lastEquationWarnings.slice(); }
+
+// 属性值转义（label 名 / 自定义 tag 文本都会进 HTML 属性）
+function escapeEqAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function restoreMathBlocks(html, placeholders, eqLabels) {
   const labels = eqLabels || new Map();
+  _lastEquationWarnings = Array.isArray(labels.warnings) ? labels.warnings.slice() : [];
+  if (_lastEquationWarnings.length) {
+    console.warn('[math] 公式引用诊断（' + _lastEquationWarnings.length + ' 条）：' +
+      _lastEquationWarnings.map((w) => w.type + ' ' + w.label).join('；'));
+  }
   let result = html;
   for (let idx = 0; idx < placeholders.length; idx++) {
     const ph = placeholders[idx];
@@ -865,7 +882,12 @@ function restoreMathBlocks(html, placeholders, eqLabels) {
     const escaped = escapeHTML(decodeHtmlEntities(text));
     if (ph.display) {
       // 显示数学：占位符是 <div class="math-placeholder" data-math-idx="N" ...>，替换为带 data-source-line 的 span
-      const eqAttr = ph.eqNumber ? ' data-eq-number="' + ph.eqNumber + '"' : '';
+      const eqAttr = (ph.eqNumber ? ' data-eq-number="' + ph.eqNumber + '"' : '') +
+        (ph.eqTag ? ' data-eq-tag="' + escapeEqAttr(ph.eqTag) + '"' : '') +
+        // data-eq-anchor：统一锚点（自动编号 eq-N / 自定义 \tag eql-<slug>），预览侧据此落成 id
+        (ph.eqAnchor ? ' data-eq-anchor="' + escapeEqAttr(ph.eqAnchor) + '"' : '') +
+        // data-eq-label：原始 label 名，供「点编号复制 \eqref{...}」
+        (ph.eqLabelName ? ' data-eq-label="' + escapeEqAttr(ph.eqLabelName) + '"' : '');
       const marker = '<div class="math-placeholder" data-math-idx="' + idx + '" data-source-line="' + ph.line + '"></div>';
       const wrapped = '<span class="math-display" data-source-line="' + ph.line + '"' + eqAttr + '>' + escaped + '</span>';
       result = result.split(marker).join(wrapped);
@@ -1658,6 +1680,6 @@ function renderMarkdown(content, options) {
 
 // Export for Node.js bundling; also expose as global for browser
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderMarkdown };
+  module.exports = { renderMarkdown, getEquationWarnings };
 }
-return { renderMarkdown };
+return { renderMarkdown, getEquationWarnings };

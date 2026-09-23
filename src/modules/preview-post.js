@@ -186,8 +186,14 @@ function processMath(preview) {
       }
     }
 
-    // 公式自动编号：unified-renderer 已给带 \label 的块级公式标注 data-eq-number，
-    // 这里补上锚点 id，使 \eqref / \ref 生成的 \href{\#eq-N} 能跳转到对应公式。
+    // 公式自动编号：unified-renderer 给带 \label 的块级公式标注了统一锚点 data-eq-anchor
+    // （自动编号 eq-N / 自定义 \tag eql-<slug>），这里把它落成 id，
+    // 使 \eqref / \ref / \cref / \autoref 生成的 #锚点 都能跳转到对应公式。
+    preview.querySelectorAll('[data-eq-anchor]').forEach((el) => {
+      const a = el.getAttribute('data-eq-anchor');
+      if (a && !el.id) el.id = a;
+    });
+    // 兼容旧产物（只带 data-eq-number 的 HTML）
     preview.querySelectorAll('[data-eq-number]').forEach((el) => {
       const n = el.getAttribute('data-eq-number');
       if (n && !el.id) el.id = 'eq-' + n;
@@ -207,6 +213,36 @@ function processMath(preview) {
       // 其余 \href / \url / \includegraphics 一律不信任，保持 KaTeX 默认安全姿态。
       trust: (context) => !!context && context.command === '\\href' &&
         typeof context.url === 'string' && context.url.charAt(0) === '#'
+    });
+
+    // 公式编号「点一下复制 \eqref{label}」：KaTeX 把 \tag 渲染成 .tag 元素，
+    // 绑在它上面（找不到则退到整个公式块）。data-eq-label 由 unified-renderer 输出；
+    // 用 dataset 标记避免重复绑定（预览会反复重渲染，否则监听器会累积）。
+    preview.querySelectorAll('[data-eq-label]').forEach((el) => {
+      if (el.dataset.eqCopyBound) return;
+      el.dataset.eqCopyBound = '1';
+      const label = el.getAttribute('data-eq-label');
+      if (!label) return;
+      const tex = '\\eqref{' + label + '}';
+      const target = el.querySelector('.katex-display .tag, .tag') || el;
+      target.classList.add('eq-copy-target');
+      target.setAttribute('title', tex);
+      target.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        try {
+          await navigator.clipboard.writeText(tex);
+        } catch (_e) {
+          // 与代码块复制按钮同一套降级：WebView 里 clipboard API 可能不可用
+          const ta = document.createElement('textarea');
+          ta.value = tex;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch (_e2) { /* 复制失败：静默，不影响阅读 */ }
+          document.body.removeChild(ta);
+        }
+        target.classList.add('eq-copied');
+        setTimeout(() => target.classList.remove('eq-copied'), 1200);
+      });
     });
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[math] auto-render error:', e);
