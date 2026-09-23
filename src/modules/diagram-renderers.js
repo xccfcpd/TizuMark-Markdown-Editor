@@ -58,6 +58,11 @@ const DEFAULT_MARKMAP_HEIGHT = 420;
 // 已实例化的 echarts（容器 → 实例），主题切换/重渲染前需 dispose，避免 "There is a chart instance already" 警告
 const chartRegistry = new Map();
 
+// 所有渲染过图表的容器（含非 ECharts 引擎）：预览重渲染后据此回收已脱离 DOM 的那些。
+// 为什么必须登记全部引擎：abcjs / markmap / wavedrom 内部也会持有容器（ResizeObserver、
+// 事件监听等），只 dispose ECharts 并不够。
+const diagramContainers = new Set();
+
 function diagramTypeFromLanguage(lang) {
   if (!lang) return null;
   const key = String(lang).trim().toLowerCase();
@@ -368,6 +373,48 @@ function renderError(container, type, code, err) {
   container.appendChild(pre);
 }
 
+// 回收「已脱离预览 DOM」的图表资源。
+// 为什么需要：预览重渲染是**整块替换 innerHTML** —— 旧容器连同 canvas / 实例一起被丢弃，
+// 但 chartRegistry、ResizeObserver 以及引擎内部（abcjs 的 responsive 监听、markmap 的
+// d3-zoom 等）仍持有它们 → 长会话内存只增不减，表现为「用久了莫名卡顿、要重启才恢复」。
+// 调用时机：**新内容写入 DOM 之后**（那时旧容器才真正脱离文档）。只清脱离的那些，
+// 仍在 DOM 中的实例保持不动（否则每次重渲染都要重建，白卡一下）。
+function disposeDetachedDiagrams(liveRoot) {
+  const alive = new Set();
+  if (liveRoot && typeof liveRoot.querySelectorAll === 'function') {
+    const nodes = liveRoot.querySelectorAll('.diagram-container');
+    for (let i = 0; i < nodes.length; i++) alive.add(nodes[i]);
+  }
+  const doomed = [];
+  diagramContainers.forEach((container) => {
+    if (!alive.has(container)) doomed.push(container);
+  });
+  for (let i = 0; i < doomed.length; i++) {
+    const container = doomed[i];
+    diagramContainers.delete(container);
+    // ① ECharts 实例：dispose 释放 canvas 与内部缓存
+    const chart = chartRegistry.get(container);
+    if (chart) {
+      try {
+        if (!(typeof chart.isDisposed === 'function' && chart.isDisposed())) chart.dispose();
+      } catch (_e) { /* 已销毁 */ }
+      chartRegistry.delete(container);
+    }
+    // ② ResizeObserver：必须显式 disconnect，否则它会一直持有这个（已脱离的）容器
+    const ro = container && container._tizuResizeObserver;
+    if (ro && typeof ro.disconnect === 'function') {
+      try { ro.disconnect(); } catch (_e) { /* 忽略 */ }
+    }
+    if (container) container._tizuResizeObserver = null;
+    // ③ 清空内容：断开引擎侧对旧容器的引用链（abcjs / markmap / wavedrom 的内部状态），
+    //    此后旧容器不再被任何存活对象引用，可被 GC 回收。
+    if (container && typeof container.innerHTML !== 'undefined') {
+      try { container.innerHTML = ''; } catch (_e) { /* 忽略 */ }
+    }
+  }
+  return doomed.length;
+}
+
 // 对外：渲染单个容器。返回 true=成功，false=引擎缺失/渲染失败（后者会写入错误框）。
 // 异步：Graphviz 需要 await 实例化 wasm；其余引擎同步返回，await 同样适用。
 async function renderInto(container, type, code, opts) {
@@ -375,7 +422,9 @@ async function renderInto(container, type, code, opts) {
   if (!renderer) return false;
   container.classList.remove('diagram-error');
   try {
-    return (await renderer(container, code, opts)) !== false;
+    const ok = (await renderer(container, code, opts)) !== false;
+    if (ok) diagramContainers.add(container);   // 登记：供下次重渲染后回收
+    return ok;
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[diagram] ' + type + ' render failed:', e);
     renderError(container, type, code, e);
@@ -385,7 +434,7 @@ async function renderInto(container, type, code, opts) {
 
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
-    diagramTypeFromLanguage, engineLabel, renderInto,
+    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
     renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
@@ -394,7 +443,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    diagramTypeFromLanguage, engineLabel, renderInto,
+    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
     renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,

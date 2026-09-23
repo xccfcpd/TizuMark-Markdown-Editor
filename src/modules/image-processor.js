@@ -34,6 +34,24 @@ function fail(img) {
   img.alt = (img.alt || '') + ' [加载失败]';
 }
 
+// 兜底 fetch 图片得到的 Blob URL 回收队列。
+// 历史 bug：只 createObjectURL、从不 revoke → 每次重渲染（打字/切主题/切文件）都多留一份
+// 图片数据在 WebView 里，长会话内存只增不减（用户报「用久了莫名卡顿、要重启才正常」）。
+// 策略与 app.js 的 _imageURLCache 一致：超上限就回收最旧的（保留最近若干张，避免刚用完就被释放）。
+const INLINE_BLOB_URL_MAX = 32;
+const inlineBlobUrls = [];
+function trackInlineBlobUrl(url) {
+  if (!url) return url;
+  inlineBlobUrls.push(url);
+  while (inlineBlobUrls.length > INLINE_BLOB_URL_MAX) {
+    const old = inlineBlobUrls.shift();
+    try {
+      if (typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(old);
+    } catch (_e) { /* 回收失败不影响显示 */ }
+  }
+  return url;
+}
+
 // 还原 unified 渲染器对非 ASCII 路径做的 percent-encode（如 图片/截图.png → %E5%9B%BE...）。
 // 若不解码直接拿编码串去 Rust 读盘会找不到真实文件 → 裂图。纯 ASCII 路径解码为 no-op；
 // 含非法转义序列（如字面量 % 非转义）时容错返回原串，避免抛错中断整张图处理。
@@ -172,7 +190,7 @@ async function processImages(preview, deps) {
       const blob = await resp.blob();
       // 代际检查 #7（校验）
       if (gen !== getRenderGeneration()) return;
-      img.src = URL.createObjectURL(blob);
+      img.src = trackInlineBlobUrl(URL.createObjectURL(blob));
     } catch (e) {
       console.warn('[preview] Failed to load image:', rawSrc, e);
       fail(img);

@@ -187,6 +187,13 @@
           this.app.preview.style.position = '';
           this.app.preview.style.padding = '';
           this.app.preview.innerHTML = finalHtml;
+          // 新内容已入 DOM：此刻上一批容器才真正脱离文档，回收它们的图表资源
+          // （ECharts 实例 / ResizeObserver / 引擎内部引用）—— 否则长会话内存只增不减，
+          // 表现为「用久了莫名卡顿、要重启才恢复」。只清脱离的那些，在 DOM 中的实例不动。
+          const DR = (typeof DiagramRenderers !== 'undefined') ? DiagramRenderers : null;
+          if (DR && typeof DR.disposeDetachedDiagrams === 'function') {
+            DR.disposeDetachedDiagrams(this.app.preview);
+          }
         }
 
         // 超大文档：顶部全局横幅提示（不塞进预览内容，避免随滚动/重渲染消失）

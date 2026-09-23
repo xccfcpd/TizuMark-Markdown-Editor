@@ -514,6 +514,49 @@ tikz：`\begin{axis}`、`\matrix`、`\tikzset`、`.style=`、`\usetikzlibrary`�
 > 而不是默默替用户渲染。若要彻底消除卡顿，需把「导出渲染」搬进离屏 DOM + 独立后处理链（成本高，
 > 且容易与预览链漂移）。
 
+### 2.18 修复：查看器跨文档残留 + 三处资源泄漏（「用久了卡、要重启才正常」）（2026-09-23）
+
+用户报障两条：① 文档关闭后**五线谱仍浮在其他 md 的界面上**；② **偶发卡顿、重启才恢复**。
+两条都属同一类问题：**该清理的没清理**。
+
+#### ① 查看器（lightbox）跨文档残留
+
+- **现象**：点图表（五线谱 / 任意图）放大后，关闭文档或切到别的 md，图形仍浮在最上层。
+- **根因**：查看器挂在 `document.body` 上（`position:fixed; inset:0; z-index:9999`，见 `misc-ui.js`
+  的 `showLightbox`），而
+  1. 提示条上的 **× 只 `hint.remove()`，灯箱本身没关** —— 用户以为关掉了，其实还开着；
+  2. 切标签 / 关标签 / 切视图模式**都不收**（全仓只有创建，没有"随文档切换关闭"）。
+  又因为它持有的是图表的**克隆 SVG**（与预览 DOM 无关），所以关掉文档它也照样活着。
+- **修法**：× 改为真正关闭；新增 `closeLightbox()`（登记 `_lightboxClose` 句柄、关闭后自清），
+  在 `switchTab` / `closeTab` / `setViewMode` 三处调用；提示文案补上「或 × 关闭」。
+
+| 文件 | 改动 |
+|---|---|
+| `src/modules/misc-ui.js` | × → 调 `closeRef()`；新增 `closeLightbox()`；`showLightbox` 登记/清理句柄；提示文案 |
+| `src/modules/tabs.js` | `switchTab` / `closeTab` 开头调用 `closeLightbox()` |
+| `src/modules/theme.js` | `setViewMode` 应用模式前调用 |
+
+#### ② 三处资源泄漏（"越用越卡、重启才正常"）
+
+| # | 泄漏 | 证据 | 修法 |
+|---|---|---|---|
+| 1 | **ECharts 实例注册表只增不减** | `chartRegistry`（`diagram-renderers.js`）只有"同容器重渲染时删自己"，**没有任何回收路径** → 每次重渲染产生的旧容器 + canvas + 实例被永久持有 | 新增 `diagramContainers` 登记所有渲染过的容器（含非 ECharts 引擎）；`disposeDetachedDiagrams(liveRoot)` 在**新内容写入 DOM 之后**调用，回收已脱离的那些 |
+| 2 | **ResizeObserver 从不 disconnect** | `container._tizuResizeObserver = ro` 之后再无人调用 `disconnect()` → 一直持有已脱离 DOM 的容器 | 回收时 `disconnect()` + 句柄置空 |
+| 3 | **远程图片 Blob URL 从不 revoke** | `image-processor.js` 兜底 fetch 分支 `img.src = URL.createObjectURL(blob)`；对比 `app.js` 的 `_imageURLCache` 有 LRU + revoke（这处是漏网的） | `trackInlineBlobUrl()`：超过 32 张回收最旧的（与 app.js 同策略） |
+
+`disposeDetachedDiagrams` **只清不在当前预览 DOM 里的**容器（在 DOM 中的实例保持不动，避免每次
+重渲染都重建、白卡一下）；回收时顺带清空容器内容，断开引擎内部（abcjs 的 responsive 监听、
+markmap 的 d3-zoom、wavedrom 内部状态）对旧容器的引用链，使其可被 GC。
+
+| 测试 | 内容 |
+|---|---|
+| `test/diagram-dispose.test.cjs`（纯 node，本地可跑） | 只回收脱离的、在 DOM 中的不动、ResizeObserver 必 disconnect、幂等、异常输入不抛错、渲染失败不登记 |
+| `test/lightbox-close.test.cjs`（jsdom，CI） | × 真正关闭 + 还原 body 滚动、`closeLightbox()` 可用且句柄清空、三处接点守卫（防将来把调用删掉） |
+
+> **仍未确诊的一类卡顿**：若真机表现为「**整窗冻住不动**」（而非逐渐变慢），属另一条路径
+> （IPC / 后端请求挂起），需要 DevTools → Performance / Memory 抓一次现场才能定位。
+> 本次修的是"逐渐变慢"这一类**确定成因**。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

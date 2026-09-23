@@ -38,7 +38,10 @@
       },
       async switchTab(index) {
         if (index === this.activeTabIndex || index < 0 || index >= this.tabs.length) return;
-  
+
+        // 图表/图片查看器挂在 document.body 上，不会随预览重渲染消失 ——
+        // 切标签前强制关闭，避免它浮在别的文档上面（用户报障，见 closeLightbox）。
+        if (typeof this.closeLightbox === 'function') this.closeLightbox();
         this._largeFileNoticeDismissed = false;
         this._previewFocusLine = 0;
         this.previewWindow = null;
@@ -114,7 +117,9 @@
       },
       async closeTab(index) {
         if (index < 0 || index >= this.tabs.length) return;
-  
+
+        // 同上：关掉文档时也必须收掉查看器，否则它继续浮在其他文档之上。
+        if (typeof this.closeLightbox === 'function') this.closeLightbox();
         const tab = this.tabs[index];
         if (tab.isModified) {
           const result = await this.showSaveDialog(this.t('saveChanges'), `${tab.name} ${this.t('fileModified')}`);

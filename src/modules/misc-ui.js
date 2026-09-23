@@ -242,8 +242,18 @@
       showImageLightbox(src) {
         this.showLightbox(src, 'image');
       },
+      // 强制关闭图表/图片查看器（灯箱挂在 document.body 上，不随预览重渲染消失）。
+      // 调用点：切换标签 / 关闭标签 / 切换视图模式 —— 否则它会一直浮在别的文档上面。
+      closeLightbox() {
+        const fn = this._lightboxClose;
+        if (typeof fn === 'function') {
+          this._lightboxClose = null;
+          try { fn(); } catch (e) { console.warn('[lightbox] 关闭失败：', e); }
+        }
+      },
       showLightbox(content, type) {
         let scale = 1, tx = 0, ty = 0;
+        let closeRef = null;   // 提前声明：提示条的 × 需要调用它（close 在后面才定义）
         let naturalW = 0, naturalH = 0;
         let isDragging = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
   
@@ -274,8 +284,11 @@
         }
         const hint = document.createElement('div');
         hint.className = 'lightbox-hint';
-        hint.innerHTML = '<span>🖱 滚轮缩放 · 拖动平移 · 双击重置 · Esc 关闭</span><span class="lightbox-hint-close">&times;</span>';
-        hint.querySelector('.lightbox-hint-close').addEventListener('click', () => hint.remove());
+        hint.innerHTML = '<span>🖱 滚轮缩放 · 拖动平移 · 双击重置 · Esc 或 × 关闭</span><span class="lightbox-hint-close">&times;</span>';
+        // 历史 bug：× 只 remove 了提示条，**灯箱本身没关** —— 用户以为关掉了，切到别的文档
+        // 时那个图表（document.body 上的固定层 + 克隆 SVG）仍浮在最上层（用户报「文件都关掉了，
+        // 五线谱还浮动在其他 md 的界面上」）。这里改成真正关闭灯箱。
+        hint.querySelector('.lightbox-hint-close').addEventListener('click', () => { if (closeRef) closeRef(); });
         overlay.appendChild(hint);
         overlay.appendChild(el);
         document.body.appendChild(overlay);
@@ -328,7 +341,11 @@
           document.removeEventListener('mousemove', onMouseMove);
           document.removeEventListener('mouseup', onMouseUp);
           document.body.style.overflow = wasOverflow;
+          if (this._lightboxClose === close) this._lightboxClose = null;   // 已关闭：清掉外部句柄
         };
+        closeRef = close;
+        // 外部强制关闭句柄（切换标签 / 关标签 / 切换视图模式时用，见 closeLightbox）
+        this._lightboxClose = close;
         overlay.addEventListener('click', (e) => {
           if (e.target === overlay) close();
         });

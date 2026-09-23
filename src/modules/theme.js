@@ -281,6 +281,9 @@
           }
         }
   
+        // 切换视图（分屏 ↔ 纯预览/编辑）时同样收掉查看器：它是 body 上的固定层，
+        // 不收会浮在切换后的界面上。
+        if (typeof this.closeLightbox === 'function') this.closeLightbox();
         this.viewMode = mode;
         // 会话级 md 模式记忆：仅当当前 tab 有 filePath 且为 markdown 时记录，
         // 无路径的新建文档（kind 兜底 markdown）不记录；图片/txt 不触碰记忆，
