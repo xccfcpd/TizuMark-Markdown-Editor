@@ -882,6 +882,24 @@
       //   · false → HTML。产物是**可交互网页**，内容不会丢，收起只是「等读者点开」，
       //             故保留实时预览所见的状态，使 `???` 的「默认收起」语义在导出的
       //             HTML 里同样成立（而非替读者预先展开）。
+      // 导出期间的全屏提示层：用于「正在全量渲染」这类**同步阻塞**阶段 ——
+      // 必须在阻塞开始前画出来并让浏览器真正渲染一帧，否则用户只会看到假死
+      // （用户 2026-09-23 报障：大文档导出时点 × 无反应、只能任务管理器结束进程）。
+      _showExportOverlay(text) {
+        try {
+          const el = document.createElement('div');
+          el.className = 'export-overlay';
+          el.innerHTML = '<div class="pdf-loading-spinner"></div><div class="pdf-loading-text"></div>';
+          const textEl = el.querySelector('.pdf-loading-text');
+          if (textEl) textEl.textContent = text;
+          el.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;' +
+            'align-items:center;justify-content:center;background:rgba(0,0,0,0.35);font-family:-apple-system,sans-serif;';
+          document.body.appendChild(el);
+          return el;
+        } catch (_e) {
+          return null;
+        }
+      },
       // 导出前的大文档预处理（A+B）：
       // 大文档的预览只渲染**滑动窗口**（约 1200 行，见 PreviewController.render），
       // 而四个导出路径都基于 preview.cloneNode(true) → 直接导出只会得到窗口那一段
@@ -906,11 +924,16 @@
         // 全量渲染大文档会明显卡顿（这正是窗口模式存在的原因），先问一次。
         // 同一会话内确认过就不再追问，避免每次导出都弹框。
         if (!this._exportFullRenderConfirmed) {
+          // ⚠ 第 3 参是「确认后执行的动作」**函数**（见 font.js / files.js 的既有用法），
+          // 不是按钮文案！传字符串会被 Dialogs 当函数调用并抛
+          // TypeError: opts.action is not a function
+          // —— 用户 2026-09-23 报障「大文件导出为 html 报错」即此。
+          // 「确定 / 取消」语义由对话框本身提供，故传 null（与 exportPDF 一致）。
           const ask = (typeof this.showConfirmDialog === 'function')
             ? this.showConfirmDialog(
               this.t('exportLargeDocTitle'),
               this.t('exportLargeDocMessage', { lines: totalLines }),
-              this.t('exportLargeDocConfirm'))
+              null)
             : Promise.resolve(true);
           const ok = await ask;
           if (!ok) {
@@ -919,14 +942,30 @@
           }
           this._exportFullRenderConfirmed = true;
         }
+        // ① 硬上限：全量渲染是**同步阻塞**的（渲染管线无法分片），文档再大就必须明确拒绝 ——
+        //    宁可报错，也绝不让界面进"假死"（历史教训：导出时界面无响应、点 × 无效、
+        //    只能任务管理器结束进程）。
+        const EXPORT_FULL_RENDER_MAX_LINES = 20000;
+        const EXPORT_FULL_RENDER_MAX_CHARS = 8 * 1024 * 1024;
+        if (totalLines > EXPORT_FULL_RENDER_MAX_LINES || content.length > EXPORT_FULL_RENDER_MAX_CHARS) {
+          this.showToast(this.t('exportTooLargeToRender', { lines: totalLines }), 'danger', { duration: 8000 });
+          return null;
+        }
+        // ② 阻塞前先给出可见反馈，并等它真正画出来（否则用户看到的就是"点了没反应"）
+        const overlay = this._showExportOverlay(this.t('exportFullRendering', { lines: totalLines }));
+        if (overlay && typeof requestAnimationFrame === 'function') {
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        }
         const prevScrollTop = this.preview ? this.preview.scrollTop : 0;
         this._previewForceFull = true;
         try {
           await this.updatePreview(true);
         } catch (e) {
           this._previewForceFull = false;   // 渲染失败必须复位，否则预览会一直尝试全量渲染
+          if (overlay) overlay.remove();
           throw e;
         }
+        if (overlay) overlay.remove();
         return {
           full: true,
           restore: async () => {

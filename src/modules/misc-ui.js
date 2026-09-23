@@ -346,6 +346,9 @@
         closeRef = close;
         // 外部强制关闭句柄（切换标签 / 关标签 / 切换视图模式时用，见 closeLightbox）
         this._lightboxClose = close;
+        // 记住"是哪个文档打开的"：预览重建时若 tab 已换（打开/切换文件），强制收掉，
+        // 这样即使某个入口漏了 closeLightbox，也不会浮在新文档之上。
+        this._lightboxOwnerTab = this.activeTab || null;
         overlay.addEventListener('click', (e) => {
           if (e.target === overlay) close();
         });

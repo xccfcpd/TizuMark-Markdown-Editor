@@ -85,7 +85,12 @@ function showConfirmDialog(opts) {
       cancelBtn.removeEventListener('click', onCancel);
     };
     const onConfirm = async () => {
-      if (opts.action) {
+      // 防御：action 必须是**函数**（确认后执行的动作）。历史 bug：某调用方误传了按钮文案
+      // 字符串 → `await opts.action()` 抛 TypeError 被下面的 catch 吞掉，而函数**照旧
+      // resolve(true)**，于是"报错"变成了"静默继续执行"—— 后果是导出流程在用户毫无察觉的
+      // 情况下继续跑重活（用户 2026-09-23 报障：大文档导出后界面假死）。
+      // 非函数一律按"无动作"处理，只走确认/取消语义。
+      if (typeof opts.action === 'function') {
         confirmBtn.disabled = true;
         cancelBtn.disabled = true;
         const originalHTML = confirmBtn.innerHTML;
@@ -93,7 +98,9 @@ function showConfirmDialog(opts) {
         try {
           await opts.action();
         } catch (e) {
-          showToast(t('deleteFont') + ' ' + t('failed') + ': ' + e, 'danger');
+          // 文案不再写死成「删除字体」——这里服务所有确认框（导出/切换工作区/删除字体…），
+          // 写死会让用户完全误解发生了什么（历史 bug：导出报错却提示"删除 失败"）。
+          showToast(String(t('failed')) + ': ' + e, 'danger');
         } finally {
           confirmBtn.disabled = false;
           cancelBtn.disabled = false;
