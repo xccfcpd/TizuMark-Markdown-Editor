@@ -74,3 +74,30 @@ console.log(
   `✓ 前端已编排到 dist/（拷贝 ${copied} 个文件，含已生成的 unified-bundle.js 与 vendor 库）。\n` +
     '  tauri.conf.json frontendDist = ../dist（release 加载本目录）；dev 走 devUrl 静态 server（src/）。'
 );
+
+// 构建指纹：写进 dist/index.html 的 <body data-build="<sha> <时间>">，应用「关于」对话框会显示。
+// 为什么需要：同一版本号可能对应多次构建，而 exe 里前端是**内嵌**的，没有指纹就无法判断
+// 「手上这个包到底是哪次提交」——本仓库已因此把旧包的故障误当新代码的 bug 排查过三次。
+// dev 不经过本脚本，故 dev 下该属性缺失，应用侧判空跳过。
+function readGitSha() {
+  try {
+    const head = fs.readFileSync(path.join(root, '.git', 'HEAD'), 'utf8').trim();
+    if (head.startsWith('ref:')) {
+      const refFile = path.join(root, '.git', head.slice(4).trim());
+      return fs.readFileSync(refFile, 'utf8').trim().slice(0, 7);
+    }
+    return head.slice(0, 7);
+  } catch (_) { return ''; }
+}
+const stamp = [
+  (process.env.GITHUB_SHA || '').slice(0, 7) || readGitSha() || 'unknown',
+  new Date().toISOString().slice(0, 16).replace('T', ' '),
+].join(' ');
+try {
+  const distIndex = path.join(distDir, 'index.html');
+  const html = fs.readFileSync(distIndex, 'utf8');
+  fs.writeFileSync(distIndex, html.replace(/<body([^>]*)>/i, '<body$1 data-build="' + stamp.replace(/"/g, '') + '">'));
+  console.log('[build-frontend] 构建指纹 data-build="' + stamp + '" 已写入 dist/index.html');
+} catch (e) {
+  console.warn('[build-frontend] 构建指纹写入失败（不影响构建）：' + (e && e.message ? e.message : e));
+}

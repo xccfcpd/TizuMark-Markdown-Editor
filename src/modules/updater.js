@@ -42,7 +42,11 @@
         try {
           const ver = await TauriApi.getVersion();
           const el = document.getElementById('about-version');
-          if (el) el.textContent = 'v' + ver;
+          // 构建指纹：由 scripts/build-frontend.mjs 写入 dist/index.html 的 body[data-build]。
+          // 同一版本号可能对应多次构建，而 exe 的前端是内嵌的 —— 显示它才能判断
+          // 「手上这个包是哪次提交」，避免把旧包的故障当成新代码的 bug 去查。
+          const build = (document.body && document.body.getAttribute('data-build')) || '';
+          if (el) el.textContent = 'v' + ver + (build ? ' · ' + build : '');
         } catch (_) {}
       },
       hideAbout() {

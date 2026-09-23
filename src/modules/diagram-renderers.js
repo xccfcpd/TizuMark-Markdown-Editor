@@ -319,7 +319,16 @@ async function renderMarkmap(container, code, opts) {
   container.appendChild(svg);
   const transformer = new window.markmap.Transformer();
   const result = transformer.transform(source);
-  window.markmap.Markmap.create(svg, null, result.root);
+  const mm = window.markmap.Markmap.create(svg, null, result.root);
+  // 第二道防线（与上面的 viewBox 双保险）：**显式设定 d3-zoom 的 extent**。
+  // d3-zoom 的 defaultExtent 只在「没有 viewBox」时才去读 `svg.width.baseVal.value`，
+  // 而只由 CSS 撑尺寸的 SVG 其 baseVal 是相对长度 → 一读即抛 NotSupportedError。
+  // extent 一旦显式给出，d3 就**完全不再走 defaultExtent** —— 即使 viewBox 因任何原因
+  // 缺失（旧构建 / 第三方改写属性 / DOM 克隆）也不会再抛这个错。
+  // 值取与 viewBox 一致的用户单位（1:1），故不影响 markmap 自身的缩放/平移行为。
+  if (mm && mm.zoom && typeof mm.zoom.extent === 'function') {
+    try { mm.zoom.extent([[0, 0], [boxW, boxH]]); } catch (_e) { /* 尽力而为，失败不影响渲染 */ }
+  }
   if (!container.querySelector('svg')) throw new Error('Markmap 渲染结果异常（未生成 <svg>）');
   return true;
 }
