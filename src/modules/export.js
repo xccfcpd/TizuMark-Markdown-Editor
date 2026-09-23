@@ -440,6 +440,25 @@
       // 导出时把预览里的图片全部内联为 base64 data URI，使导出文档自包含、不受运行时
       // blob: 回收 / 源解析影响（同源 srcdoc 打印帧在 PDF 导出、外部打开在 HTML 导出都适用）。
       // 分支：blob:→fetch 还原；file://→Rust 读盘；相对路径→按文档目录 Rust 读盘；data:/http(s): 保留。
+      // 挑出「真正的 mermaid 容器」供导出时重渲染。
+      //
+      // 为什么不直接 `querySelectorAll('.mermaid-container')`：**我们的图表容器刻意复用了
+      // `.mermaid-container` 类**（为复用灰底框样式 / 灯箱 / 导出链路），于是它们也会被选中，
+      // 容器里的 `data-code`（DOT / ECharts option / WaveDrom JSON / ABC 谱面 / Markmap /
+      // TikZ / plot 源码）会被当成 Mermaid 语法喂给 mermaid.render()：
+      //   - mermaid 抛异常 → 调用处 try/catch 保住原图（侥幸）；
+      //   - mermaid 以「错误图」返回（v11 的 run() 就是这种行为；实测过一次导出里出现
+      //     20 个 "Syntax error in text / mermaid version …" 炸弹把原图顶掉）→ **直接丢图**。
+      // 判据：`data-diagram-type` 缺省（上游历史形态的 mermaid 容器）或等于 'mermaid'；
+      // 其余（graphviz / echarts / wavedrom / abcjs / markmap / tikz / plot）一律跳过。
+      _mermaidContainersForRerender(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return [];
+        return Array.from(root.querySelectorAll('.mermaid-container')).filter((el) => {
+          const t = el.getAttribute ? el.getAttribute('data-diagram-type') : null;
+          return !t || t === 'mermaid';
+        });
+      },
+
       async _inlineImagesForExport(clone, filePath) {
         // 未保存文档：相对路径/本地图无法解析目录，仅跳过这两类；
         // blob:/data:/http(s) 不依赖 filePath，仍照常内联，避免「未保存就导出」时连粘贴图都丢。
@@ -1047,11 +1066,12 @@
           // mermaid.initialize 失败不致命：下方 mermaid.render 有独立 try/catch，且初始化异常不应阻断导出
           try { mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } }); } catch (e) { console.error('[export] mermaid.initialize 失败（不影响导出）:', e); }
         }
-        const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
+        // 只挑真正的 mermaid 容器 —— 我们的图表容器也带 `.mermaid-container` 类，
+        // 若一并送进 mermaid.render，它们的源码（DOT / ECharts option / WaveDrom / ABC …）
+        // 会被当成 Mermaid 语法解析、并可能被错误图覆盖（见 _mermaidContainersForRerender）。
+        const mermaidContainers = this._mermaidContainersForRerender(clone);
         for (let mi = 0; mi < mermaidContainers.length; mi++) {
           const container = mermaidContainers[mi];
-          // ECharts 已截成 <img>（_applyEchartsSnapshots），跳过重截，交由普通图片路径等比缩放。
-          if (container.getAttribute('data-diagram-type') === 'echarts') continue;
           // 重渲染确保 SVG 就绪
           if (typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
             try {
@@ -1996,13 +2016,14 @@
   
           // Re-render Mermaid via mermaid.render() so every diagram gets a
           // consistent viewBox regardless of the current preview-pane width.
-          const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
+          // 只挑真正的 mermaid 容器：我们的图表容器也带 `.mermaid-container` 类，
+          // 若一并送进 mermaid.render，其源码（DOT / ECharts option / WaveDrom / ABC …）
+          // 会被当成 Mermaid 语法解析，并可能被错误图整块顶掉（见 _mermaidContainersForRerender）。
+          const mermaidContainers = this._mermaidContainersForRerender(clone);
           if (typeof mermaid !== 'undefined' && mermaidContainers.length) {
             const ff = this._exportPdfFontStack();
             mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } });
             for (let i = 0; i < mermaidContainers.length; i++) {
-              // ECharts 已截成 <img>，无需 mermaid.render（其 option 非 mermaid 语法会报错）
-              if (mermaidContainers[i].getAttribute('data-diagram-type') === 'echarts') continue;
               const code = (mermaidContainers[i].getAttribute('data-code') || mermaidContainers[i].textContent || '').trim();
               if (!code) continue;
               try {

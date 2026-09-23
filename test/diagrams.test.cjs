@@ -16,6 +16,26 @@ function longestPathSegs(svg) {
   return curve.split('L').length - 1;
 }
 
+/* ---------------- 语言路由：谁归 Mermaid ---------------- */
+
+// 这组断言锁住一次真实故障：若把 graphviz / echarts / wavedrom / abc / markmap 也算作
+// 「可转 Mermaid」，convertMermaidSources 就会把它们的代码块改写成 language-mermaid，
+// 交给 Mermaid 渲染必然报语法错（曾实测：19 个块全被 "Syntax error in text" 错误图顶掉）。
+test('classify：仅 plantuml / d2 归 Mermaid，其余图表语言一律不接管', () => {
+  for (const l of ['plantuml', 'puml', 'uml', 'pu', 'd2']) {
+    const info = D.classify(l, 'x');
+    assert.ok(info && info.kind === 'mermaid', l + ' 应归 mermaid');
+  }
+  for (const l of ['graphviz', 'dot', 'gv', 'echarts', 'wavedrom', 'wave', 'abc', 'abcjs',
+                   'markmap', 'mermaid', 'json', 'js', 'python', '', null, undefined]) {
+    assert.strictEqual(D.classify(l, 'x'), null, String(l) + ' 不得被 classify 接管');
+  }
+  // 别名表本身就是白名单：放宽即等于让原生引擎被 Mermaid 接管
+  assert.deepStrictEqual(Object.keys(D.MERMAID_ALIASES).sort(), ['d2', 'plantuml', 'pu', 'puml', 'uml']);
+  // 直出 SVG 的白名单同样只含 tikz / plot 家族
+  assert.deepStrictEqual(Object.keys(D.SVG_ALIASES).sort(), ['gnuplot', 'pgf', 'plot', 'tikz', 'tikzpicture']);
+});
+
 /* ---------------- PlantUML ---------------- */
 
 test('plantuml: 类图（继承 / 组合 / 成员）', () => {

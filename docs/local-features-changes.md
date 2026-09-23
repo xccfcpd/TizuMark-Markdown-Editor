@@ -251,6 +251,57 @@
 > 双保险。二者都不再依赖作用域 CSS，顺带消除了 §2.7 那类「脱离 `.diagram-container` 就塌陷」
 > 的隐患。
 
+### 2.12 修复：图表被 Mermaid 接管（导出守卫 + 路由守卫，2026-09-23）
+
+**症状**：预览 / 导出里 Graphviz、ECharts、WaveDrom、ABC 五线谱整块变成
+`Syntax error in text / mermaid version …` 的错误图（Markmap 另有 §2.11 的 SVGLength 报错）。
+
+**排查结论（两件事必须分开看）**
+
+1. **用户手上的那份 exe 不是当前代码构建的**。证据（全部实测自其导出的 `test0923.html`）：
+   - 20 个 `Syntax error in text` 炸弹；
+   - 炸弹容器是 `class="mermaid-container"`（**单类名**）+ `id="mermaid-<ts>-<index>"` +
+     `data-processed="true"` + `<div id="dmermaid-…">` —— 这是 **`mermaid.run()`** 的产物，
+     即**预览阶段** `processMermaid` 把这些块当 Mermaid 渲染了（导出路径用的是
+     `mermaid.render()`，其临时 id 前缀为 `pdf-mermaid-` / `docx-mermaid-`，文件里出现 **0 次**）；
+   - 文件里 `data-diagram-type="mermaid"` 出现 **0 次**，而当前 HEAD 的 `processMermaid`
+     **必设**该属性；同时我们的容器双类名完好保留 10 个 → 证明导出未剥离属性，是那段代码不同；
+   - 该「单类名 + id 形态」与**已废弃旧实现线** `3a28b0a` 的 `preview-post.js:312-313` 逐字一致；
+   - 块序号吻合：§9.1→13、§10.1→17、§12.1→25、§13.1→28（即 13 个真 mermaid 块之后按文档顺序
+     依次排到 graphviz 4 / echarts 8 / wavedrom 3 / abc 4）。
+   → **结论：必须用当前代码重新打包**（`build-windows.yml` 不监听 `more-function`，不会自动出包）。
+
+2. **当前代码仍有一处同类隐患，本次一并修掉**：`export.js` 的 Word / PDF 两条路径用
+   `clone.querySelectorAll('.mermaid-container')` 选容器后送 `mermaid.render(container.data-code)`，
+   而**我们的图表容器刻意复用了 `.mermaid-container` 类**（§2.1 的样式 / 灯箱复用决策），
+   且跳过条件只有 `data-diagram-type === 'echarts'` → graphviz / wavedrom / abcjs / markmap /
+   tikz / plot 的容器也会被喂进去。若 `mermaid.render` 以「错误图」返回（v11 的 `run()` 就是
+   这种语义，外部证据即上面那 20 个炸弹），Word / PDF 导出会被整块覆盖。
+
+| 文件 | 改动 |
+|------|------|
+| `src/modules/export.js` | 新增 `_mermaidContainersForRerender(root)`：按 `data-diagram-type` 判定，只返回**真正的** mermaid 容器（属性缺省或等于 `'mermaid'`）；Word 与 PDF 两处选择点改用它，并删掉「只跳过 echarts」的补丁式守卫 |
+| `test/export-mermaid-guard.test.cjs` | 新增 3 例：① 守卫只挑真 mermaid 容器（含历史无属性形态）；② `convertMermaidSources` 不得把 graphviz / dot / echarts / wavedrom / abc / abcjs / markmap 改写成 `language-mermaid`（且 plantuml 仍正常转换，能力不被误伤）；③ `collectDiagramBlocks` 对八种语言的原生类型映射 |
+| `test/diagrams.test.cjs` | 新增 1 例（零依赖、可离线直接跑）：`classify()` 仅 plantuml / d2 归 Mermaid，其余一律 `null`；并直接断言 `MERMAID_ALIASES` / `SVG_ALIASES` 的键集合，防止白名单被放宽 |
+
+> **教训（写给后来改这里的人）**：为复用样式而共享 `.mermaid-container` 类，等于把所有
+> 「图表容器」暴露给任何以该类为选择子的代码 —— 灯箱（`misc-ui`）幸运地无害，导出侧则致命。
+> 今后凡以该类选容器做**语义处理**（重渲染、替换、导出）的地方，都必须再按
+> `data-diagram-type` 收窄；本仓库已把导出侧收敛到唯一入口 `_mermaidContainersForRerender`。
+
+**重新打包后的验收判据（4 项全中才算修好）**
+
+1. 导出 HTML 里出现 `data-diagram-type="graphviz" / "echarts" / "wavedrom" / "abcjs"` 容器，各自带 `<svg>`（ECharts 为快照 `<img>`）；
+2. `Syntax error in text` 计数为 **0**；
+3. 点击 / 滚轮 Markmap 不再抛 `SVGLength NotSupportedError`（§2.11）；
+4. 导出 Word / PDF 后上述图表仍在（不是错误图）。
+
+> 附带说明：用户旧的 `test0923.html` 里那 2 张「裂图」与本站无关 —— 其源域
+> `via.placeholder.com` **已停运**（DNS 可解析、TLS 握手被直接断开、HTTP 403；同环境
+> `placehold.co` / `unpkg.com` 均 200）。导出器按既有设计保留原 URL 并弹告警。
+> 该测试稿（`test.md`）是**用户本地文件、未纳入版本库**，复查时已不在工作区，故本仓库未改动它；
+> 若要彻底消除误报，把稿件里的占位图 URL 换成可用图床（如 `placehold.co`）或改成随文档的本地图片即可。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
