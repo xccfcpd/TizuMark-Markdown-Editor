@@ -131,7 +131,10 @@ test('收集守卫：这些语言仍由各自原生引擎接管（collectDiagram
     });
 
     const blocks = PP.collectDiagramBlocks(preview, typeOf);
-    const got = blocks.map((b) => b.type).sort();
+    // 注意：collectDiagramBlocks 由 harness 在 jsdom realm 里 eval，返回的是**该 realm 的数组**；
+    // 跨 realm 的数组原型不同，直接 deepStrictEqual 会「expected/actual 看起来一样却判不等」。
+    // 故用展开语法在本 realm 重建数组（node:assert 的 deepStrictEqual 是严格比较原型的）。
+    const got = [...blocks].map((b) => b.type).sort();
     const want = Object.keys(expect).map((k) => expect[k]).sort();
     assert.deepStrictEqual(got, want,
       '八种语言应全部被收集且类型映射正确；实际 ' + JSON.stringify(got) + ' / 期望 ' + JSON.stringify(want));
