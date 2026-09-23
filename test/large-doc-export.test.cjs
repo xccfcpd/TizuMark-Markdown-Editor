@@ -61,7 +61,8 @@ test('大文档导出：用户在确认框取消 → 返回 null，且不进入�
 
     const clone = await ed._clonePreviewForExport();
     assert.equal(clone, null, '取消应返回 null（四个导出入口据此直接结束）');
-    assert.equal(ed._previewForceFull, false, '取消时不得开启全量渲染');
+    // 注意用"falsy"而不是 === false：app.js 里初值为 false，但任何路径下都不该是 truthy
+    assert.ok(!ed._previewForceFull, '取消时不得开启全量渲染');
     assert.ok(ed.previewWindow, '取消后仍是窗口模式');
   } finally {
     cleanup(w);
@@ -83,7 +84,7 @@ test('小文档导出：直通（不弹确认框、不进全量渲染）', async
     const clone = await ed._clonePreviewForExport();
     assert.ok(clone, '小文档应正常返回克隆');
     assert.equal(asked, 0, '小文档不得弹「大文档导出」确认框');
-    assert.equal(ed._previewForceFull, false, '小文档不做全量渲染开关');
+    assert.ok(!ed._previewForceFull, '小文档不做全量渲染开关');
     assert.ok(clone.innerHTML.includes('只有几行内容'), '克隆内容应正常');
   } finally {
     cleanup(w);

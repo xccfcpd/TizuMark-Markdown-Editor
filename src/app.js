@@ -49,6 +49,7 @@ class MarkdownEditor {
     this.previewWindow = null;       // 大文档窗口模式：{start, end}（0-based 源码行），普通文档为 null
     this.previewController = new PreviewController(this); // P2-1 Strangler facade（ADR-3）
     this._previewVirtual = false;    // 纯预览模式 + 大文档：虚拟滚动（spacer 撑高，可拖到任意位置）
+    this._previewForceFull = false;  // 导出前临时要求全量渲染（跳过滑动窗口），见 export.js 的 _preparePreviewForExport
     this._avgLineHeight = null;      // 虚拟滚动平均行高（首次渲染后校准一次，之后恒定）
     this._virtualRenderTimer = null; // 虚拟滚动重渲染 debounce 计时器
     this._previewScrollDriven = false; // 虚拟滚动：滚动驱动的重渲染保留 scrollTop（不回弹贴顶）

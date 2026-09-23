@@ -980,7 +980,12 @@
       // 返回 null 表示用户在确认框里取消了导出，调用方应直接结束。
       async _clonePreviewForExport(opts) {
         const prep = await this._preparePreviewForExport();
-        if (!prep) return null;
+        if (!prep) {
+          // 取消路径也兜底复位：无论 _preparePreviewForExport 内部执行到哪一步，
+          // 返回后都必须保证"不处于强制全量"状态（否则预览会一直全量渲染、越用越卡）。
+          this._previewForceFull = false;
+          return null;
+        }
         try {
           const clone = this.preview.cloneNode(true);
           const expandDetails = !opts || opts.expandDetails !== false;
