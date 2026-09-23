@@ -100,7 +100,11 @@
     try {
       const content = this.app.cm.getValue();
         const totalLines = content.split('\n').length;
-        const isLarge = content.length > MAX_PREVIEW_CHARS || totalLines > MAX_PREVIEW_LINES;
+        // _previewForceFull：导出等场景临时要求**全量渲染**（见 export.js 的 _preparePreviewForExport）。
+        // 不加这个开关，大文档会走下面的滑动窗口只渲染约 1200 行，而导出基于
+        // preview.cloneNode(true) → 导出的 HTML/PDF/Word 只会包含那一段（2026-09-23 用户报障）。
+        const isLarge = !this.app._previewForceFull &&
+          (content.length > MAX_PREVIEW_CHARS || totalLines > MAX_PREVIEW_LINES);
 
         // 大文档重渲染耗时明显：在加载层可见时由本函数接管其生命周期（引用计数），
         // 仅在「显式打开/切换/视图切换/大纲跳转」等非滚动、非打字触发的重渲染时显示 loading；

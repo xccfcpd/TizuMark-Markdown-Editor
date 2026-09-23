@@ -882,13 +882,76 @@
       //   · false → HTML。产物是**可交互网页**，内容不会丢，收起只是「等读者点开」，
       //             故保留实时预览所见的状态，使 `???` 的「默认收起」语义在导出的
       //             HTML 里同样成立（而非替读者预先展开）。
-      _clonePreviewForExport(opts) {
-        const clone = this.preview.cloneNode(true);
-        const expandDetails = !opts || opts.expandDetails !== false;
-        if (expandDetails) {
-          clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
+      // 导出前的大文档预处理（A+B）：
+      // 大文档的预览只渲染**滑动窗口**（约 1200 行，见 PreviewController.render），
+      // 而四个导出路径都基于 preview.cloneNode(true) → 直接导出只会得到窗口那一段
+      // （用户 2026-09-23 报：大文档导出的 HTML/PDF/Word 内容残缺）。
+      // 这里在导出前临时要求「全量渲染」，返回 { full, restore }；用户取消则返回 null。
+      async _preparePreviewForExport() {
+        const content = this.cm.getValue();
+        const C = (typeof TMConst !== 'undefined' && TMConst) ? TMConst : null;
+        const totalLines = content.split('\n').length;
+        // 判定走 preview-window.js 的纯函数（与预览同一套阈值，可零依赖单测）
+        const PW = (typeof PreviewWindow !== 'undefined') ? PreviewWindow : null;
+        const needsFull = (PW && typeof PW.shouldRenderFullForExport === 'function')
+          ? PW.shouldRenderFullForExport({
+            chars: content.length,
+            lines: totalLines,
+            maxChars: C ? C.MAX_PREVIEW_CHARS : undefined,
+            maxLines: C ? C.MAX_PREVIEW_LINES : undefined,
+            hasWindow: !!this.previewWindow,
+          })
+          : (!!this.previewWindow || totalLines > (C ? C.MAX_PREVIEW_LINES : 5000));
+        if (!needsFull) return { full: false, restore: async () => {} };
+        // 全量渲染大文档会明显卡顿（这正是窗口模式存在的原因），先问一次。
+        // 同一会话内确认过就不再追问，避免每次导出都弹框。
+        if (!this._exportFullRenderConfirmed) {
+          const ask = (typeof this.showConfirmDialog === 'function')
+            ? this.showConfirmDialog(
+              this.t('exportLargeDocTitle'),
+              this.t('exportLargeDocMessage', { lines: totalLines }),
+              this.t('exportLargeDocConfirm'))
+            : Promise.resolve(true);
+          const ok = await ask;
+          if (!ok) {
+            this.setStatus(this.t('exportLargeDocCancelled'));
+            return null;
+          }
+          this._exportFullRenderConfirmed = true;
         }
-        return clone;
+        const prevScrollTop = this.preview ? this.preview.scrollTop : 0;
+        this._previewForceFull = true;
+        try {
+          await this.updatePreview(true);
+        } catch (e) {
+          this._previewForceFull = false;   // 渲染失败必须复位，否则预览会一直尝试全量渲染
+          throw e;
+        }
+        return {
+          full: true,
+          restore: async () => {
+            this._previewForceFull = false;
+            try { await this.updatePreview(true); } catch (_e) { /* 恢复窗口渲染失败不掩盖导出结果 */ }
+            if (this.preview) this.preview.scrollTop = prevScrollTop;
+          },
+        };
+      },
+      // 导出用克隆（⚠ 现在是 async）：大文档会先全量渲染，克隆完成后**立即**恢复窗口渲染 ——
+      // 克隆是脱离文档的副本，故恢复预览不影响后续对克隆的处理。
+      // 返回 null 表示用户在确认框里取消了导出，调用方应直接结束。
+      async _clonePreviewForExport(opts) {
+        const prep = await this._preparePreviewForExport();
+        if (!prep) return null;
+        try {
+          const clone = this.preview.cloneNode(true);
+          const expandDetails = !opts || opts.expandDetails !== false;
+          if (expandDetails) {
+            clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
+          }
+          return clone;
+        } finally {
+          if (prep.full) await prep.restore();
+        }
       },
       // Word 导出前的 DOM 预处理：把 Web 预览中 Word HTML 导入器会曲解的结构，
       // 转成 Word 能稳定渲染的等价形式，并内联关键样式。
@@ -1231,7 +1294,8 @@
           });
           if (!path) return;
   
-          const clone = this._clonePreviewForExport({ expandDetails: false });
+          const clone = await this._clonePreviewForExport({ expandDetails: false });
+          if (!clone) return;   // 大文档：用户在「全量渲染」确认框里取消了导出
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
@@ -1705,7 +1769,10 @@
             hideOverlay();
           }, 120000);
   
-          const clone = this._clonePreviewForExport();
+          const clone = await this._clonePreviewForExport();
+          // 大文档：用户在确认框里取消了导出。watchdog 已启动，必须一并清掉，
+          // 否则 120s 后它会误报「导出失败」。
+          if (!clone) { clearTimeout(watchdog); hideOverlay(); return; }
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
@@ -1885,7 +1952,8 @@
         try {
           this.setStatus(this.t('generatingImg'));
   
-          clone = this._clonePreviewForExport();
+          clone = await this._clonePreviewForExport();
+          if (!clone) return;   // 大文档：用户在确认框里取消了导出
           clone.style.position = 'fixed';
           clone.style.left = '-9999px';
           clone.style.top = '0';
@@ -2007,7 +2075,8 @@
           const pdfBaseName = String(this.activeTab.name || '').replace(/\.[^.]+$/, '');
           const safeBaseName = pdfBaseName || this.t('untitled') || 'document';
   
-          const clone = this._clonePreviewForExport();
+          const clone = await this._clonePreviewForExport();
+          if (!clone) { hideOverlay(); return; }   // 大文档：用户在确认框里取消了导出
           clone.querySelectorAll('.copy-btn, #abbr-data').forEach(el => el.remove());
 
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，PDF 稳定显示。

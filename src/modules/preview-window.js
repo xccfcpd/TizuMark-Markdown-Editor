@@ -62,7 +62,25 @@
     return { start, end };
   }
 
-  const api = { isBlockStart: isBlockStart, computePreviewWindow: computePreviewWindow };
+  // 导出是否需要先做「全量渲染」：大文档预览只渲染滑动窗口（约 1200 行），而四个导出
+  // 路径都基于 preview.cloneNode(true) → 直接导出只会得到窗口那一段。
+  // 判定与预览用**同一套阈值**（由调用方注入，避免常量漂移）。
+  // opts: { chars, lines, maxChars, maxLines, hasWindow }
+  function shouldRenderFullForExport(opts) {
+    opts = opts || {};
+    if (opts.hasWindow === true) return true;                  // 已在窗口模式 → 必须全量
+    const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 4 * 1024 * 1024;
+    const maxLines = Number.isFinite(opts.maxLines) ? opts.maxLines : 5000;
+    const chars = Number.isFinite(opts.chars) ? opts.chars : 0;
+    const lines = Number.isFinite(opts.lines) ? opts.lines : 0;
+    return chars > maxChars || lines > maxLines;               // 与 PreviewController 的 > 语义一致
+  }
+
+  const api = {
+    isBlockStart: isBlockStart,
+    computePreviewWindow: computePreviewWindow,
+    shouldRenderFullForExport: shouldRenderFullForExport,
+  };
 
   if (typeof window !== 'undefined' && typeof module === 'undefined') {
     window.PreviewWindow = api;

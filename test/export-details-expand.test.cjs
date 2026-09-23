@@ -27,7 +27,9 @@ test('_clonePreviewForExport：默认展开所有折叠 <details>，且不改动
   await withEditor({}, async (w, ed) => {
     w.editor.preview.innerHTML = PREVIEW_HTML;
 
-    const clone = ed._clonePreviewForExport();
+    // ⚠ 该入口现在是 async（大文档会先全量渲染，见 §2.17）
+    const clone = await ed._clonePreviewForExport();
+    assert.ok(clone, '小文档应直接返回克隆');
 
     // 原预览必须原样不动：收起的仍收起、已展开的仍展开
     // （fixture 里原生 <details> 带 open 属性，故不能笼统断言"全部 open === false"）
@@ -52,7 +54,8 @@ test('_clonePreviewForExport({ expandDetails: false })：保持收起状态', as
   await withEditor({}, async (w, ed) => {
     w.editor.preview.innerHTML = PREVIEW_HTML;
 
-    const clone = ed._clonePreviewForExport({ expandDetails: false });
+    const clone = await ed._clonePreviewForExport({ expandDetails: false });
+    assert.ok(clone, '小文档应直接返回克隆');
 
     const adm = clone.querySelector('details[data-admonition]');
     assert.ok(adm, '克隆应含 admonition 折叠块');

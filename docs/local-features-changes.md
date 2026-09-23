@@ -485,6 +485,35 @@ tikz：`\begin{axis}`、`\matrix`、`\tikzset`、`.style=`、`\usetikzlibrary`�
 4. 若不能跳：属打印引擎未保留内部链接（不是本链路的问题），可在 D 组用「引用清单」兜底；
 5. 顺带确认 Word 侧：公式右侧编号 `(1)` 已出现（③ 的修复），且公式仍可双击编辑。
 
+### 2.17 修复：大文档（>5000 行 / >4 MB）导出残缺（2026-09-23）
+
+**症状（用户报障）**：文档超过阈值后，预览只渲染当前位置附近约 1200 行（滑动窗口，预览本身没问题），
+但导出的 HTML / PDF / PNG / Word **只包含那一段** —— 内容残缺、Word/PDF 版式错乱。
+
+**根因**：四个导出路径全部基于 `preview.cloneNode(true)`（`export.js` 的 `_clonePreviewForExport`），
+而大文档的预览 DOM 里**只有窗口那一段**（`PreviewController.render` 的 isLarge 分支把源码切成
+`[win.start, win.end)` 再渲染）。导出侧此前**完全没有**对截断的处理 —— `_previewTruncated`
+只被用来弹顶部横幅，等于「应用知道自己只渲染了一部分，却没告诉导出」。
+
+| 文件 | 改动 |
+|---|---|
+| `src/controllers/preview-controller.js` | `isLarge` 增加 `!app._previewForceFull` 开关：导出可临时要求**全量渲染** |
+| `src/modules/preview-window.js` | 新增纯函数 `shouldRenderFullForExport({ chars, lines, maxChars, maxLines, hasWindow })`（与预览同一套阈值，可零依赖单测） |
+| `src/modules/export.js` | 新增 `_preparePreviewForExport()`：大文档时先询问（B）→ 置 `_previewForceFull` → 全量渲染 → 返回 `restore()`；`_clonePreviewForExport` 改为 **async**，克隆后**立即** `restore()`（克隆已脱离文档，恢复预览不影响后续处理）；四个导出入口补 `await` 与取消处理（Word 取消时一并 `clearTimeout(watchdog)`，否则 120s 后误报失败） |
+| `src/modules/i18n-data.js` | 新增 4 个键（中英）：`exportLargeDocTitle / Message / Confirm / Cancelled` |
+
+**B（确认框）**：首次遇到大文档导出时询问「直接导出只包含约 1200 行，是否先全量渲染？」
+（确定 = 全量渲染并导出；取消 = **中止导出**，不会生成半截文件）；同一会话确认过之后不再追问。
+
+| 测试 | 内容 |
+|---|---|
+| `test/preview-export-guard.test.cjs`（纯函数，本地可跑） | 窗口模式必定全量、行数/字符阈值、阈值注入、边界不算超、小文档直通 |
+| `test/large-doc-export.test.cjs`（jsdom，CI） | ① 6000 行文档的导出克隆**必须包含文档末尾**（窗口模式不可能有），且导出后 `previewWindow` 恢复；② 取消 → 返回 `null` 且不开启全量渲染；③ 小文档直通、不弹框 |
+
+> **已知取舍**：全量渲染大文档会明显卡顿（这正是滑动窗口存在的原因）—— 所以才有 B 的确认框，
+> 而不是默默替用户渲染。若要彻底消除卡顿，需把「导出渲染」搬进离屏 DOM + 独立后处理链（成本高，
+> 且容易与预览链漂移）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
