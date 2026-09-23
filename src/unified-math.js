@@ -49,6 +49,15 @@ const SI_UNIT = {
   wh: 'Wh', watthour: 'Wh', kwh: 'kWh', kilowatthour: 'kWh',
   mwh: 'MWh', gwh: 'GWh', va: 'VA', voltampere: 'VA', kva: 'kVA', kilovoltampere: 'kVA',
   db: 'dB', decibel: 'dB', np: 'Np', neper: 'Np',
+  // 2026-09 ⑤：按 siunitx 官方单位清单批量补齐。判据是「符号不能由 名字→符号 直推」——
+  // 前缀+基本单位的组合本就能解析（`\kilo\metre` → km、`\milli\second` → ms），
+  // 因此这里只登记**不可组合**的那批（历史符号、约定俗成的缩写、特殊符号）。
+  parsec: 'pc', lightyear: 'ly', barn: 'b',
+  atmosphere: 'atm', torr: 'Torr', mmhg: 'mmHg', millimetreofmercury: 'mmHg', psi: 'psi',
+  dyne: 'dyn', erg: 'erg', calorie: 'cal', horsepower: 'hp',
+  curie: 'Ci', poise: 'P', stokes: 'St', gauss: 'G', molar: 'M',
+  bit: 'bit', byte: 'B', baud: 'Bd',
+  fahrenheit: '^{\\circ}F', degreecelsius: '^{\\circ}C',
 };
 
 // siunitx v2 风格的单位简写（区分大小写，与规范符号一致）
@@ -191,17 +200,54 @@ function siFormatList(raw) {
 // 为什么不用一串正则：原实现的参数匹配是 `\{([^{}]*)\}`，**遇到花括号嵌套就整条不匹配**，
 // 于是 `\si{\metre\tothe{3}}`、`\SI{1}{\frac{a}{b}}` 这类会原样留给 KaTeX → 报未知命令（红字）。
 // 改为**配对花括号扫描**：天然支持嵌套，同时顺带支持 `\SI*` 与 `[选项]`（选项内也可含 {}）。
+
+// 数值乘积（\qtyproduct）：`2 x 3` / `2×3` → `2\times3`。
+// 注意分隔符必须"独立成词"：不能把 `2 \times 3` 里的 `x` 当分隔符（那会切碎 \times）。
+const SI_PRODUCT_SEP = /\s*×\s*|(?<=\d)\s*[xX]\s*(?=\d)/;
+function siFormatProduct(raw) {
+  return String(raw == null ? '' : raw)
+    .split(SI_PRODUCT_SEP)
+    .map((x) => formatSiNumber(String(x).trim()))
+    .filter((x) => x !== '')
+    .join('\\times');
+}
+
+// 复数（\complexnum）：仅把虚数单位改为正体 `\mathrm{i}` / `\mathrm{j}`，数值原样（不做舍入）
+function siFormatComplex(raw) {
+  return String(raw == null ? '' : raw).trim().replace(/([ij])\s*$/, (m, u) => '\\mathrm{' + u + '}');
+}
+
+// 单位列表（\unitlist）：`\metre;\second` → 同一个 \mathrm 内以 `,\;` 分隔
+function siFormatUnitList(raw) {
+  const items = String(raw == null ? '' : raw)
+    .split(';')
+    .map((x) => expandSiUnit(String(x).trim()))
+    .filter((x) => x !== '');
+  return items.length ? '\\,\\mathrm{' + items.join(',\\;') + '}' : '';
+}
+
 const SI_COMMANDS = {
   SI: { args: ['num', 'unit'] },
   qty: { args: ['num', 'unit'] },
-  SIrange: { args: ['num', 'num', 'unit'] },
-  qtyrange: { args: ['num', 'num', 'unit'] },
+  SIrange: { args: ['num', 'num', 'unit'], join: 'range' },
+  qtyrange: { args: ['num', 'num', 'unit'], join: 'range' },
   SIlist: { args: ['list', 'unit'] },
   qtylist: { args: ['list', 'unit'] },
   si: { args: ['unit'] },
   unit: { args: ['unit'] },
   num: { args: ['num'] },
   ang: { args: ['ang'] },
+  // 2026-09 补齐（此前未实现 → 原样留给 KaTeX → 红字）
+  numrange: { args: ['num', 'num'], join: 'range' },
+  numlist: { args: ['list'] },
+  unitlist: { args: ['unitlist'] },
+  complexnum: { args: ['complex'] },
+  qtyproduct: { args: ['product', 'unit'] },
+  // \sisetup{…}：全局配置。本兼容层是**无状态纯函数**（每个公式独立、跨公式不共享状态），
+  // 无法持久化全局配置，故**安全吞掉**（消除"未知命令"红字），其语义不生效。
+  // 大小写两种写法都吞（siunitx 只提供小写，但用户常写错）。
+  sisetup: { args: ['raw'], drop: true },
+  SIsetup: { args: ['raw'], drop: true },
 };
 
 // 取一个配对参数 {…}；不是参数或括号不配对时返回 null
@@ -232,15 +278,19 @@ function renderSiCommand(name, args) {
   const spec = SI_COMMANDS[name];
   const parts = spec.args.map((kind, k) => {
     const a = args[k] == null ? '' : args[k];
+    if (kind === 'raw') return '';
     if (kind === 'num') return formatSiNumber(a);
     if (kind === 'list') return siFormatList(a);
+    if (kind === 'product') return siFormatProduct(a);
+    if (kind === 'complex') return siFormatComplex(a);
+    if (kind === 'unitlist') return siFormatUnitList(a);
     if (kind === 'ang') {
       const marks = ['^{\\circ}', '^{\\prime}', '^{\\prime\\prime}'];
       return String(a).split(';').map((p, idx) => String(p).trim() + (marks[idx] || '')).join('');
     }
     return siWrapUnit(expandSiUnit(a));
   });
-  if (name === 'SIrange' || name === 'qtyrange') return parts[0] + '\\text{--}' + parts[1] + parts[2];
+  if (spec.join === 'range') return parts[0] + '\\text{--}' + parts[1] + (parts[2] || '');
   return parts.join('');
 }
 
@@ -259,16 +309,18 @@ function expandSiunitx(tex) {
       continue;
     }
     const name = m[1];
+    const spec = SI_COMMANDS[name];
     let j = skipSiOption(s, i + m[0].length);
     const args = [];
     let ok = true;
-    for (let k = 0; k < SI_COMMANDS[name].args.length; k++) {
+    for (let k = 0; k < spec.args.length; k++) {
       const arg = readBracedArg(s, j);
       if (!arg) { ok = false; break; }
       args.push(arg.value);
       j = arg.next;
     }
     if (!ok) { out += m[0]; i += m[0].length; continue; } // 参数不全 → 原样保留，不猜
+    if (spec.drop) { i = j; continue; }                    // 吞掉（\sisetup）
     out += renderSiCommand(name, args);
     i = j;
   }

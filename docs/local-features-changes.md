@@ -331,6 +331,21 @@ node -e "console.log(require('./src/unified-math.js').expandSiunitx('\\si{\\newt
 
 测试：`test/unified-math.test.cjs` 32 → **37 例**（新增 5 例锁住上述补漏，含"参数不全原样保留"）。
 
+#### 2.13.1 追加：①②⑤ 已实现，③④ 经用户决定不做（2026-09-23）
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| ① | `\sisetup{…}` **安全吞掉**（`sisetup` / `SIsetup` 两种写法都吞，消除"未知命令"红字）。**语义不生效** —— 本兼容层是**无状态纯函数**（每个公式独立），跨公式的全局配置无法持久化 | ✅ 已做 |
+| ② | 补命令：`\numrange`、`\numlist`、`\unitlist`、`\complexnum`、`\qtyproduct` | ✅ 已做 |
+| ⑤ | 单位表批量补齐 —— 只登记**不可由「前缀 + 基本单位」组合得到**的符号：`\parsec` `\lightyear` `\barn` `\atmosphere` `\torr` `\mmHg` `\psi` `\dyne` `\erg` `\calorie` `\horsepower` `\curie` `\poise` `\stokes` `\gauss` `\molar` `\bit` `\byte` `\baud` `\fahrenheit` `\degreeCelsius`（`\kilo\calorie` → `kcal` 这类组合本就可用，故不重复登记） | ✅ 已做 |
+| ③④ | 数字语义（不确定度 `1.2(3)`、区间短语、分隔符）与**选项白名单化**（`per-mode` / `round-mode` / `round-precision` / `list-*-separator` / `exponent-*`） | ⛔ **用户决定不做**（维持"不报错也不生效"现状） |
+
+**有意不做的一件事**：未登记单位宏**不自动降级**成 `\mathrm{名字}` —— 那会把拼写错误伪装成"看起来正常"的输出，违背本仓库"不猜、缺失即可见"的原则。改为靠 ⑤ 补表 + 自查脚本收敛。
+
+**仍未实现（原样保留 → KaTeX 可能标红）**：`\numproduct`、`\complexqty`、其它列表变体，以及 ③④ 涉及的一切选项语义。
+
+测试：`test/unified-math.test.cjs` 37 → **43 例**（本地 43/43 通过，含"`\numproduct` 仍未实现必须原样保留"这类防猜断言）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

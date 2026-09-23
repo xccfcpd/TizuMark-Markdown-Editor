@@ -284,5 +284,52 @@ test('siunitx: 补登记的单位宏不再残留（kWh / 分贝 / 伏安）', ()
 test('siunitx: \\SI* 可用；参数不全或不支持的命令一律原样保留（不猜）', () => {
   assert.strictEqual(M.expandSiunitx('\\SI*{2}{\\metre}'), '2\\,\\mathrm{m}');
   assert.strictEqual(M.expandSiunitx('\\si'), '\\si');
-  assert.strictEqual(M.expandSiunitx('\\numrange{1}{5}'), '\\numrange{1}{5}');
+  // \numproduct 仍未实现（本轮只做 \qtyproduct）→ 必须原样保留，不得猜测
+  assert.strictEqual(M.expandSiunitx('\\numproduct{2 x 3}'), '\\numproduct{2 x 3}');
+});
+
+/* ---- 2026-09 ②：补齐常用命令（此前未实现 → KaTeX 红字） ---- */
+
+test('siunitx: \\sisetup 安全吞掉（消红字；语义不生效，见文档 §2.13）', () => {
+  assert.strictEqual(
+    M.expandSiunitx('\\sisetup{per-mode=symbol}\\qty{5}{\\metre\\per\\second}'),
+    '5\\,\\mathrm{m/s}'
+  );
+  assert.strictEqual(M.expandSiunitx('\\SIsetup{round-mode=places}'), '');
+});
+
+test('siunitx: \\numrange / \\numlist 补实现', () => {
+  assert.strictEqual(M.expandSiunitx('\\numrange{1}{5}'), '1\\text{--}5');
+  assert.strictEqual(M.expandSiunitx('\\numlist{1;2;3}'), '1,\\;2,\\;3');
+});
+
+test('siunitx: \\unitlist 补实现（单位列表留在同一个 \\mathrm 内）', () => {
+  assert.strictEqual(M.expandSiunitx('\\unitlist{\\metre;\\second}'), '\\,\\mathrm{m,\\;s}');
+});
+
+test('siunitx: \\complexnum 补实现（虚数单位取正体）', () => {
+  assert.strictEqual(M.expandSiunitx('\\complexnum{3+4i}'), '3+4\\mathrm{i}');
+  assert.strictEqual(M.expandSiunitx('\\complexnum{1.5-0.5j}'), '1.5-0.5\\mathrm{j}');
+});
+
+test('siunitx: \\qtyproduct 补实现；且不得切碎已有的 \\times', () => {
+  assert.strictEqual(M.expandSiunitx('\\qtyproduct{2 x 3}{\\metre}'), '2\\times3\\,\\mathrm{m}');
+  assert.strictEqual(M.expandSiunitx('\\qtyproduct{2×3}{\\metre}'), '2\\times3\\,\\mathrm{m}');
+  // `2 \times 3` 里的 x 不能当分隔符（否则会切碎 \times）
+  assert.strictEqual(M.expandSiunitx('\\qtyproduct{2 \\times 3}{\\metre}'), '2 \\times 3\\,\\mathrm{m}');
+});
+
+/* ---- 2026-09 ⑤：单位表批量补齐（不可由 前缀+基本单位 组合得到的符号） ---- */
+
+test('siunitx: ⑤ 补登记的单位宏不再残留（历史/约定符号）', () => {
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\parsec}'), '1\\,\\mathrm{pc}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\lightyear}'), '1\\,\\mathrm{ly}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\atmosphere}'), '1\\,\\mathrm{atm}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\calorie}'), '1\\,\\mathrm{cal}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\gauss}'), '1\\,\\mathrm{G}');
+  assert.strictEqual(M.expandSiunitx('\\qty{100}{\\byte}'), '100\\,\\mathrm{B}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\bit}'), '1\\,\\mathrm{bit}');
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\fahrenheit}'), '1\\,\\mathrm{^{\\circ}F}');
+  // 仍可由前缀组合得到的情况不得被破坏
+  assert.strictEqual(M.expandSiunitx('\\qty{1}{\\kilo\\calorie}'), '1\\,\\mathrm{kcal}');
 });
