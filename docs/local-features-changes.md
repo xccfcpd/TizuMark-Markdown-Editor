@@ -557,6 +557,42 @@ markmap 的 d3-zoom、wavedrom 内部状态）对旧容器的引用链，使其�
 > （IPC / 后端请求挂起），需要 DevTools → Performance / Memory 抓一次现场才能定位。
 > 本次修的是"逐渐变慢"这一类**确定成因**。
 
+### 2.19 修复：Word 导出慢/假死 + 灯箱谱面尺寸 + 渲染期闪源码（2026-09-23）
+
+用户报障：「Word 到处慢且无法导出」「**行数少的能导出、多了没反应**」「导出后界面假死、点 × 无效、
+中文输入法打不进字」「五线谱浮在正文之上、压住标题与正文」。
+
+#### ① Word 导出慢的真因：**已有的 SVG→PNG 快路被排在 html2canvas 之后**
+
+`_prepareWordDOM` 的逐图循环里，SVG→PNG 的代码**早就存在**，但它挂在 `if (!dataUrl)` 下 ——
+只有 html2canvas **失败**才轮到它。而 html2canvas 是整页样式重放，每张图 0.3–3 秒：
+75 张图要跑几分钟，主线程全程被占（连 120s watchdog 都 fire 不了，所以连"导出失败"都不弹），
+表现就是「没反应、只能任务管理器」。1 行文档没有图表，所以"能导出"。
+
+| 改动 | 内容 |
+|---|---|
+| **换序** | 有 `<svg>` 就**先**走 `_svgToPngDataUrl`（毫秒级）；html2canvas 降为「无 SVG（ECharts canvas 等）或快路失败」的兜底 |
+| **进度** | `_prepareWordDOM(clone, { control })` 每处理完一张图回调 `onProgress(done, total)`，提示层显示「正在处理图表 12/75（已用 8 秒）…」 |
+| **预告** | 开工前显示「共 N 张图表，预计约 X 秒」 |
+| **取消** | 提示层新增「取消导出」按钮：阶段之间（每张图一个 await 点）检查标志并中止，不再需要任务管理器 |
+
+#### ② 灯箱里 abcjs 谱面"压住正文"（尺寸失配）
+
+`prepareSvgForLightbox` 原判据是「有 width **或** height **或** viewBox 就算自带尺寸」→
+abcjs 的 responsive 输出只有 viewBox（它把 width/height 删掉、并带 `preserveAspectRatio="xMinYMin"`）
+也走了早返回 → 在查看器里占满视口、内容钉在左上角 —— 这正是「谱面浮在正文之上」的成因。
+改为**只有 width+height 都具备**才早返回；只有 viewBox 的一类按实测尺寸补 width/height，
+并把对齐改为 `xMidYMid meet`（居中、等比、不变形）。
+
+#### ③ mermaid 渲染期"一会儿源码一会儿图"
+
+`processMermaid` 命中缓存才直接出图；未命中时必须把源码写进容器（`mermaid.run` 依赖 textContent 解析），
+渲染完成前用户看到的就是那段源码。现在渲染期加 `.diagram-pending`（文本透明 + 居中「图表渲染中…」占位），
+渲染结束（成败均）摘掉 —— 失败时源码重新可见，便于排查语法。
+
+**校验**：本地纯函数测试全绿（diagrams 41、unified-math 55、preview-export-guard 4、diagram-dispose 3）；
+灯箱尺寸改动的既有用例（自带尺寸不动／靠 CSS 撑尺寸才补／量不到不猜）由 CI 跑。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

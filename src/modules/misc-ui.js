@@ -224,8 +224,14 @@
         // 引擎自带尺寸信息（有 width/height 属性或 viewBox）→ 一律不动，保持既有表现。
         // Mermaid / TikZ / plot / Graphviz 都属此类，从这里早返回；
         // 尤其不能"顺手补一个缺的属性"——给 Mermaid 补 height 会改变它在查看器里的既有尺寸。
-        const selfSized = !!(src.getAttribute('width') || src.getAttribute('height') || src.getAttribute('viewBox'));
-        if (selfSized) return clone;
+        const hasW = !!src.getAttribute('width');
+        const hasH = !!src.getAttribute('height');
+        const hasVb = !!src.getAttribute('viewBox');
+        // 只有 width/height **都**具备才算"自带尺寸"（Mermaid / TikZ / plot / Graphviz / Markmap）。
+        // 只有 viewBox 的一类（典型：abcjs 的 responsive 输出 —— 它把 width/height 全删掉、
+        // 只留 viewBox + preserveAspectRatio="xMinYMin"）在查看器里会退化成"占满视口、
+        // 内容钉在左上角"：用户报障「五线谱浮在正文之上、压住标题与正文」正是此因。
+        if (hasW && hasH) return clone;
 
         const rect = typeof src.getBoundingClientRect === 'function' ? src.getBoundingClientRect() : null;
         const pw = Math.round((rect && rect.width) || 0);
@@ -235,7 +241,13 @@
 
         clone.setAttribute('width', String(pw));
         clone.setAttribute('height', String(ph));
-        clone.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
+        if (hasVb) {
+          // 保留原坐标系（abcjs 的 viewBox 是谱面坐标系），只把对齐方式**归中** ——
+          // 否则它自带的 xMinYMin 会让内容贴在左上角，放大后压在正文之上。
+          clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        } else {
+          clone.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
+        }
         clone.setAttribute('class', ((clone.getAttribute('class') || '') + ' lightbox-svg-adapt').trim());
         return clone;
       },

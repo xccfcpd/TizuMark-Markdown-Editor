@@ -2502,6 +2502,23 @@ body.is-resizing .side-btn {
 
 /* 通用图表容器（ECharts / WaveDrom / abcjs / Graphviz 共用 .mermaid-container 类） */
 .diagram-container canvas { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+/* 图表「渲染中」占位：mermaid 必须把源码放进容器才能解析，直接显示会闪源码
+   （用户报障「随滚动一会儿源码一会儿图」）。pending 期间把文本透明化 + 显示占位文字。 */
+.diagram-container.diagram-pending {
+  color: transparent !important;
+  min-height: 64px;
+  position: relative;
+}
+.diagram-container.diagram-pending::after {
+  content: '图表渲染中…';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary, #999);
+  font-size: calc(var(--ui-font-size) * 0.9231);
+}
 /* Graphviz 的 SVG 由它自己配色（默认黑线黑字，不宜强行改色）；深色主题下改用浅色底
    保证线条与文字可读——与 GitHub 渲染图表的处理方式一致。 */
 .diagram-container[data-diagram-type="graphviz"][data-theme="dark"] {

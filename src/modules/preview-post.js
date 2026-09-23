@@ -358,7 +358,10 @@ async function processMermaid(preview, opts) {
       // 命中缓存：直接复用上次的 SVG，不进 mermaid.run
       container.innerHTML = cached;
     } else {
-      // 未命中：放入待渲染队列（textContent 必须是原始 code，mermaid.run 才能解析）
+      // 未命中：放入待渲染队列（textContent 必须是原始 code，mermaid.run 才能解析）。
+      // 但**不能让它显示出来** —— 直接显示会"一会儿源码一会儿图"地闪（用户报障）。
+      // 用 .diagram-pending 把文本透明化并显示"渲染中"占位，渲染完成即摘掉。
+      container.classList.add('diagram-pending');
       container.textContent = code;
       toRender.push({ container, cacheKey });
     }
@@ -377,6 +380,8 @@ async function processMermaid(preview, opts) {
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-preview').trim() || '-apple-system, sans-serif',
     });
     await mermaid.run({ nodes: toRender.map(x => x.container) });
+    // 渲染结束（无论成败）都要摘掉 pending：失败时源码重新可见，便于用户排查语法。
+    for (const { container } of toRender) container.classList.remove('diagram-pending');
     // 渲染成功后存入缓存（仅缓存含 SVG 的成功结果，错误信息不缓存）
     if (mermaidCache) {
       for (const { container, cacheKey } of toRender) {

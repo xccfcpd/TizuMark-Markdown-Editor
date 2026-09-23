@@ -997,7 +997,11 @@
       // 把 Web 预览 DOM 预处理成 Word 兼容结构。
       // 公式（.katex）本函数一律原样保留：DOCX 真 OOXML 主路径需要它内部的 <math>
       // 来生成 Word 可编辑公式（OMML）；公式不再转图片。
-      async _prepareWordDOM(clone) {
+      async _prepareWordDOM(clone, opts) {
+        // opts.control：{ onProgress(done, total), isCancelled() } —— 让调用方把进度显示出来、
+        // 并能在阶段之间取消。否则「逐图转 PNG」这步在图表多时只能干等（用户报障：
+        // Word 到处慢且无法导出、界面像死了一样）。
+        const ctl = (opts && opts.control) || null;
         // 把 clone 临时挂到离屏 DOM，确保 html2canvas 能拿到真实布局与样式。
         const holder = document.createElement('div');
         holder.style.position = 'fixed';
@@ -1177,6 +1181,9 @@
         const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
         const rerenderable = new Set(this._mermaidContainersForRerender(clone));
         for (let mi = 0; mi < mermaidContainers.length; mi++) {
+          // 阶段之间（每个图表一次）检查取消：html2canvas / SVG 转 PNG 之间都是 await 点，
+          // 能真正响应，不必再"任务管理器结束进程"。
+          if (ctl && typeof ctl.isCancelled === 'function' && ctl.isCancelled()) return 'cancelled';
           const container = mermaidContainers[mi];
           // 重渲染确保 SVG 就绪（仅真 mermaid 容器）
           if (rerenderable.has(container) && typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
@@ -1196,6 +1203,24 @@
           }
           let dataUrl = '';
           let natW = 0, natH = 0, cssW = 0;
+          // ① **优先**走 SVG→PNG 直转：Mermaid / TikZ / plot / Graphviz / abcjs / WaveDrom 的
+          //    产物本身就是 SVG，序列化后用 canvas 画一次即可（毫秒级）。
+          //    历史 bug：这段"快路"原本排在 html2canvas **之后**（只有截图失败才轮到它），
+          //    而 html2canvas 是整页样式重放，每张图 0.3–3 秒 → 75 张图要跑几分钟、
+          //    界面全程无响应（用户报「Word 到处慢且无法导出」「行数少的能导出、多了没反应」）。
+          //    现在调换顺序：有 SVG 就走快路，没有（ECharts canvas 等）才用 html2canvas 兜底。
+          const svgFast = container.querySelector('svg');
+          if (svgFast) {
+            try {
+              dataUrl = await this._svgToPngDataUrl(svgFast);
+              let sw = 0, sh = 0;
+              const vb0 = svgFast.getAttribute('viewBox');
+              if (vb0) { const p0 = vb0.trim().split(/\s+/).map(Number); if (p0.length >= 4) { sw = p0[2]; sh = p0[3]; } }
+              if (!sw || !sh) { sw = parseFloat(svgFast.getAttribute('width')) || 0; sh = parseFloat(svgFast.getAttribute('height')) || 0; }
+              if (!sw || !sh) { const r0 = svgFast.getBoundingClientRect ? svgFast.getBoundingClientRect() : null; if (r0) { sw = r0.width; sh = r0.height; } }
+              natW = sw; natH = sh; cssW = sw; // sw 已是 CSS 显示宽
+            } catch (e) { dataUrl = ''; }
+          }
           // 备份原样式，截图后恢复（最终 Word HTML 里仍保留灰底框装饰）。
           const savedStyle = {
             padding: container.style.padding,
@@ -1216,7 +1241,8 @@
             container.style.margin = '0';
             container.style.overflow = 'visible';
             container.style.textAlign = 'left';
-            if (typeof html2canvas !== 'undefined') {
+            // ② 兜底：没有 SVG（ECharts canvas 等）或快路失败时才用 html2canvas（慢）
+            if (!dataUrl && typeof html2canvas !== 'undefined') {
               const canvas = await html2canvas(container, {
                 scale: 2,
                 backgroundColor: null,
@@ -1267,6 +1293,8 @@
           container.appendChild(img);
           // 让出主线程，使 loading spinner 与鼠标事件有机会处理。
           await new Promise((r) => setTimeout(r, 0));
+          // 进度回调（含"已用秒数"由调用方计算）——让用户看到它在干活
+          if (ctl && typeof ctl.onProgress === 'function') ctl.onProgress(mi + 1, mermaidContainers.length);
         }
   
         // 10. 普通图片：读取自然尺寸，按宽高比等比缩放到 500px，并设置 HTML width/height 属性，
@@ -1777,6 +1805,24 @@
         }
         document.body.appendChild(overlay);
   
+        // 取消按钮 + 进度文案：大文档 Word 导出的耗时主要在"逐图转 PNG"，
+        // 必须让用户看到进度、并且能退出（历史：界面像死了，只能任务管理器结束进程）。
+        let exportCancelled = false;
+        const t0 = Date.now();
+        const progressText = overlay.querySelector('.pdf-loading-text');
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = this.t('exportCancel');
+        cancelBtn.style.cssText = 'margin-top:14px;padding:6px 18px;border-radius:6px;' +
+          'border:1px solid rgba(255,255,255,0.5);background:rgba(255,255,255,0.14);color:#fff;' +
+          'cursor:pointer;font-size:13px;font-family:inherit;';
+        cancelBtn.addEventListener('click', () => {
+          exportCancelled = true;
+          cancelBtn.disabled = true;
+          cancelBtn.textContent = this.t('exportCancelling');
+        });
+        overlay.appendChild(cancelBtn);
+
         let overlayDone = false;
         let exported = false;
         const hideOverlay = () => {
@@ -1812,6 +1858,14 @@
           // 大文档：用户在确认框里取消了导出。watchdog 已启动，必须一并清掉，
           // 否则 120s 后它会误报「导出失败」。
           if (!clone) { clearTimeout(watchdog); hideOverlay(); return; }
+          // 预告工作量：让用户对"要等多久"有预期（图表数 × 经验系数，仅提示不阻塞）
+          const diagramTotal = clone.querySelectorAll('.mermaid-container').length;
+          if (diagramTotal > 0 && progressText) {
+            progressText.textContent = this.t('exportDiagramPreflight', {
+              total: diagramTotal,
+              sec: Math.max(5, Math.round(diagramTotal * 0.8)),
+            });
+          }
           clone.style.position = '';
           clone.style.left = '';
           clone.style.top = '';
@@ -1856,7 +1910,25 @@
           // 把 Web 预览 DOM 预处理成 docx 兼容结构。
           // skipMathImage=true：保留 .katex（其 <math> 供 MathML→OMML 转可编辑公式），
           // 公式转 PNG 仅在 html-docx 回退路径需要（_fallbackWordHtmlExport 内补跑）。
-          await this._prepareWordDOM(clone, { skipMathImage: true });
+          const prep = await this._prepareWordDOM(clone, {
+            skipMathImage: true,
+            control: {
+              isCancelled: () => exportCancelled,
+              onProgress: (done, total) => {
+                if (progressText) {
+                  progressText.textContent = this.t('exportDiagramProgress', {
+                    done: done, total: total, sec: Math.round((Date.now() - t0) / 1000),
+                  });
+                }
+              },
+            },
+          });
+          if (prep === 'cancelled') {
+            clearTimeout(watchdog);
+            hideOverlay();
+            this.setStatus(this.t('exportLargeDocCancelled'));
+            return;
+          }
   
           // 页面设置已在流程开始的弹框里选好（pageCfg），此处不再二次弹框打断导出。
   
