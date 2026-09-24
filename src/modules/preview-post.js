@@ -450,7 +450,10 @@ async function renderMermaidPlaceholders(pres, opts) {
     for (const { container, cacheKey } of toRender) {
       container.classList.remove('diagram-pending');
       // 仅缓存含 SVG 的成功结果（错误信息不缓存）
-      if (mermaidCache && container.querySelector('svg')) mermaidCache.set(cacheKey, container.innerHTML);
+      if (mermaidCache && container.querySelector('svg')) {
+        mermaidCache.set(cacheKey, container.innerHTML);
+        capCache(mermaidCache);
+      }
     }
   }
 }
@@ -698,6 +701,7 @@ async function renderNativePlaceholders(preview, jobs, opts, isStale) {
     const ok = await withVisibleLayout(container, () => DR.renderInto(container, type, code, { isDark: !!opt.isDark }));
     if (ok && key && DIAGRAM_HTML_CACHEABLE[type] && container.querySelector('svg')) {
       cache.set(key, container.innerHTML);
+      capCache(cache);
     }
     return ok;
   };
@@ -752,6 +756,24 @@ async function processDiagrams(preview, opts) {
   await renderNativePlaceholders(preview, prepareNativePlaceholders(preview, opts), opts);
 }
 
+// ---- 渲染结果缓存的上限 ----
+// `_mermaidCache` 是 app 级 Map，mermaid 与原生引擎的 SVG innerHTML 共用；只在切主题时才 clear。
+// 长会话里编辑大量互不相同的图表会把它撑大（字符串常驻内存），这里加个简易上限：Map 保持插入序，
+// 超限删最旧的一条（审计发现，2026-09-24）。
+const CACHE_MAX_ENTRIES = 300;
+function capCache(cache) {
+  if (!cache || cache.size <= CACHE_MAX_ENTRIES) return;
+  const oldest = cache.keys().next().value;
+  if (oldest !== undefined) cache.delete(oldest);
+}
+
+// 主题切换后重绘**原生引擎**图表：它们的产物里烘焙了配色（Graphviz 的线色、ECharts 的 dark
+// 主题、WaveDrom 的皮肤），而主题切换只重绘 mermaid → 暗色下这些图仍是浅色（Graphviz 的黑线
+// 在暗底上几乎看不见，审计发现，2026-09-24）。复用"data-theme 过期就重画"的分支：传空的 jobs。
+async function rethemeNativeDiagrams(preview, opts) {
+  await renderNativePlaceholders(preview, [], opts);
+}
+
 // ---- 组合入口（控制器用这两个）----
 // 顺序不可颠倒：prepare 必须**同步**跑完（紧跟 innerHTML），否则 await 期间会露出源码。
 function prepareDiagramPlaceholders(preview, opts) {
@@ -803,7 +825,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
     convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
-    prepareDiagramPlaceholders, renderDiagramPlaceholders,
+    prepareDiagramPlaceholders, renderDiagramPlaceholders, rethemeNativeDiagrams,
     addCopyButtons, getRawCodeText,
   };
 }
@@ -812,7 +834,7 @@ if (typeof module !== 'undefined' && module.exports) {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
     convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
-    prepareDiagramPlaceholders, renderDiagramPlaceholders,
+    prepareDiagramPlaceholders, renderDiagramPlaceholders, rethemeNativeDiagrams,
     addCopyButtons, EMOJI_MAP,
     protectUnpairedDollar, getRawCodeText,
   };

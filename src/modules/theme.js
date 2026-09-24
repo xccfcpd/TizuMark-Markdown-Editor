@@ -62,6 +62,21 @@
             : 'lib/highlight.js/github.min.css';
         }
         await this.rerenderMermaid();
+        await this.rethemeNativeDiagrams();
+      },
+      // 主题切换后重绘**原生引擎**图表（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）：
+      // 它们的产物烘焙了配色，只重绘 mermaid 会让它们在暗色下仍是浅色（Graphviz 的黑线在暗底上
+      // 几乎看不见）。实现复用 preview-post 的"data-theme 过期就重画"分支（审计发现，2026-09-24）。
+      async rethemeNativeDiagrams() {
+        if (typeof PreviewPost === 'undefined' || !PreviewPost.rethemeNativeDiagrams) return;
+        try {
+          await PreviewPost.rethemeNativeDiagrams(this.preview, {
+            isDark: this.isDark,
+            mermaidCache: this._mermaidCache,
+          });
+        } catch (e) {
+          console.warn('[theme] 原生图表重绘失败（已隔离）:', e);
+        }
       },
       async rerenderMermaid() {
         if (typeof mermaid === 'undefined') return;

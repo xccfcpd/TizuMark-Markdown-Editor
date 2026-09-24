@@ -387,6 +387,66 @@ test('plantuml 类图：左侧基数（`用户 "1"`）不再丢失/污染类名'
   assert.ok(!/n_\d/.test(out), '不应出现无意义 id，实际:\n' + out);
 });
 
+test('plantuml 时序图：group…end 不得产出孤立 end（会导致整张图语法错误）', () => {
+  const out = D.plantumlToMermaid('@startuml\nAlice -> Bob: hi\ngroup 认证\n  Bob -> Alice: ok\nend\n@enduml');
+  assert.ok(out.startsWith('sequenceDiagram'), '实际: ' + String(out).split('\n')[0]);
+  const ends = (out.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(ends, 0, 'group 无等价语法时应整块忽略，不能留下孤立 end，实际:\n' + out);
+  // 正常的 alt/loop 仍要保留配对 end
+  const out2 = D.plantumlToMermaid('@startuml\nA -> B: x\nalt 成功\n  B -> A: y\nelse 失败\n  B -> A: z\nend\n@enduml');
+  const opens = (out2.match(/^\s*(alt|else|loop|opt|par)\b/gm) || []).length;
+  const ends2 = (out2.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(ends2, 1, 'alt 必须有一个 end，实际:\n' + out2);
+  assert.ok(opens >= 2);
+});
+
+test('plantuml 活动图：`endwhile (否)` 的回边与出口标签都要保留', () => {
+  const out = D.plantumlToMermaid('@startuml\nstart\nwhile (还有待处理项?) is (是)\n  :处理单条;\nendwhile (否)\n:收尾统计;\nstop\n@enduml');
+  assert.ok(out.startsWith('flowchart TD'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /\|否\|/, 'endwhile 的出口标签要保留，实际:\n' + out);
+  assert.match(out, /\|是\|/, 'while 的继续标签要保留，实际:\n' + out);
+  // 回边必须存在：处理节点指回判断菱形
+  const back = out.split('\n').filter((l) => /-->/.test(l) && /\|否\||\|是\|/.test(l));
+  assert.ok(back.length >= 2, '应同时有"是"与"否"两条分支，实际:\n' + out);
+});
+
+test('D2：中文键名/层级引用/`<-` 方向/`...` 都要正确', () => {
+  const out = D.plantumlToMermaid === undefined ? null : D.d2ToMermaid('direction: down\n边缘节点: {\n  采集 -> 过滤\n}\n缓冲.shape: cylinder\n边缘节点.缓冲 -> 云端.入库: 批量上传');
+  assert.ok(out && out.startsWith('flowchart TB'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /subgraph .*\["边缘节点"\]/, '中文键名的块应变成 subgraph，实际:\n' + out);
+  assert.ok(!/N\d+\["边缘节点\.缓冲"\]/.test(out), '层级引用不得再生成"边缘节点.缓冲"幽灵节点，实际:\n' + out);
+  // `<-` 是反向：输出里的起点节点应是「服务」（id 是分配出来的，按标签判定）
+  const rev = D.d2ToMermaid('缓存 <- 服务');
+  const edgeLines = rev.split('\n').filter((l) => /-->/.test(l));
+  assert.strictEqual(edgeLines.length, 1, '实际:\n' + rev);
+  const fromId = edgeLines[0].trim().split(/\s+/)[0];
+  const fromDef = rev.split('\n').find((l) => l.trim().startsWith(fromId + '['));
+  assert.ok(/服务/.test(fromDef || ''), '`A <- B` 应为 B → A，实际:\n' + rev);
+  // `...` 不建幽灵节点
+  const dots = D.d2ToMermaid('a -> b\nb -> ...');
+  assert.ok(!/\.\.\./.test(dots), '`...` 不应成为节点，实际:\n' + dots);
+});
+
+test('plantuml 类图：声明用别名后按显示名引用不得产生重复节点；legend 块不得泄漏成幽灵类', () => {
+  const out = D.plantumlToMermaid('@startuml\nclass 用户 as User\n用户 --> 订单\n@enduml');
+  // 同一类只应有一个 id（声明行 + 别名标签行是同 id，属正常）
+  const ids = new Set();
+  out.split('\n').forEach((l) => {
+    const m = l.match(/^\s*class\s+([\w.$-]+)/);
+    if (m) ids.add(m[1]);
+  });
+  assert.deepStrictEqual([...ids], ['User'], '同一类不得产生第二个 id，实际:\n' + out);
+  assert.match(out, /User --> C\d+/, '关系应复用别名 id，实际:\n' + out);
+  const lg = D.plantumlToMermaid('@startuml\nlegend\nLegend\nendlegend\nA --> B\n@enduml');
+  assert.ok(lg && !/class Legend|class endlegend/.test(lg), 'legend 块不得泄漏成类，实际:\n' + lg);
+});
+
+test('plot：未知标识符不得静默当成 x（宁可保留源码 + 提示）', () => {
+  assert.strictEqual(D.plotToSvg('plot a*x', { width: 700 }), null, '未知标识符应失败而不是画成 x²');
+  assert.ok(D.plotToSvg('plot sin(x)', { width: 700 }), '正常表达式仍要能画');
+  assert.ok(D.plotToSvg('plot t', { width: 700 }), '参数变量 t 应可用');
+});
+
 test('plantuml 组件图：边标签不再被丢弃（`[A] --> [B] : 数据流`）', () => {
   const out = D.plantumlToMermaid('@startuml\n[采集] --> [存储] : 数据流\n@enduml');
   assert.ok(out.startsWith('flowchart LR'), '实际: ' + String(out).split('\n')[0]);

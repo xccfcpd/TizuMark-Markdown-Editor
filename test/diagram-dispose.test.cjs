@@ -66,10 +66,18 @@ test('disposeDetachedDiagrams: 全部脱离时全部回收；异常输入不抛�
   assert.equal(R.disposeDetachedDiagrams({}), 0);
 });
 
-test('renderInto 失败不登记（失败容器无需回收）', async () => {
+test('renderInto 失败**也要登记**（失败容器同样可能持有实例，必须可回收）', async () => {
   drain();
   const bad = fakeContainer();
-  // 语法超出子集 → tikzToSvg 返回 null → renderInto 返回 false，不应进注册表
+  // 语法超出子集 → tikzToSvg 返回 null → renderTikz 抛可读错误 → renderInto 返回 false。
+  // 契约变更（2026-09-24 审计）：**先登记再渲染**。原因：ECharts 的 `echarts.init` 成功后
+  // `setOption` 抛错时，实例与 canvas 已挂在 DOM 上——若失败时不登记，disposeDetachedDiagrams
+  // 就永远回收不到它（长会话内存只增不减）。登记是无害的：容器一旦脱离文档就会被下一次
+  // 回收顺带清理（TikZ 这类什么都没分配的引擎，回收也是空操作）。
   assert.equal(await R.renderInto(bad, 'tikz', '\\boguscommand', {}), false);
-  assert.equal(drain(), 0, '失败容器不应被登记');
+  assert.equal(drain(), 1, '失败容器应已登记，从而可被回收');
+  // 引擎缺失（renderer 返回 false）时不保留登记，避免无意义地留住容器
+  const nope = fakeContainer();
+  assert.equal(await R.renderInto(nope, 'nosuch-engine', TEX, {}), false);
+  assert.equal(drain(), 0, '引擎缺失不应登记');
 });

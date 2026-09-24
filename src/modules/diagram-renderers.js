@@ -105,6 +105,13 @@ function renderEcharts(container, code, opts) {
   // 若尚未登记，disposeDetachedDiagrams 就回收不到它 → 反复重渲染会持续泄漏（审计发现，2026-09-24）。
   chartRegistry.set(container, chart);
   chart.setOption(option, true);
+  // 「成功但什么都没有」也要报错：空画布比明确的错误更让人困惑（用户会以为渲染成功了）
+  const hasContent = (Array.isArray(option.series) && option.series.length > 0) ||
+    !!option.dataset || !!option.graphic || !!option.geo || !!option.radar ||
+    !!option.parallel || !!option.tree || !!option.sankey;
+  if (!hasContent) {
+    throw new Error('ECharts 的 option 里没有可绘制内容（缺少 series / dataset / graphic），检查示例块是否为空');
+  }
 
   // 容器宽度随窗口变化时同步尺寸（窗口缩放、分屏比例调整）。
   // 必须在 rAF 里执行 resize：在 ResizeObserver 回调内同步改布局会触发浏览器
@@ -165,11 +172,24 @@ function renderWavedrom(container, code, opts) {
     }
   }
 
+  // 「成功但空白」提前拦下：`{}` / 只有 config 的 source 渲染出来是一片空白，用户却看不到任何提示
+  const hasContent = (Array.isArray(source.signal) && source.signal.length > 0) ||
+    source.assign || source.reg || source.head || source.foot;
+  if (!hasContent) {
+    throw new Error('WaveDrom 的 source 里没有 signal / assign / reg 等内容，渲染结果会是空白');
+  }
+
   const skins = wavedromSkins();
   const skinName = opts && opts.isDark ? 'dark' : 'default';
   source.config = Object.assign({}, source.config);
   if (skins[skinName]) source.config.skin = skinName;
-  else delete source.config.skin;
+  else {
+    delete source.config.skin;
+    // 暗色主题缺皮肤时会静默回退浅色皮肤（波形浅色线画在暗底上几乎看不见）—— 至少留个痕迹
+    if (skinName === 'dark' && typeof console !== 'undefined') {
+      console.warn('[diagram] WaveDrom 缺少 dark 皮肤（lib/wavedrom/skins/dark.js），已回退默认皮肤');
+    }
+  }
 
   container.style.height = '';
   const id = 'tizu-wavedrom-' + Date.now() + '-' + Math.floor(Math.random() * 1e4);
@@ -216,19 +236,24 @@ function quoteDotIds(src) {
   let quoted = false;         // DOT 字符串可以跨行，引号状态也必须跨行（审计复核发现）
   return String(src == null ? '' : src).split('\n').map((line) => {
     // 注释原样保留：① 注释里的中文不该被"补引号"（对 Graphviz 无意义，还会让人以为图里多了引号）；
-    // ② 注释里配不平的 `<` 绝不能让后续行进入 HTML 串模式（审计复核发现）。
-    if (htmlDepth === 0) {
-      if (blockComment) {
-        if (line.indexOf('*/') >= 0) blockComment = false;
-        return line;
-      }
-      // 引号内的 `//` / `#` 是字符串内容，不是注释（跨行字符串的续行尤其要注意）
-      if (!quoted && /^\s*(\/\/|#)/.test(line)) return line;
-    }
+    // ② 注释里配不平的 `<` 绝不能让后续行进入 HTML 串模式。
+    // 行首注释走快路径；块注释与行尾 `//` 在主循环里按字符处理 —— 旧实现在"块注释于本行闭合"
+    // 时会把 `*/` 之后的**真代码**整段跳过（`/* x */ 来料 -> 检验` 的中文不再补引号；
+    // 审计发现，2026-09-24）。
+    if (htmlDepth === 0 && !quoted && /^\s*(\/\/|#)/.test(line)) return line;
     let out = '';
     let i = 0;
     while (i < line.length) {
       const c = line[i];
+      // 跨行块注释：逐字符透传，遇到 `*/` 立即恢复（继续处理本行剩余内容）
+      if (blockComment) {
+        if (c === '*' && line[i + 1] === '/') { blockComment = false; out += '*/'; i += 2; continue; }
+        out += c;
+        i++;
+        continue;
+      }
+      // 行尾注释：`//` 之后整段原样透传（引号内不会走到这里，上面 quoted 分支先拦下）
+      if (c === '/' && line[i + 1] === '/') { out += line.slice(i); break; }
       // 仍处在跨行的 HTML 串里：整段原样透传，直到尖括号配平归零
       if (htmlDepth > 0) {
         if (c === '<') htmlDepth++;
@@ -292,6 +317,10 @@ async function renderGraphviz(container, code, opts) {
       '（提示：节点/边名含中文或空格时请写成 "名字" 形式；本例已自动为中文名补引号）');
   }
   if (!svg) throw new Error('Graphviz 未产出 SVG（检查 DOT 语法，如 digraph { a -> b }）');
+  // 空图（只有 `digraph { }` 或只有属性）同样报错，而不是留一个塌陷的空白框
+  if (!/<(path|polygon|polyline|ellipse|text)\b/.test(svg)) {
+    throw new Error('Graphviz 的 DOT 里没有节点或边（图是空的），检查是否只写了 digraph { }');
+  }
   container.style.height = '';
   container.innerHTML = svg; // 含 <?xml?> 声明与 DOCTYPE：HTML 解析器会忽略，<svg> 正常入树
   if (!container.querySelector('svg')) throw new Error('Graphviz 渲染结果异常（未生成 <svg>）');
@@ -502,8 +531,11 @@ async function renderInto(container, type, code, opts) {
   if (!renderer) return false;
   container.classList.remove('diagram-error');
   try {
+    // **先登记再渲染**：引擎可能在 init 之后才抛错（典型：ECharts setOption 失败），此时实例与
+    // canvas 已经挂在 DOM 上，只有登记过才能被 disposeDetachedDiagrams 回收到（审计发现，2026-09-24）。
+    diagramContainers.add(container);
     const ok = (await renderer(container, code, opts)) !== false;
-    if (ok) diagramContainers.add(container);   // 登记：供下次重渲染后回收
+    if (!ok) diagramContainers.delete(container);   // 引擎缺失等完全失败：不必保留登记
     return ok;
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[diagram] ' + type + ' render failed:', e);

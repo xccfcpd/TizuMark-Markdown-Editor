@@ -1001,6 +1001,53 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
   并加 3 条回归用例（`test/diagrams.test.cjs` → 60 例全过），其中两条专钉「`subgraph`/`end` 必须配平、
   不得出现孤立 `end`」「缺 `}` 自动补齐」，一条钉类图两侧基数。
 
+### 2.28 第六轮审计：渲染与转换全线体检（数据驱动 + 两路深挖）（2026-09-24）
+
+方法：① 把用户那份《渲染验证-全功能与边界.md》里**全部 58 个图块**（plantuml 19 / mermaid 10 /
+tikz 8 / plot 5 / d2 4 / wavedrom 4 / dot 3 / echarts 3 / markmap 2）喂给转换器与引擎适配层，
+逐条校验输出合法性（图类型首行、`subgraph`/`end` 配平、`undefined`/`NaN`/空标签、SVG 标签配平、
+DOT 引号配平、JSON 合法性）② 一路深挖其余转换器（甘特/D2/TikZ/plot/活动/状态/类/时序）
+③ 一路审图形引擎适配与渲染输出。
+
+#### 转换器（会产出**非法 Mermaid** 或**语义丢失**）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **时序图 `group … end` 产出孤立 `end`** → `sequenceDiagram` 直接语法错误、整张图报废（与用户报障的用例图同一类根因） | 引入控制块深度计数：只有开过 `alt/opt/loop/par/critical/break/rect` 才输出 `end`；结尾自动补齐未闭合块 |
+| 2 | 活动图 **`endwhile (否)`** 不被识别（旧正则要求立即行尾）→ 循环**回边**与出口标签一起消失，循环被静默画成直线 | 正放宽到 `end\s*while\b(\(…\))?`，出口标签取实际文案；`while (…) is (标签)` 也用真实标签（不再硬编码 yes/no） |
+| 3 | **状态图**：`state "X" as Y {` 的 `{` 被吞（复合状态被压平）；多行 `note … end note` 的块内文本与 `end note` **原样透传**成非法状态 | 捕获行尾 `{` 并计数；note 块整体跳过；结尾补齐未闭合 `}` |
+| 4 | **D2**：键名正则 `[\w.$-]+` **不认中文** → 中文容器不生成子图、属性/层级引用全丢；`<-` **方向反转**；`...` 被当成节点建出幽灵节点 | 键名改为"任意非空白字符"；层级引用 `容器.成员` 归一为容器内成员（不再重复建节点）；`<-` 交换首尾；`...` 忽略 |
+| 5 | **类图**：声明用别名（`class 用户 as User`）后按显示名引用会**再建一个节点**；`legend … endlegend` 块内的裸词被当成类名（图上多出 `Legend`/`endlegend`） | 关系/裸声明先查别名表；legend 块整体消费（且判定先于 SKIP） |
+| 6 | gnuplot **裸 `set grid`** 被判为"关闭"；**plot 未知标识符**（`plot a*x`）被静默当成 `x` → 画出 y=x² 却毫无提示 | `set grid` 空参数视为开启；未知标识符标记失败 → `plotToSvg` 返回 null（保留源码 + 提示） |
+| 7 | TikZ `[xscale=2]` 被当成整体 `scale=2`（两轴同时放大） | 加词边界 `(?<![A-Za-z_])scale` |
+| 8 | 组件/用例图的关系**一律压成 `-->`**（无向关联被画成有向依赖） | 无 `<>` 的纯虚线关系改输出 `---`（Mermaid 的无向连接） |
+
+#### 引擎适配与渲染输出
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 9 | **切主题只重绘 mermaid** → 原生引擎（ECharts/WaveDrom/Graphviz）保持浅色：Graphviz 黑线在暗底上几乎不可见 | 新增 `rethemeNativeDiagrams()`（复用"data-theme 过期就重画"分支，传空 jobs），在 `applyThemeMode` 里紧跟 `rerenderMermaid()` 调用 |
+| 10 | 引擎"**成功但产出空内容**"也返回 true → 用户得到一个空白框、零提示（比报错更困惑） | ECharts 校验 `series/dataset/graphic`…；WaveDrom 校验 `signal/assign/reg/head/foot`；Graphviz 校验产物含节点/边；不满足即抛可读错误 |
+| 11 | `quoteDotIds`：块注释在**本行闭合**时，`*/` 之后的真代码被整段跳过（中文节点名不再补引号）；行尾 `//` 注释里的中文仍被加引号 | 块注释改为逐字符状态机（`*/` 后继续处理本行剩余）；行尾 `//` 之后整段原样透传 |
+| 12 | ECharts `setOption` 抛错时容器**未登记**进回收集合 → 实例/ResizeObserver 泄漏 | `renderInto` 改为**先登记再渲染**（失败时由 `disposeDetachedDiagrams` 兜底回收） |
+| 13 | `_mermaidCache` 无上限（mermaid 与原生 SVG 共用，只在切主题时清） | 加简易上限 300 条（Map 插入序淘汰最旧） |
+| 14 | WaveDrom 缺 dark 皮肤时静默回退浅色（暗底上几乎不可见） | 至少留痕：`console.warn` 提示缺 `lib/wavedrom/skins/dark.js` |
+
+**验证**：文档 58 个图块体检通过；新增 5 条回归用例（时序孤立 end / 活动图 endwhile 回边 / D2 中文键与
+方向 / 类图别名与 legend / plot 未知标识符）→ `test/diagrams.test.cjs` **65/65**。
+
+#### 本轮**报告但未改**
+
+| 项 | 原因 |
+|---|---|
+| TikZ 逐命令 `scale=` 解析了但从未应用（元素级缩放） | 需要在 item 层做缩放归一 + 视图边界重算，属独立改动 |
+| TikZ `xscale/yscale` 目前被忽略（已不再误当整体 scale） | 同上；两者应一起做 |
+| 折叠预览栏（宽度 0）时 ECharts 量到 0 宽 → 空白，等 ResizeObserver 自愈 | 需要"可见后再渲染"的调度，涉及占位与重绘时序 |
+| `withVisibleLayout` 只临时展开 `<details>`，覆盖不到其它 0 尺寸祖先 | 同上 |
+| 灯箱：ECharts（canvas）点了无反应；Graphviz 输出是 `pt` 单位小图，放大后仍小 | 需要为 canvas 走 `getDataURL` 图片灯箱、对绝对单位 SVG 补 `lightbox-svg-adapt` |
+| 状态转换器对未识别行仍"原样透传"（可能把非本子集关键字写进 Mermaid） | 改动面涉及各类 PlantUML 语句，需逐个确认后再收紧 |
+| `_lightboxOwnerTab` 只写不读（注释宣称的保护实为空操作） | 属清理项，与灯箱改造一起做 |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

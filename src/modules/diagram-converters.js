@@ -317,13 +317,21 @@
     const aliasOf = new Map();
     const idOf = makeIdAllocator();   // 中文类名不再塌成同一个 id
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|title\b|note\b|namespace\b|together\b|allowmixing|allow_mixing|left to right direction|top to bottom direction|package\b|set\b|!|remove\b|delete\b)/i;
+    // `legend … endlegend` 是图例块：旧实现只跳过起始行，块内单词行会被当成**裸类名**输出
+    // （图上多出 Legend / endlegend 两个幽灵类；审计发现，2026-09-24）
+    let legendBlock = false;
     const REL = /^(.+?)\s+([-.<>|o*]{2,}?)\s+(.+)$/;
 
     let i = 0;
     while (i < lines.length) {
       const l = lines[i].trim();
       i++;
-      if (!l || SKIP.test(l)) continue;
+      if (!l) continue;
+      // 图例块整体跳过（见上方 legendBlock 说明）。必须**先于** SKIP 判定：SKIP 里含 `legend\b`
+      // 会把起始行直接吞掉，块内的裸词行则会被当成类名（`endlegend` 尤其明显）。
+      if (legendBlock) { if (/^end\s*legend$/i.test(l)) legendBlock = false; continue; }
+      if (/^legend\b/i.test(l)) { legendBlock = true; continue; }
+      if (SKIP.test(l)) continue;
 
       // class / interface / enum / abstract class 定义（可带 as 别名与 { } 主体）
       const cm = l.match(/^(abstract\s+class|abstract|class|interface|enum|annotation|struct|protocol|entity|circle|diamond)\s+("?[^"{\s]+"?)\s*(?:as\s+(\w+))?\s*(\{)?\s*$/i);
@@ -380,8 +388,10 @@
         const ls = parseSide(left);
         const rs = parseSide(right);
         if (!ls.name || !rs.name) continue;
-        const lid = idOf(ls.name, 'C');
-        const rid = idOf(rs.name, 'C');
+        // 先查别名表：`class 用户 as User` 之后再写 `用户 --> 订单` 时必须命中同一个 id，
+        // 否则图上会出现两个"用户"（审计发现，2026-09-24）
+        const lid = aliasOf.get(ls.name) || idOf(ls.name, 'C');
+        const rid = aliasOf.get(rs.name) || idOf(rs.name, 'C');
         aliasOf.set(ls.name, lid);
         aliasOf.set(rs.name, rid);
         const cardL = ls.card ? '"' + ls.card + '" ' : '';
@@ -390,9 +400,10 @@
         continue;
       }
 
-      // 裸类名声明（无关键字、无关系）
+      // 裸类名声明（无关键字、无关系）：同样先查别名表
       if (/^[\w."<>]+$/.test(l)) {
-        const id = idOf(stripQuotes(l), 'C');
+        const rawName = stripQuotes(l);
+        const id = aliasOf.get(rawName) || idOf(rawName, 'C');
         if (!declared.has(id)) { out.push('    class ' + id); declared.add(id); }
       }
     }
@@ -414,13 +425,19 @@
     const out = ['sequenceDiagram'];
     const declared = new Set();
     const idOf = makeIdAllocator();
+    let blockDepth = 0;   // alt/opt/loop/par/… 未闭合的层数（`end` 必须与它配对输出）
     // 名字 token 允许非 ASCII（中文参与者/角色名很常见）；箭头前后不留空格也要认
     const MSG = /^("[^"]*"|[^\s:<>=\-\\/]+)\s*([<>ox\\\/]*[-=.]+[<>ox\\\/]*)\s*("[^"]*"|[^\s:<>=\-\\/]+)\s*(?::\s*([\s\S]*))?$/;
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|newpage\b|autoactivate\b|ref\s+over\b|group\b|end\s+group\b|\.\.\.\s*$|==+.*==+\s*$|--+\s*$)/i;
 
+    // 显示名/别名 → id：`participant "认证服务" as Auth` 之后再按 `认证服务` 或 `Auth` 发消息，
+    // 都必须命中同一个参与者（否则图上出现两个同名参与者；审计发现，2026-09-24）
+    const nameToId = new Map();
     const declare = (raw) => {
       const name = stripQuotes(String(raw || '').trim());
+      if (nameToId.has(name)) return nameToId.get(name);
       const id = idOf(name, 'P');
+      nameToId.set(name, id);
       if (!declared.has(id)) {
         declared.add(id);
         // 名字被归一化（中文等）时补一个显示名，避免图上出现 n1 / P 这种占位
@@ -474,6 +491,8 @@
         // 而不是历史 bug 里的 `participant P as Auth`（图上会多出一个 P）。
         const id = idOf(alias || rawName, 'P');
         declared.add(id);
+        nameToId.set(rawName, id);
+        if (alias) nameToId.set(alias, id);
         const label = alias ? rawName : (id !== rawName ? rawName : null);
         out.push('    ' + kind + ' ' + id + (label ? ' as ' + label : ''));
         continue;
@@ -487,11 +506,12 @@
       if (/^box\b/i.test(l)) { out.push('    ' + l); continue; }
       if (/^end\s+box$/i.test(l)) { out.push('    end'); continue; }
 
-      // 控制块
-      if (/^(alt|opt|loop|par|critical|break|rect)\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); continue; }
-      if (/^else\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); continue; }
-      if (/^and\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); continue; }
-      if (/^end\b/i.test(l)) { out.push('    end'); continue; }
+      // 控制块：Mermaid 里 `end` 必须与开启的块配对 —— 只在确实开过块时才输出 end。
+      // 历史上裸 `end` 无条件输出，而 PlantUML 的 `group … end`（group 行在 SKIP 里被丢弃）
+      // 会留下**孤立 end** → sequenceDiagram 直接语法报错、整张图报废（审计发现，2026-09-24）。
+      if (/^(alt|opt|loop|par|critical|break|rect)\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); blockDepth++; continue; }
+      if (/^(else|and)\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); continue; }
+      if (/^end\b/i.test(l)) { if (blockDepth > 0) { out.push('    end'); blockDepth--; } continue; }
 
       // 注释
       const nm = l.match(/^note\s+(left of|right of|over)\s+([^:]+?)\s*(?::\s*([\s\S]*))?$/i);
@@ -520,6 +540,8 @@
       }
       // 其余（delay / ||| / || 等）忽略
     }
+    // 源码少写 `end` 时补齐：sequenceDiagram 的未闭合块会直接报错
+    while (blockDepth > 0) { out.push('    end'); blockDepth--; }
     if (out.length <= 1) return null;
     return out.join('\n');
   }
@@ -528,6 +550,7 @@
     const lines = stripPlantumlDecorations(src).split('\n');
     const out = ['stateDiagram-v2'];
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|note\b)/i;
+    let noteBlock = false;   // 多行 note 块（`note … end note`）内部行要整体跳过
     // state 转换器与其他转换器不同：Mermaid 的 stateDiagram **接受 CJK 状态名直接作 id**，
     // 所以不做「英文 id + 中文 label」映射，而是「ASCII 名走 mid() 归一，非 ASCII 名原样保留」——
     // 否则 mid('空闲','S') 会把所有中文状态塌成同一个 'S'（幽灵状态，审计发现，2026-09-24）。
@@ -545,8 +568,18 @@
       const tm = l.match(/^title\s+(.+)$/i);
       if (tm) { out.push('    accTitle: ' + tm[1].trim()); continue; }
 
-      const sm = l.match(/^state\s+("[^"]*"|\S+)\s+as\s+(\S+)/i);
-      if (sm) { out.push('    state ' + mq(stripQuotes(sm[1])) + ' as ' + sid(sm[2])); continue; }
+      // 多行 note 块：块内文本与 `end note` 都不是状态语句，必须整体跳过（否则会被当普通状态
+      // 原样透传 → 图上出现空状态与非法 `end note`；审计发现，2026-09-24）
+      if (noteBlock) { if (/^end\s*note$/i.test(l)) noteBlock = false; continue; }
+      if (/^note\b/i.test(l)) { if (!/:\s*\S/.test(l)) noteBlock = true; continue; }
+
+      // `state "X" as Y { … }`：旧正则漏掉行尾的 `{` → 复合状态被压平（`}` 也会被丢弃）
+      const sm = l.match(/^state\s+("[^"]*"|\S+)\s+as\s+(\S+)\s*(\{)?\s*$/i);
+      if (sm) {
+        out.push('    state ' + mq(stripQuotes(sm[1])) + ' as ' + sid(sm[2]) + (sm[3] ? ' {' : ''));
+        if (sm[3]) inBlock++;
+        continue;
+      }
       const sm2 = l.match(/^state\s+("[^"]*"|\S+)\s*(\{)?\s*$/i);
       if (sm2) {
         const id = sid(stripQuotes(sm2[1]));
@@ -567,6 +600,8 @@
       if (dm) { out.push('    ' + dm[1] + ' : ' + dm[2]); continue; }
       out.push('    ' + l);
     }
+    // 源码少写 `}` 时补齐：stateDiagram-v2 的未闭合块会直接报错
+    while (inBlock > 0) { out.push('    }'); inBlock--; }
     if (out.length <= 1) return null;
     return out.join('\n');
   }
@@ -600,13 +635,17 @@
     for (const raw of lines) {
       const l = raw.trim();
       if (!l) continue;
-      if (/^endwhile$|^end\s+while$/i.test(l)) {
+      // `endwhile` 后面常带**出口标签**（`endwhile (否)`，用户文档 4.3 的写法）：旧正则要求
+      // 立即行尾，于是该行被丢弃 → 循环**回边**与出口标签一起消失，循环被静默画成直线
+      //（审计发现，2026-09-24）。
+      const ew = l.match(/^end\s*while\b\s*(?:\(([^)]*)\))?\s*$/i);
+      if (ew) {
         const top = stack.pop();
         if (top) {
           for (const p of prevIds) out.push('    ' + p + ' --> ' + top.condId);
           prevIds = [top.condId];
           pending = {};
-          pending[top.condId] = 'no';
+          pending[top.condId] = (ew[1] || 'no').trim() || 'no';
         }
         continue;
       }
@@ -686,13 +725,14 @@
         continue;
       }
 
-      const wm = l.match(/^while\s*\(([\s\S]+?)\)/i);
+      // `while (cond) is (标签)`：标签是"继续循环"分支的实际文案（旧实现硬编码 yes）
+      const wm = l.match(/^while\s*\(([\s\S]+?)\)\s*(?:is\s*\(([^)]*)\))?/i);
       if (wm) {
         const condId = newNode('diamond', wm[1]);
         stack.push({ k: 'while', condId: condId });
         prevIds = [condId];
         pending = {};
-        pending[condId] = 'yes';
+        pending[condId] = (wm[2] || 'yes').trim() || 'yes';
         continue;
       }
       if (/^(repeat|backward)\b/i.test(l)) continue;
@@ -829,7 +869,12 @@
           declare(lt);
           declare(rt);
           const raw2 = arrow[2];
-          let arrowStr = /\.\./.test(raw2) ? '-.->' : '-->';
+          // 关系语义尽量保真：Mermaid flowchart 支持 `---`（无向/关联）与 `-.->`（虚线），
+          // 旧实现一律压成 `-->` → 关联关系被画成有向依赖（审计发现，2026-09-24）。
+          // 继承/实现（`<|--`）在 flowchart 里没有等价语法，仍退化为 `-->`。
+          let arrowStr = '-->';
+          if (/\.\./.test(raw2)) arrowStr = '-.->';
+          else if (!/[<>]/.test(raw2) && /-/.test(raw2)) arrowStr = '---';
           // 边标签：`[A] --> [B] : 数据流` 以前整段被丢弃（图看起来正常、语义却没了）。
           // 这里取出冒号后的内容，用 `-->|标签|` 表达（审计发现，2026-09-24）。
           const labelM = rest.match(/^\s*[^:]*:\s*([\s\S]+)$/);
@@ -1144,8 +1189,15 @@
     // （否则中文节点在图上会显示成 n1）。
     const allocId = makeIdAllocator();
     const labelOf = new Map();
+    // 已声明的容器名（块）：用于把层级引用 `边缘节点.缓冲` 归一成容器内的 `缓冲`
+    // （否则同一声明与引用会各建一个节点 → 图上出现两个同名节点；审计发现，2026-09-24）
+    const containerTitles = new Set();
     const idOf = (s) => {
-      const raw = stripQuotes(String(s).trim());
+      let raw = stripQuotes(String(s).trim());
+      if (raw.indexOf('.') !== -1) {
+        const segs = raw.split('.');
+        if (containerTitles.has(segs[0])) raw = segs.slice(1).join('.');
+      }
       const id = allocId(raw, 'N');
       if (!labelOf.has(id)) labelOf.set(id, raw);
       return id;
@@ -1166,10 +1218,13 @@
         }
 
         // 嵌套块：key: {
-        const bm = l.match(/^("[^"]*"|[\w.$-]+)\s*:\s*\{\s*$/);
+        // 键名允许**任意非空白字符**（含中文、点号）：旧实现用 `[\w.$-]+`，中文键名一律不匹配
+        // → 中文容器不生成子图、中文属性/节点全部丢失（审计发现，2026-09-24）
+        const bm = l.match(/^("[^"]*"|[^\s:{}#]+)\s*:\s*\{\s*$/);
         if (bm) {
           const title = stripQuotes(bm[1]);
           const name = (prefix || '') + idOf(title);
+          containerTitles.add(title);
           events.push({ t: 'open', name: name, title: title });
           const inner = [];
           let depth = 1;
@@ -1186,9 +1241,10 @@
         }
 
         // 属性行：key.shape / key.label / key.style.*
-        const pm = l.match(/^("[^"]*"|[\w.$-]+)\.([\w.]+)\s*:\s*(.+)$/);
+        const pm = l.match(/^("[^"]*"|[^\s:{}#]+)\.([^\s:{}#]+)\s*:\s*(.+)$/);
         if (pm) {
-          const prop = pm[2].toLowerCase();
+          // 取属性链的最后一段：`边缘节点.缓冲.shape: cylinder` 的属性是 shape（旧实现只认 ASCII）
+          const prop = String(pm[2]).split('.').pop().toLowerCase();
           const val = stripQuotes(pm[3]);
           // 只认 shape / label；style.* / class / icon / markdown 等表现层属性**整行忽略** ——
           // 否则会凭空建出一个名叫 `style` 的幽灵节点（历史 bug）。
@@ -1212,9 +1268,21 @@
           const ci = rightRaw.indexOf(':');
           if (ci !== -1) { label = rightRaw.slice(ci + 1).trim(); right = rightRaw.slice(0, ci).trim(); }
           right = stripQuotes(right);
+          // D2 的 `...` 表示"延续上一个节点"，不是节点名（旧实现会生成一个标签为 `...` 的
+          // 幽灵节点）；本地不追踪链式上下文，直接忽略该边而不是造假节点。
+          if (right === '...' || left === '...') continue;
           if (left && right) {
-            const arrow = cm[2] === '<->' ? '<-->' : (cm[2] === '--' ? '---' : '-->');
-            events.push({ t: 'edge', from: idOf(left), to: idOf(right), arrow: arrow, label: label });
+            const op = cm[2];
+            const arrow = op === '<->' ? '<-->' : (op === '--' ? '---' : '-->');
+            // `A <- B` 语义是 B → A（旧实现方向反了：审计发现，2026-09-24）
+            const reverse = (op === '<-' || op === '<--');
+            events.push({
+              t: 'edge',
+              from: idOf(reverse ? right : left),
+              to: idOf(reverse ? left : right),
+              arrow: arrow,
+              label: label,
+            });
             continue;
           }
         }
@@ -1226,7 +1294,7 @@
         // label/shape/style/class/…，但 `shape: 入口` 这种"节点名恰好叫 shape"会被误吞
         //（审计复核发现）—— D2 里 `key: value` 绝大多数是节点声明，宁多建节点不可丢节点。
         const GRAPH_ATTR = /^(grid(-\w+)?|direction)$/i;
-        const sm = l.match(/^("[^"]*"|[\w.$-]+)\s*:\s*([\s\S]+)$/);
+        const sm = l.match(/^("[^"]*"|[^\s:{}#]+)\s*:\s*([\s\S]+)$/);
         if (sm && GRAPH_ATTR.test(stripQuotes(sm[1]))) continue;
         if (sm) {
           const id = idOf(sm[1]);
@@ -1236,7 +1304,7 @@
           events.push({ t: 'node', id: id });
           continue;
         }
-        if (/^("[^"]*"|[\w.$-]+)$/.test(l)) {
+        if (/^("[^"]*"|[^\s:{}#]+)$/.test(l)) {
           const id = idOf(l);
           if (!nodes.has(id)) nodes.set(id, {});
           events.push({ t: 'node', id: id });
@@ -1425,8 +1493,12 @@
           const c = EXPR_CONSTS[lower];
           return () => c;
         }
-        // 变量：仅 x（plot）与 t；其它视为未知 → 交由调用方决定
-        return (x) => x;
+        // 变量只认 x / t。未知标识符**绝不能静默当成 x**：`plot a*x`（a 未定义）会被画成
+        // y = x²，而图例仍显示 `a*x` —— 看起来完全正常、实际是错的（审计发现，2026-09-24）。
+        // 标记失败，交由调用方（plotToSvg 返回 null → 保留源码 + 提示）。
+        if (lower === 'x' || lower === 't') return (x) => x;
+        bad = true;
+        return () => NaN;
       }
       if (t.t === 'op' && t.v === '(') {
         p++;
@@ -1540,7 +1612,9 @@
         else if (key === 'ylabel') cfg.ylabel = plotQuote(val);
         else if (key === 'xrange') cfg.xrange = parseRangeArg(val) || cfg.xrange;
         else if (key === 'yrange') cfg.yrange = parseRangeArg(val) || cfg.yrange;
-        else if (key === 'grid') cfg.grid = /^(on|true|1)$/i.test(val);
+        // 裸 `set grid`（无参数）在 gnuplot 里就是**开启**网格；旧实现只认 on/true/1 →
+        // 空串被判成关闭（审计发现，2026-09-24）
+        else if (key === 'grid') cfg.grid = val === '' ? true : !/^(off|false|0|no)$/i.test(val);
         else if (key === 'samples') { const n = parseInt(val, 10); if (n >= 10 && n <= 5000) cfg.samples = n; }
         // `set parametric`（无参数即开启）；`set trange [0:2*pi]` 指定参数区间
         else if (key === 'parametric') cfg.parametric = !/^(off|false|0|no)$/i.test(val);
@@ -2004,7 +2078,9 @@
     // 等价于 `[scale=…]`/`[domain=…]` 全被忽略。
     const head = raw.match(/\\begin\{tikzpicture\}\s*\[([^\]]*)\]/);
     if (head) {
-      const gs = head[1].match(/scale\s*=\s*([\d.]+)/);
+      // 词边界：旧正则会把 `xscale=2` / `yscale=3` 里的 `scale=2` 也当成整体等比缩放
+      // （于是只该单轴缩放的图被整体放大；审计发现，2026-09-24）
+      const gs = head[1].match(/(?<![A-Za-z_])scale\s*=\s*([\d.]+)/);
       if (gs) { const v = parseFloat(gs[1]); if (v > 0) globalScale = v; }
       const gopts = tikzOptions(head[1]);
       globalDomain = gopts.domain || null;
