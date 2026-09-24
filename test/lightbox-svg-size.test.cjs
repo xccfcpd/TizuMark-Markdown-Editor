@@ -55,7 +55,12 @@ test('Markmap 类 SVG（自身无尺寸）：补上显式尺寸与 viewBox，内
   } finally { cleanup(w); }
 });
 
-test('自带尺寸/viewBox 的 SVG（Mermaid 类）：完全不动，且不强加自适应类', async () => {
+test('只有 width="100%"（Mermaid 类，无 height）：补实测尺寸 + 自适应类', async () => {
+  // 现行规则（见 misc-ui.js prepareSvgForLightbox 的注释）：**width 与 height 都具备**才算
+  // "自带尺寸"，从这里早返回；只写了 width="100%" 的一类，实际尺寸仍由外部 CSS 决定，
+  // 克隆到浮层后那套作用域 CSS 不再匹配 → 与 markmap 曾经的"点开一片空白"同类问题。
+  // 故补上**实测**宽高、保留 viewBox（坐标系不变）、对齐归中，并加 .lightbox-svg-adapt
+  // 让浮层里等比放大到视口内。
   const { w } = await buildEnv();
   const ed = await waitForEditor(w);
   try {
@@ -67,10 +72,14 @@ test('自带尺寸/viewBox 的 SVG（Mermaid 类）：完全不动，且不强�
 
     const clone = ed.prepareSvgForLightbox(svg);
 
-    assert.strictEqual(clone.getAttribute('width'), '100%', '不应覆盖引擎自带的宽度');
-    assert.strictEqual(clone.getAttribute('viewBox'), '0 0 800 600', '不应覆盖自带 viewBox');
-    assert.ok(!/lightbox-svg-adapt/.test(clone.getAttribute('class') || ''), '不应强加自适应类');
-    assert.strictEqual(clone.getAttribute('height'), null, '不应凭空补 height 属性');
+    assert.strictEqual(clone.getAttribute('width'), '800', 'width="100%" 不是自带尺寸，应换成实测宽度');
+    assert.strictEqual(clone.getAttribute('height'), '600', '应补上实测高度');
+    assert.strictEqual(clone.getAttribute('viewBox'), '0 0 800 600', 'viewBox 必须原样保留（用户坐标系不变）');
+    assert.strictEqual(clone.getAttribute('preserveAspectRatio'), 'xMidYMid meet', '应对齐归中，避免内容贴左上角');
+    assert.match(clone.getAttribute('class'), /lightbox-svg-adapt/, '应加自适应类，浮层里等比放大');
+    // 原节点不得被改动（浮层用的是克隆）
+    assert.strictEqual(svg.getAttribute('width'), '100%', '原节点 width 不应被改动');
+    assert.strictEqual(svg.getAttribute('height'), null, '原节点不应凭空补 height');
   } finally { cleanup(w); }
 });
 

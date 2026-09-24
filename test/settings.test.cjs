@@ -1101,14 +1101,14 @@ test('设置折叠块：每次打开重置为全展开', async () => {
   } finally { cleanup(w); }
 });
 
-test('关于折叠块：4 块统一结构，默认全部展开，每次打开重置为全展开，点击标题切换', async () => {
+test('关于折叠块：3 块统一结构，默认全部展开，每次打开重置为全展开，点击标题切换', async () => {
   const { w, ed } = await makeEditor();
   try {
     await ed.showAbout();
     const blocks = [...w.document.querySelectorAll('#about-dialog .dependency-details')];
-    assert.strictEqual(blocks.length, 4, '关于面板应有 4 个折叠块');
+    assert.strictEqual(blocks.length, 3, '关于面板应有 3 个折叠块（「联系我们」已于 2026-09-24 移除）');
     const names = blocks.map(b => b.querySelector('.dependency-name').textContent);
-    assert.deepStrictEqual(names, ['版本信息', '联系我们', '许可协议', '第三方组件']);
+    assert.deepStrictEqual(names, ['版本信息', '许可协议', '第三方组件']);
     // 默认全部展开
     for (let i = 0; i < blocks.length; i++) {
       assert.strictEqual(blocks[i].getAttribute('data-collapsed'), 'false', `第 ${i + 1} 块默认展开`);
@@ -1118,7 +1118,7 @@ test('关于折叠块：4 块统一结构，默认全部展开，每次打开重
       assert.ok(b.querySelector('.dependency-title .panel-title-icon'), '标题条应含图标');
       assert.ok(b.querySelector('.dependency-title .collapse-caret'), '标题条应含 caret');
     }
-    // 点击「联系我们」→ 收起
+    // 点击第 2 块（许可协议）→ 收起
     blocks[1].querySelector('.dependency-title').dispatchEvent(new w.Event('click', { bubbles: true }));
     assert.strictEqual(blocks[1].getAttribute('data-collapsed'), 'true', '点击标题应收起');
     // 重新打开 → 重置为全部展开
