@@ -1,7 +1,8 @@
 # 本地图表 / 数学增强 / Admonition —— 变化点记录
 
 > 本次改动**基于 `more-function` 分支**（其已有 43 个提交，含 ECharts / WaveDrom / abcjs /
-> Graphviz 四引擎与一批 export/docx 修复），以 **rebase 方式**把新增能力叠加在其之上，
+> Graphviz 四引擎与一批 export/docx 修复；其中 **abcjs 五线谱已于 §2.17 完整移除**），
+> 以 **rebase 方式**把新增能力叠加在其之上，
 > 推送到 `more-function` 时为**快进推送**，不丢弃任何既有提交。
 >
 > 合并策略：**重复部分以 `more-function` 已有实现为准**。因此本次**不再引入**
@@ -592,6 +593,46 @@ abcjs 的 responsive 输出只有 viewBox（它把 width/height 删掉、并带 
 
 **校验**：本地纯函数测试全绿（diagrams 41、unified-math 55、preview-export-guard 4、diagram-dispose 3）；
 灯箱尺寸改动的既有用例（自带尺寸不动／靠 CSS 撑尺寸才补／量不到不猜）由 CI 跑。
+
+### 2.17 彻底移除五线谱（abcjs）支持（2026-09-24）
+
+用户决策：**完全去掉五线谱**（```abc / ```abcjs 不再渲染）。这是一次「减法」改动 ——
+去掉一个实际少用、却持续带来维护成本与故障面的引擎（灯箱尺寸失配、导出截图慢、
+vendor 体积、内部监听泄漏）。
+
+#### 移除范围（18 个文件）
+
+| 层面 | 文件 | 改动 |
+|---|---|---|
+| 运行时 | `src/modules/diagram-renderers.js` | 删 `renderAbc()`、`LANGUAGE_MAP` 的 `abc` / `abcjs`、`ENGINE_LABEL.abcjs`、`RENDERERS.abcjs`、两处导出 |
+| 运行时 | `src/modules/preview-post.js` | `DIAGRAM_HTML_CACHEABLE` 去掉 `abcjs` |
+| 入口 | `src/index.html` | 去掉 `<script src="lib/abcjs.min.js">` 与依赖清单里的 abcjs 条目 |
+| 依赖 | `package.json`、`package-lock.json` | 删 `abcjs` 依赖（**lock 同步删**，否则 `npm ci` 直接失败） |
+| 构建/守卫 | `scripts/ensure-vendor.mjs`、`scripts/check-offline.cjs`、`scripts/check-globals.cjs`、`.gitignore` | vendor 映射、离线白名单 token、注释与忽略项同步 |
+| 文案 | `src/guide.md`、`src/guide.en.md`、`docs/markdown-compat-github.md` | 删掉 ```abc 行；兼容表标注「已移除」 |
+| 注释 | `diagram-converters.js`、`export.js`、`misc-ui.js`、`preview-controller.js`、`styles.css` | 引擎清单注释去掉 abcjs |
+| 测试 | `test/diagram-engines.test.cjs`、`test/diagrams.test.cjs`、`test/export-mermaid-guard.test.cjs` | 去掉 abcjs 断言，并**反向钉住移除** |
+
+> `misc-ui.js` 里那段「只有 viewBox 的 SVG 补尺寸 / 对齐归中」的**逻辑予以保留** ——
+> 它是 abcjs 的 responsive 输出暴露出来的问题，但对任何"只有 viewBox"的 SVG 都必要，
+> 只是注释不再以 abcjs 为例。
+
+#### 行为变化（用户可见）
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| ```` ```abc ```` 代码块 | 渲染成五线谱 | 按**普通代码块**显示（高亮 + 复制按钮），不再有引擎被触发 |
+| 关于对话框 | 列有 abcjs 依赖条目 | 已移除 |
+| 导出 / 灯箱 / 资源回收 | 谱面走 SVG→PNG 快路、responsive 监听需回收 | 其余引擎路径完全不变 |
+
+> 为什么不做「已移除」的显式提示：引擎判定表是**白名单**，语言标记不在表内就等于「不是图表」，
+> 走普通代码块路径本身就是最自然的降级；额外插提示反而要在预览里加特例。
+
+#### 反向回归守卫（防止「移除后复活」）
+
+`test/diagram-engines.test.cjs` 新增断言：`abc` / `abcjs` 必须回落为 `null`；
+`index.html`、`ensure-vendor.mjs` 不得含 abcjs；`package.json` 与 `package-lock.json`
+**同时**清干净（lock 残留会让 CI 的 `npm ci` 直接红）。
 
 ---
 

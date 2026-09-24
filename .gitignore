@@ -19,10 +19,10 @@ src/lib/html2canvas.min.js
 src/lib/markdown-it.min.js
 src/lib/html-docx.min.js
 src/lib/highlight.js/
-# 图表引擎 vendor（2026-09）：echarts / abcjs / graphviz / wavedrom 由 ensure-vendor 从
+# 图表引擎 vendor（2026-09）：echarts / graphviz / wavedrom 由 ensure-vendor 从
 # node_modules 拷贝或打包；markmap 由 buildMarkmap() 用 esbuild 打包为单文件。
+# （五线谱 abcjs 的 vendor 项已于 2026-09-24 随该引擎一并移除。）
 src/lib/echarts.min.js
-src/lib/abcjs.min.js
 src/lib/graphviz.min.js
 src/lib/wavedrom/
 src/lib/markmap/

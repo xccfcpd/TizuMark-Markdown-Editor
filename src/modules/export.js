@@ -444,13 +444,13 @@
       //
       // 为什么不直接 `querySelectorAll('.mermaid-container')`：**我们的图表容器刻意复用了
       // `.mermaid-container` 类**（为复用灰底框样式 / 灯箱 / 导出链路），于是它们也会被选中，
-      // 容器里的 `data-code`（DOT / ECharts option / WaveDrom JSON / ABC 谱面 / Markmap /
+      // 容器里的 `data-code`（DOT / ECharts option / WaveDrom JSON / Markmap /
       // TikZ / plot 源码）会被当成 Mermaid 语法喂给 mermaid.render()：
       //   - mermaid 抛异常 → 调用处 try/catch 保住原图（侥幸）；
       //   - mermaid 以「错误图」返回（v11 的 run() 就是这种行为；实测过一次导出里出现
       //     20 个 "Syntax error in text / mermaid version …" 炸弹把原图顶掉）→ **直接丢图**。
       // 判据：`data-diagram-type` 缺省（上游历史形态的 mermaid 容器）或等于 'mermaid'；
-      // 其余（graphviz / echarts / wavedrom / abcjs / markmap / tikz / plot）一律跳过。
+      // 其余（graphviz / echarts / wavedrom / markmap / tikz / plot）一律跳过。
       _mermaidContainersForRerender(root) {
         if (!root || typeof root.querySelectorAll !== 'function') return [];
         return Array.from(root.querySelectorAll('.mermaid-container')).filter((el) => {
@@ -1179,7 +1179,7 @@
         }
         // 注意：本循环**必须遍历所有 `.mermaid-container`** —— 它除了「重渲染 Mermaid」，还负责
         // 把容器截图成 PNG（Word 的 HTML 导入器不支持内联 SVG）。我们的图表容器（Graphviz /
-        // ECharts / WaveDrom / abcjs / Markmap / TikZ / plot）复用了该类名，同样需要被截图，
+        // ECharts / WaveDrom / Markmap / TikZ / plot）复用了该类名，同样需要被截图，
         // 但**不能**被送进 mermaid.render —— 它们的源码不是 Mermaid 语法，会被当成语法错误、
         // 并可能被错误图整块覆盖。故只对「真正的 mermaid 容器」开重渲染闸门（见
         // _mermaidContainersForRerender），其余容器照常走下面的截图逻辑。
@@ -1208,7 +1208,7 @@
           }
           let dataUrl = '';
           let natW = 0, natH = 0, cssW = 0;
-          // ① **优先**走 SVG→PNG 直转：Mermaid / TikZ / plot / Graphviz / abcjs / WaveDrom 的
+          // ① **优先**走 SVG→PNG 直转：Mermaid / TikZ / plot / Graphviz / WaveDrom / Markmap 的
           //    产物本身就是 SVG，序列化后用 canvas 画一次即可（毫秒级）。
           //    历史 bug：这段"快路"原本排在 html2canvas **之后**（只有截图失败才轮到它），
           //    而 html2canvas 是整页样式重放，每张图 0.3–3 秒 → 75 张图要跑几分钟、
@@ -2206,7 +2206,7 @@
           // Re-render Mermaid via mermaid.render() so every diagram gets a
           // consistent viewBox regardless of the current preview-pane width.
           // 只挑真正的 mermaid 容器：我们的图表容器也带 `.mermaid-container` 类，
-          // 若一并送进 mermaid.render，其源码（DOT / ECharts option / WaveDrom / ABC …）
+          // 若一并送进 mermaid.render，其源码（DOT / ECharts option / WaveDrom / TikZ …）
           // 会被当成 Mermaid 语法解析，并可能被错误图整块顶掉（见 _mermaidContainersForRerender）。
           const mermaidContainers = this._mermaidContainersForRerender(clone);
           if (typeof mermaid !== 'undefined' && mermaidContainers.length) {

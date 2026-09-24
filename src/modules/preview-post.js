@@ -460,7 +460,7 @@ function addCopyButtons(preview, opts) {
 }
 
 // 浏览器：作为独立 <script> 加载，挂到全局 PreviewPost
-// ---- 图表引擎（Mermaid 之外）：ECharts / WaveDrom / abcjs ----
+// ---- 图表引擎（Mermaid 之外）：ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap ----
 // 通过 DiagramRenderers 全局（浏览器）或 require（node 测试）拿到引擎适配器，惰性获取，
 // 因此模块加载顺序不影响；引擎未加载时本函数安全跳过。
 function getDiagramRenderers() {
@@ -548,7 +548,6 @@ function collectDiagramBlocks(preview, typeOf) {
 // ECharts 走 canvas，canvas 无法被 innerHTML 序列化保存，必须每次重绘。
 const DIAGRAM_HTML_CACHEABLE = {
   wavedrom: true,
-  abcjs: true,
   graphviz: true,
   echarts: false,
   tikz: true,

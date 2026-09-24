@@ -33,7 +33,7 @@ const KNOWN_GLOBALS = new Set([
   'Select', // 统一自绘下拉框组件（2026-08 引入）
   'FontPicker', // 字体选择器组件（2026-08 引入）
   'FileTypes', // 文件类型分类白名单（文件夹树 / 打开文件路由使用）
-  'DiagramRenderers', // 图表引擎适配器（ECharts / WaveDrom / abcjs，2026-09 引入）
+  'DiagramRenderers', // 图表引擎适配器（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap，2026-09 引入）
   'DiagramConverters', // 图表语言转换器（PlantUML/D2→Mermaid、TikZ/plot→SVG），2026-09 引入
   // 以下为 master 模块统一导出重构注入的 TM* 命名空间（重基后生效，均为刻意导出）
   'TMConst', 'TMCtxMenu', 'TMEditorCore', 'TMExport', 'TMFiles', 'TMFind', 'TMFont',

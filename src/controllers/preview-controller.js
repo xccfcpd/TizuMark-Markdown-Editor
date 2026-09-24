@@ -235,7 +235,7 @@
         // 改写后由 processMermaid 统一渲染 / 缓存 / 主题重绘（不重复实现一套渲染）。
         try { PreviewPost.convertMermaidSources(this.app.preview); } catch (e) { console.warn('[preview] Diagram convert error:', e); }
         try { await PreviewPost.processMermaid(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Mermaid error:', e); }
-        // 图表引擎（ECharts / WaveDrom / abcjs / Graphviz / TikZ / plot / Markmap）：
+        // 图表引擎（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）：
         // 与 Mermaid 共用容器与样式链路
         try { await PreviewPost.processDiagrams(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Diagram error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }

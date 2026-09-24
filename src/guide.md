@@ -237,7 +237,6 @@ TizuMark 会根据文件类型自动选择最合适的视图，无需手动配�
 | ```` ```mermaid ```` | Mermaid | 流程图 / 时序图 / 甘特图 / 类图 / 状态图 / 饼图 / **脑图 mindmap** |
 | ```` ```echarts ```` | ECharts | ECharts 的 option JSON（可选顶层 `tizuHeight` 指定画布高度，默认 360） |
 | ```` ```wavedrom ```` | WaveDrom | WaveDrom 的 source JSON（`signal` / `assign` / `reg`；`wave` 为别名） |
-| ```` ```abc ```` | abcjs | ABC 记谱原文（五线谱；`abcjs` 为别名） |
 | ```` ```dot ```` | Graphviz | DOT 语言描述的节点/边关系图，自动布局（`graphviz` / `gv` 为别名；首行写 `// engine: neato` 可切换布局引擎） |
 
 > 导出长图 / PDF / DOCX 时，这些图表会自动转成图片嵌入，无需额外处理。

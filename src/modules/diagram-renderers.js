@@ -1,4 +1,4 @@
-// 图表引擎适配器（Mermaid 之外的四种）：ECharts / WaveDrom / abcjs(五线谱) / Graphviz。
+// 图表引擎适配器（Mermaid 之外的原生引擎）：ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap。
 //
 // 设计要点：
 //   1. 与 processMermaid 一致的容器约定：渲染结果放进 div.mermaid-container.diagram-container，
@@ -13,16 +13,15 @@
 // 代码块语言标记（markdown fence info）：
 //   ```echarts   → ECharts（JSON option）
 //   ```wavedrom  → WaveDrom（JSON 波形/电路/寄存器图；wave 为别名）
-//   ```abc       → abcjs（ABC 记谱；abcjs 为别名）
 //   ```dot       → Graphviz（DOT 语言；graphviz / gv 为别名）
+// 注：五线谱（abcjs / ```abc）支持已于 2026-09-24 **完整移除**（含 vendor 文件与依赖声明），
+//     该语言标记现在不再是图表引擎 —— 代码块按普通代码块显示，不再有引擎被误触发。
 
 // 语言标记 → 引擎类型（未列出的返回 null，由调用方忽略）
 const LANGUAGE_MAP = {
   echarts: 'echarts',
   wavedrom: 'wavedrom',
   wave: 'wavedrom',
-  abc: 'abcjs',
-  abcjs: 'abcjs',
   dot: 'graphviz',
   graphviz: 'graphviz',
   gv: 'graphviz',
@@ -39,7 +38,6 @@ const LANGUAGE_MAP = {
 const ENGINE_LABEL = {
   echarts: 'ECharts',
   wavedrom: 'WaveDrom',
-  abcjs: 'abcjs',
   graphviz: 'Graphviz',
   tikz: 'TikZ',
   plot: '函数绘图',
@@ -59,7 +57,7 @@ const DEFAULT_MARKMAP_HEIGHT = 420;
 const chartRegistry = new Map();
 
 // 所有渲染过图表的容器（含非 ECharts 引擎）：预览重渲染后据此回收已脱离 DOM 的那些。
-// 为什么必须登记全部引擎：abcjs / markmap / wavedrom 内部也会持有容器（ResizeObserver、
+// 为什么必须登记全部引擎：markmap / wavedrom 等引擎内部也会持有容器（ResizeObserver、
 // 事件监听等），只 dispose ECharts 并不够。
 const diagramContainers = new Set();
 
@@ -166,18 +164,6 @@ function renderWavedrom(container, code, opts) {
   // renderWaveElement(id, source, element, skins)：直接把 SVG 渲染进给定元素（绕过全局皮肤依赖）
   wavedrom.renderWaveElement(id, source, container, skins);
   if (!container.querySelector('svg')) throw new Error('WaveDrom 渲染失败（检查 source 结构，如 signal/assign/reg）');
-  return true;
-}
-
-// ---- abcjs（五线谱） ----
-// 约定：代码块内容为 ABC 记谱原文；可选 <!-- abc-width: 600 --> 之类的宽度控制暂不支持，
-// 统一 responsive: 'resize' 自适应容器宽度。
-function renderAbc(container, code, opts) {
-  const ABC = (typeof ABCJS !== 'undefined') ? ABCJS : null;
-  if (!ABC) throw new Error('abcjs 未加载（lib/abcjs.min.js）');
-  container.style.height = '';
-  ABC.renderAbc(container, code, { responsive: 'resize', add_classes: true }, {});
-  if (!container.querySelector('svg')) throw new Error('abcjs 渲染失败（检查 ABC 记谱语法）');
   return true;
 }
 
@@ -348,7 +334,6 @@ async function renderMarkmap(container, code, opts) {
 const RENDERERS = {
   echarts: renderEcharts,
   wavedrom: renderWavedrom,
-  abcjs: renderAbc,
   graphviz: renderGraphviz,
   tikz: renderTikz,
   plot: renderPlot,
@@ -375,7 +360,7 @@ function renderError(container, type, code, err) {
 
 // 回收「已脱离预览 DOM」的图表资源。
 // 为什么需要：预览重渲染是**整块替换 innerHTML** —— 旧容器连同 canvas / 实例一起被丢弃，
-// 但 chartRegistry、ResizeObserver 以及引擎内部（abcjs 的 responsive 监听、markmap 的
+// 但 chartRegistry、ResizeObserver 以及引擎内部（markmap 的
 // d3-zoom 等）仍持有它们 → 长会话内存只增不减，表现为「用久了莫名卡顿、要重启才恢复」。
 // 调用时机：**新内容写入 DOM 之后**（那时旧容器才真正脱离文档）。只清脱离的那些，
 // 仍在 DOM 中的实例保持不动（否则每次重渲染都要重建，白卡一下）。
@@ -406,7 +391,7 @@ function disposeDetachedDiagrams(liveRoot) {
       try { ro.disconnect(); } catch (_e) { /* 忽略 */ }
     }
     if (container) container._tizuResizeObserver = null;
-    // ③ 清空内容：断开引擎侧对旧容器的引用链（abcjs / markmap / wavedrom 的内部状态），
+    // ③ 清空内容：断开引擎侧对旧容器的引用链（markmap / wavedrom 的内部状态），
     //    此后旧容器不再被任何存活对象引用，可被 GC 回收。
     if (container && typeof container.innerHTML !== 'undefined') {
       try { container.innerHTML = ''; } catch (_e) { /* 忽略 */ }
@@ -435,7 +420,7 @@ async function renderInto(container, type, code, opts) {
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
-    renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
     DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,
@@ -444,7 +429,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
-    renderEcharts, renderWavedrom, renderAbc, renderGraphviz,
+    renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
     DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,

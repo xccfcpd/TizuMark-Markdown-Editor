@@ -2500,7 +2500,7 @@ body.is-resizing .side-btn {
   height: auto;
 }
 
-/* 通用图表容器（ECharts / WaveDrom / abcjs / Graphviz 共用 .mermaid-container 类） */
+/* 通用图表容器（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap 共用 .mermaid-container 类） */
 .diagram-container canvas { max-width: 100%; height: auto; display: block; margin: 0 auto; }
 /* 图表「渲染中」占位：mermaid 必须把源码放进容器才能解析，直接显示会闪源码
    （用户报障「随滚动一会儿源码一会儿图」）。pending 期间把文本透明化 + 显示占位文字。 */

@@ -30,7 +30,7 @@ const DR = require(path.resolve(__dirname, '../src/modules/diagram-renderers.js'
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 // 这些类型在预览里由 diagram-renderers.js 的原生引擎渲染，绝不能进 Mermaid
-const NATIVE_TYPES = ['graphviz', 'echarts', 'wavedrom', 'abcjs', 'markmap', 'tikz', 'plot'];
+const NATIVE_TYPES = ['graphviz', 'echarts', 'wavedrom', 'markmap', 'tikz', 'plot'];
 
 function makeContainer(w, type, legacy) {
   const el = w.document.createElement('div');
@@ -67,7 +67,7 @@ test('导出守卫：只挑真正的 mermaid 容器，原生引擎容器绝不�
   } finally { cleanup(w); }
 });
 
-test('路由守卫：graphviz / echarts / wavedrom / abc / markmap 不得被改写成 mermaid', async () => {
+test('路由守卫：graphviz / echarts / wavedrom / markmap 不得被改写成 mermaid', async () => {
   const { w } = await buildEnv();
   await waitForEditor(w);
   try {
@@ -77,7 +77,7 @@ test('路由守卫：graphviz / echarts / wavedrom / abc / markmap 不得被改�
 
     const PP = w.PreviewPost;
     const preview = w.document.createElement('div');
-    const nativeLangs = ['graphviz', 'dot', 'echarts', 'wavedrom', 'abc', 'abcjs', 'markmap'];
+    const nativeLangs = ['graphviz', 'dot', 'echarts', 'wavedrom', 'markmap'];
     const nativeCodes = [];
     nativeLangs.forEach((lang) => {
       const pre = w.document.createElement('pre');
@@ -118,7 +118,7 @@ test('收集守卫：这些语言仍由各自原生引擎接管（collectDiagram
     const typeOf = DR.diagramTypeFromLanguage;
     const expect = {
       graphviz: 'graphviz', dot: 'graphviz', echarts: 'echarts', wavedrom: 'wavedrom',
-      abc: 'abcjs', markmap: 'markmap', tikz: 'tikz', plot: 'plot',
+      markmap: 'markmap', tikz: 'tikz', plot: 'plot',
     };
     const preview = w.document.createElement('div');
     Object.keys(expect).forEach((lang) => {

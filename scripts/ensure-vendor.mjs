@@ -61,12 +61,10 @@ const MANIFEST = [
   ['mermaid/dist/mermaid.min.js', 'mermaid/mermaid.min.js'],
   // 图表引擎（Mermaid 之外，2026-09 引入）：
   //   echarts     -> dist/echarts.min.js（canvas 渲染）
-  //   abcjs       -> dist/abcjs-basic-min.js（五线谱，SVG）
   //   wavedrom    -> 无 dist 目录，构建产物在包根；浏览器入口用 wavedrom.unpkg.min.js（已内联 onml）
   //   皮肤        -> 皮肤脚本给 window.WaveSkin 赋值；无皮肤时 renderWaveForm 会抛 "no skins found"，
   //                  故 default/dark 两个皮肤必须随包内置（深色主题靠 dark 皮肤）
   ['echarts/dist/echarts.min.js', 'echarts.min.js'],
-  ['abcjs/dist/abcjs-basic-min.js', 'abcjs.min.js'],
   //   graphviz    -> @hpcc-js/wasm 的 UMD 构建（Emscripten 版 Graphviz；wasm 以 base64 内联在 js 里，
   //                  无独立 .wasm 文件，故单文件拷贝即可）。浏览器全局名带 @ 与 /：
   //                  window["@hpcc-js/wasm/graphviz"]
@@ -202,4 +200,4 @@ if (missing > 0) {
   process.exit(1);
 }
 
-console.log('[ensure-vendor] vendor 同步完成：src/lib（codemirror/katex/mermaid/echarts/abcjs/graphviz/wavedrom/html2canvas/markdown-it/highlight.js/markmap）');
+console.log('[ensure-vendor] vendor 同步完成：src/lib（codemirror/katex/mermaid/echarts/graphviz/wavedrom/html2canvas/markdown-it/highlight.js/markmap）');

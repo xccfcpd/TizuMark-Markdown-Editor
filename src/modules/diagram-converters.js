@@ -4,7 +4,7 @@
 // 职责边界（与 diagram-renderers.js 分工）：
 //   本模块 = 纯函数，不碰 DOM、不读全局引擎、不联网。输入源码字符串，输出
 //             Mermaid 图描述（交给既有 processMermaid 渲染）或 SVG 字符串。
-//   diagram-renderers.js = 容器编排与引擎适配（含 ECharts/WaveDrom/abcjs/Graphviz）。
+//   diagram-renderers.js = 容器编排与引擎适配（含 ECharts/WaveDrom/Graphviz/TikZ/plot/Markmap）。
 // 这样拆分的收益：转换逻辑可零依赖单测（test/diagrams.test.cjs 直接 require）。
 //
 // 支持的围栏语言：

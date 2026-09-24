@@ -550,10 +550,9 @@
   <script src="lib/katex/mhchem.min.js"></script>
   <script src="lib/katex/auto-render.min.js"></script>
   <script src="lib/mermaid/mermaid.min.js"></script>
-  <!-- 图表引擎（Mermaid 之外）：ECharts 图表 / abcjs 五线谱 / WaveDrom 数字波形图。
+  <!-- 图表引擎（Mermaid 之外）：ECharts 图表 / WaveDrom 数字波形图。
        wavedrom 的皮肤脚本给 window.WaveSkin 赋值，缺失时渲染会抛 "no skins found"，故必须随包内置。 -->
   <script src="lib/echarts.min.js"></script>
-  <script src="lib/abcjs.min.js"></script>
   <!-- Graphviz（DOT 语言）：WASM 以 base64 内联在文件内，无独立 .wasm 资源 -->
   <script src="lib/graphviz.min.js"></script>
   <script src="lib/wavedrom/wavedrom.min.js"></script>
@@ -688,11 +687,6 @@
                 <strong>ECharts</strong>
                 <span class="license-badge">Apache-2.0</span>
                 <p>数据图表渲染（```echarts 代码块）</p>
-              </div>
-              <div class="dependency-item">
-                <strong>abcjs</strong>
-                <span class="license-badge">MIT</span>
-                <p>五线谱渲染（```abc 代码块）</p>
               </div>
               <div class="dependency-item">
                 <strong>Graphviz (@hpcc-js/wasm)</strong>

@@ -239,9 +239,9 @@
         const hasH = !!src.getAttribute('height');
         const hasVb = !!src.getAttribute('viewBox');
         // 只有 width/height **都**具备才算"自带尺寸"（Mermaid / TikZ / plot / Graphviz / Markmap）。
-        // 只有 viewBox 的一类（典型：abcjs 的 responsive 输出 —— 它把 width/height 全删掉、
+        // 只有 viewBox 的一类（曾由 abcjs 的 responsive 输出触发：它把 width/height 全删掉、
         // 只留 viewBox + preserveAspectRatio="xMinYMin"）在查看器里会退化成"占满视口、
-        // 内容钉在左上角"：用户报障「五线谱浮在正文之上、压住标题与正文」正是此因。
+        // 内容钉在左上角"。abcjs 已移除，但这段兜底对所有"只有 viewBox"的 SVG 仍然必要。
         if (hasW && hasH) return clone;
 
         const rect = typeof src.getBoundingClientRect === 'function' ? src.getBoundingClientRect() : null;
@@ -253,7 +253,7 @@
         clone.setAttribute('width', String(pw));
         clone.setAttribute('height', String(ph));
         if (hasVb) {
-          // 保留原坐标系（abcjs 的 viewBox 是谱面坐标系），只把对齐方式**归中** ——
+          // 保留原坐标系，只把对齐方式**归中** ——
           // 否则它自带的 xMinYMin 会让内容贴在左上角，放大后压在正文之上。
           clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
         } else {

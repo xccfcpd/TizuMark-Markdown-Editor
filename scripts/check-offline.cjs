@@ -69,7 +69,7 @@ let vendorPresent = 0;
 for (const file of files) {
   const ext = path.extname(file).toLowerCase();
   const rel = path.relative(ROOT, file).replace(/\\/g, '/');
-  if (rel.indexOf('src/lib/') === 0 && /\.(min\.js|js)$/.test(rel) && /(echarts|mermaid|katex|codemirror|highlight|markmap|abcjs|graphviz|wavedrom|html2canvas|markdown-it|html-docx|docx|mathml2omml)/i.test(rel)) {
+  if (rel.indexOf('src/lib/') === 0 && /\.(min\.js|js)$/.test(rel) && /(echarts|mermaid|katex|codemirror|highlight|markmap|graphviz|wavedrom|html2canvas|markdown-it|html-docx|docx|mathml2omml)/i.test(rel)) {
     vendorPresent++;
   }
   const rules = RULES.filter((r) => r.ext.indexOf(ext) !== -1);

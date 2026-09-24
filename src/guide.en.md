@@ -219,7 +219,6 @@ Fenced code blocks render diagrams — no plugins needed, fully offline, theme-a
 | ```` ```mermaid ```` | Mermaid | Flowchart / sequence / gantt / class / state / pie / **mindmap** |
 | ```` ```echarts ```` | ECharts | ECharts option JSON (optional top-level `tizuHeight` for canvas height, default 360) |
 | ```` ```wavedrom ```` | WaveDrom | WaveDrom source JSON (`signal` / `assign` / `reg`; `wave` is an alias) |
-| ```` ```abc ```` | abcjs | ABC notation (music staff; `abcjs` is an alias) |
 | ```` ```dot ```` | Graphviz | DOT graph source with automatic layout (`graphviz` / `gv` aliases; put `// engine: neato` on the first line to switch layout engine) |
 
 > Long-image / PDF / DOCX export converts these diagrams to images automatically.

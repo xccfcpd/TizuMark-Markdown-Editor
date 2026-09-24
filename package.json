@@ -19,7 +19,6 @@
   "license": "GPL-3.0",
   "dependencies": {
     "@hpcc-js/wasm": "^2.35.1",
-    "abcjs": "^6.7.0",
     "codemirror": "^5.65.18",
     "d3": "^7.9.0",
     "docx": "^9.7.1",

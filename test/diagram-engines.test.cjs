@@ -1,11 +1,14 @@
-// 回归测试：Mermaid 之外的三种图表引擎（ECharts / WaveDrom / abcjs 五线谱）。
+// 回归测试：Mermaid 之外的原生图表引擎（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）。
 //
 // 守卫三类失效点（与 mhchem 那次同一套路）：
 //   ① 模块清单漂移：新增 src/modules/diagram-renderers.js 却漏加 <script>（entry-scripts 也会查，
 //      这里再钉一次「lib 脚本 + 模块脚本」是否齐全）；
-//   ② vendor 再生清单漏拷：ensure-vendor 没把三个引擎/皮肤纳入，npm install 后 src/lib 缺文件，
+//   ② vendor 再生清单漏拷：ensure-vendor 没把各引擎/皮肤纳入，npm install 后 src/lib 缺文件，
 //      真机表现为代码块不渲染（且不报错）；
 //   ③ 分发逻辑退化：语言标记 → 引擎类型的映射、代码块收集规则被改坏。
+//
+// 另：五线谱（abcjs）支持已于 2026-09-24 完整移除，本文件同时钉住「移除后不得复活」
+// （语言标记回落为 null、vendor 清单无 abcjs、package.json / lock 均无 abcjs 依赖）。
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -16,6 +19,7 @@ const ROOT = path.resolve(__dirname, '..');
 const INDEX = path.join(ROOT, 'src', 'index.html');
 const VENDOR = path.join(ROOT, 'scripts', 'ensure-vendor.mjs');
 const PKG = path.join(ROOT, 'package.json');
+const LOCK = path.join(ROOT, 'package-lock.json');
 
 const DR = require('../src/modules/diagram-renderers.js');
 const PP = require('../src/modules/preview-post.js');
@@ -26,13 +30,14 @@ test('diagramTypeFromLanguage：语言标记映射与别名', () => {
   assert.strictEqual(DR.diagramTypeFromLanguage('echarts'), 'echarts');
   assert.strictEqual(DR.diagramTypeFromLanguage('wavedrom'), 'wavedrom');
   assert.strictEqual(DR.diagramTypeFromLanguage('wave'), 'wavedrom', 'wave 是 wavedrom 的别名');
-  assert.strictEqual(DR.diagramTypeFromLanguage('abc'), 'abcjs');
-  assert.strictEqual(DR.diagramTypeFromLanguage('abcjs'), 'abcjs');
   assert.strictEqual(DR.diagramTypeFromLanguage('dot'), 'graphviz');
   assert.strictEqual(DR.diagramTypeFromLanguage('graphviz'), 'graphviz');
   assert.strictEqual(DR.diagramTypeFromLanguage('gv'), 'graphviz', 'gv 是 graphviz 的别名');
   // 大小写 / 空白容错
   assert.strictEqual(DR.diagramTypeFromLanguage('  ECharts '), 'echarts');
+  // 五线谱已移除：abc / abcjs 必须回落到「非图表语言」（代码块只按普通代码块显示）
+  assert.strictEqual(DR.diagramTypeFromLanguage('abc'), null, 'abc 不应再被识别为图表引擎（已移除）');
+  assert.strictEqual(DR.diagramTypeFromLanguage('abcjs'), null, 'abcjs 不应再被识别为图表引擎（已移除）');
   // 非图表语言一律返回 null（不能误吞普通代码块）
   for (const lang of ['js', 'python', 'mermaid', 'json', '', null, undefined]) {
     assert.strictEqual(DR.diagramTypeFromLanguage(lang), null, `${lang} 不应被识别为图表引擎`);
@@ -41,11 +46,10 @@ test('diagramTypeFromLanguage：语言标记映射与别名', () => {
 
 // ---- ② 入口清单与 vendor 清单 ----
 
-test('index.html 加载四个引擎脚本与皮肤，且不含远程 CDN', () => {
+test('index.html 加载各引擎脚本与皮肤，且不含远程 CDN', () => {
   const html = fs.readFileSync(INDEX, 'utf8');
   for (const src of [
     'lib/echarts.min.js',
-    'lib/abcjs.min.js',
     'lib/wavedrom/wavedrom.min.js',
     'lib/wavedrom/skins/default.js',
     'lib/wavedrom/skins/dark.js',
@@ -56,13 +60,14 @@ test('index.html 加载四个引擎脚本与皮肤，且不含远程 CDN', () =>
   }
   // 完全离线：这些脚本必须是本地路径，不能出现外链
   assert.ok(!/<script[^>]+src="https?:\/\//.test(html), 'index.html 不应引入远程脚本（离线要求）');
+  // 五线谱已移除：入口不得再加载 abcjs（否则会白拷一个用不到的 vendor 文件）
+  assert.ok(!html.includes('abcjs'), 'index.html 不应再引用 abcjs（支持已移除）');
 });
 
-test('vendor 清单含四个引擎与 wavedrom 皮肤（含 wavedrom 无 dist 的特殊路径）', () => {
+test('vendor 清单含各引擎与 wavedrom 皮肤（含 wavedrom 无 dist 的特殊路径）', () => {
   const src = fs.readFileSync(VENDOR, 'utf8');
   const expected = [
     /echarts\/dist\/echarts\.min\.js['"]\s*,\s*['"]echarts\.min\.js/,
-    /abcjs\/dist\/abcjs-basic-min\.js['"]\s*,\s*['"]abcjs\.min\.js/,
     /wavedrom\/wavedrom\.unpkg\.min\.js['"]\s*,\s*['"]wavedrom\/wavedrom\.min\.js/,
     /wavedrom\/skins\/default\.js/,
     /wavedrom\/skins\/dark\.js/,
@@ -71,13 +76,21 @@ test('vendor 清单含四个引擎与 wavedrom 皮肤（含 wavedrom 无 dist �
   for (const re of expected) {
     assert.ok(re.test(src), `ensure-vendor.mjs 缺少映射：${re}`);
   }
+  assert.ok(!/abcjs/i.test(src), 'ensure-vendor.mjs 不应再打包 abcjs（支持已移除）');
 });
 
-test('package.json 声明四个引擎依赖（npm ci 需要 lock 同步）', () => {
+test('package.json / lock 声明各引擎依赖且已无 abcjs（npm ci 需要 lock 同步）', () => {
   const pkg = JSON.parse(fs.readFileSync(PKG, 'utf8'));
-  for (const name of ['echarts', 'abcjs', 'wavedrom', '@hpcc-js/wasm']) {
+  for (const name of ['echarts', 'wavedrom', '@hpcc-js/wasm']) {
     assert.ok(pkg.dependencies && pkg.dependencies[name], `package.json dependencies 缺少 ${name}`);
   }
+  // 五线谱已移除：两处声明都必须清掉 —— package.json 与 lock 不同步会让 `npm ci` 直接失败
+  assert.ok(!(pkg.dependencies && pkg.dependencies.abcjs), 'package.json 不应再声明 abcjs');
+  const lock = JSON.parse(fs.readFileSync(LOCK, 'utf8'));
+  assert.ok(!(lock.packages && lock.packages['node_modules/abcjs']),
+    'package-lock.json 仍残留 node_modules/abcjs（npm ci 会报锁文件与 package.json 不同步）');
+  assert.ok(!(lock.packages && lock.packages[''] && lock.packages[''].dependencies &&
+    lock.packages[''].dependencies.abcjs), 'package-lock.json 根依赖仍声明 abcjs');
 });
 
 test('ResizeObserver 良性告警已处理（rAF 内 resize + 全局兜底过滤）', () => {
@@ -117,6 +130,7 @@ test('collectDiagramBlocks：只收图表语言，忽略普通代码块与行内
   assert.ok(window.document, 'jsdom 环境应可用');
   preview.innerHTML = [
     '<pre><code class="language-echarts">{"series":[]}</code></pre>',
+    // 五线谱已移除：abc 代码块必须**不被**收集（走普通代码块路径，不触发任何引擎）
     '<pre><code class="language-abc">X:1\nK:C\nCDEF</code></pre>',
     '<pre><code class="language-wavedrom">{"signal":[]}</code></pre>',
     '<pre><code class="language-javascript">const a = 1;</code></pre>',
@@ -124,8 +138,8 @@ test('collectDiagramBlocks：只收图表语言，忽略普通代码块与行内
   ].join('\n');
 
   const blocks = PP.collectDiagramBlocks(preview, (lang) => DR.diagramTypeFromLanguage(lang));
-  assert.strictEqual(blocks.length, 3, '应只收 3 个图表代码块');
-  assert.deepStrictEqual(blocks.map((b) => b.type), ['echarts', 'abcjs', 'wavedrom']);
+  assert.strictEqual(blocks.length, 2, '应只收 2 个图表代码块（abc 已不再算图表）');
+  assert.deepStrictEqual(blocks.map((b) => b.type), ['echarts', 'wavedrom']);
   assert.ok(blocks[0].code.includes('series'), '代码内容应原样带出');
   assert.ok(blocks[0].pre && blocks[0].pre.tagName === 'PRE', '应带上 <pre> 以便原位替换');
 });
