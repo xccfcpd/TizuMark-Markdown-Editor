@@ -47,7 +47,9 @@ test('viewmode: applyViewMode(preview) 加 preview-mode 类并隐藏侧栏', asy
     const container = w.document.querySelector('.editor-container');
     assert.ok(container.classList.contains('preview-mode'));
     const sideLeft = w.document.getElementById('btn-side-left');
-    if (sideLeft) assert.ok(sideLeft.classList.contains('side-hidden'), 'preview 模式应隐藏侧栏按钮');
+    // 不要"元素存在才断言"：按钮一旦改名，这条断言会静默失效、测试永远绿（审计发现 2026-09-25）
+    assert.ok(sideLeft, '应存在侧栏按钮 #btn-side-left');
+    assert.ok(sideLeft.classList.contains('side-hidden'), 'preview 模式应隐藏侧栏按钮');
   } finally { cleanup(w); }
 });
 

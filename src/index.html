@@ -1424,12 +1424,10 @@
     <div class="context-menu-item" data-action="file-delete" style="color:var(--color-danger)"><span>删除</span><span class="shortcut">Delete</span></div>
   </div>
 
-  <!-- 文件目录右键菜单 -->
-  <div id="context-menu-folder" class="context-menu hidden">
-    <div class="context-menu-item" data-action="folder-open-containing"><span id="folder-open-label">打开所在目录</span></div>
-    <div class="context-menu-separator"></div>
-    <div class="context-menu-item" data-action="folder-copy-path"><span>复制文件路径</span></div>
-  </div>
+  <!-- 注：此处曾有一个「文件夹右键菜单」死标记（#context-menu-folder）—— 它从未被任何代码显示
+       （文件树统一用 #context-menu-file-tree，其中已含 folder-open-containing 项），且与 file-tree
+       菜单各自持有一个同名的「打开所在目录」标签节点（重复 id 会让 getElementById 静默取到另一个
+       元素）。2026-09-25 第十一轮体检确认其零引用后删除。 -->
 
   <div id="loading-overlay" class="loading-overlay">
     <div class="loading-box">

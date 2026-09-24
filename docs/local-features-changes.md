@@ -1169,6 +1169,51 @@ jsdom 或 wasm，只能由 CI 复核。）
 | `parseAdmonitionHeader('::: tip')` 返回 null | `:::` 是**容器**语法，归 `parseContainerHeader` 管；`parseAdmonitionHeader` 只负责 `!!!` / `???` |
 | `\celsius` 产出 `^{\circ}C`（而非 `^{\circ}\mathrm{C}`） | 既有用例锁定且渲染正确，属排版取舍，不改 |
 
+### 2.32 第十一轮：工程卫生 + **测试自身质量**（2026-09-25）
+
+前十轮审的都是产品代码，这轮审"工程与测试本身"：测试里的恒真/条件化断言、测试文件是否真被
+收集、i18n 占位符一致性、僵尸 id、静默 catch / `console.log` / TODO、性能反模式、仓库卫生。
+
+#### 真问题（4 类，已修）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **3 个对话框标题从未翻译**：`#eula-dialog`（开源许可协议）、`#docx-page-dialog`（导出 DOCX）、`#file-search-dialog`（文件搜索）—— 它们有 id，但 `applyLanguage()` 只覆盖了 settings / about 两个对话框 → **英文界面残留中文** | 新增 `eulaDialogTitle` / `docxDialogTitle` / `fileSearchDialogTitle` 中英键 + 3 处 `setSelText('#…-dialog .dialog-header h2', …)` 接线 |
+| 2 | **`index.html` 存在重复 id**：死标记 `#context-menu-folder` 与文件树菜单各持一个同名的"打开所在目录"标签节点 → `getElementById` 静默取到另一个（i18n 改文案改错对象）。该菜单**零引用**（文件树统一用 `#context-menu-file-tree`，其中已含 folder 项） | 删除死标记；顺带消除重复 id |
+| 3 | `test/view-mode.test.cjs` 用 `if (sideLeft) assert…` 做**条件化断言**：按钮一旦改名，断言静默失效、测试永远绿 | 改为先断言元素存在再断言类名 |
+| 4 | `.gitignore` 未忽略 `.tmp-*`：每轮体检的一次性脚本若某轮被打断（本轮就取消过一次推送）有误入库风险 | 加 `.tmp-*` 规则（与既有 `dbg-*.cjs` 同类） |
+
+#### 新增护栏：`test/hygiene-guards.test.cjs`（纯 fs，本地与 CI 都能跑）
+
+把本轮**真实出现过**的缺陷类别钉死，防止复发：
+
+1. `index.html` 不得有重复 id（先剥 HTML 注释再扫）
+2. `index.html` 里每个 `data-action` 都必须有 JS 处理（防"点了没反应的死按钮"）
+3. 每个 `test/*.test.cjs` 都必须有失败机制（`assert` / `node:test` / 非零退出）→ 防"假绿"
+4. 含中文标题的对话框必须有 i18n 接线（防第 1 类问题）
+
+> 该护栏当场就抓到了第 2 类问题 —— 而且我第一次写的修复注释里提到了 `id="folder-open-label"`，
+> 被自己写的护栏当成"重复 id"报了出来；于是护栏改为**先剥 HTML 注释**再扫描（注释里说明 id 是
+> 合理用法）。这类"护栏误报"比漏报更容易发现，留下注释说明即可。
+
+#### 复核为**误报**（不改，记录以免后人重走）
+
+| 现象 | 实情 |
+|---|---|
+| `find-input-focus` / `shortcut-confirm-only` 等文件"无断言" | 用的是自定义 `ok()` 打印助手，但**末尾都有 `process.exit(fail ? 1 : 0)`** → 失败确实会红；护栏已把这类机制纳入白名单并防止被删 |
+| `label-recent-workspaces` / `about-title` / `about-version-desc` / `settings-title` "无 JS 引用" | 走**父级/选择器**翻译（`updateMenuText('btn-recent-workspaces', …)` 取其中的 span、`setSelText('#about-dialog .dialog-header h2', …)`、`aboutSections[0]` 内查找）→ 我的"id 未被引用"启发式在这类写法上有系统性假阳性 |
+| `sidebar-check` 的 id 无人引用 | 勾选态由 CSS `.checked .dropdown-check::after` 驱动 ✓ 正常 |
+| 76 处"循环内 querySelector" | 抽查均为 `xxx.forEach(el => …)` 形态的启发式假阳性；三处 `JSON.parse(JSON.stringify())` 用于小型设置对象 |
+| 24 处静默空 `catch {}` | 集中在"尽力而为"的清理路径（撤销 URL、清理定时器），未见吞掉关键错误 → 保留 |
+
+#### 同轮复核为**干净**的项
+
+- 63 个 `data-action` **全部**有 JS 处理 ✓
+- i18n：占位符不匹配 0、空字符串值 0、中英同值漏翻 0（zh 503 / en 504，差异仍是既有的 `failedGuideEn` 孤儿）✓
+- `TODO` / `FIXME` / `HACK` / `debugger` 全仓 0 ✓；`src/` 内无 `console.log` 残留 ✓
+- `run-tests.cjs` 用 glob 自动收集 → 137 → 138 个测试文件全部被收集 ✓（无"写了不跑"的测试）
+- `.gitignore` 关键项（node_modules / dist / target / src/lib vendor）齐备 ✓
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

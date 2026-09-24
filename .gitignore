@@ -67,6 +67,8 @@ ccstart.bat
 
 # Ad-hoc debug scripts (临时调试产物，勿入库)
 dbg-*.cjs
+# 审计/体检用的一次性脚本（形如 .tmp-xxx.cjs）：即使某轮被打断也不会误入库
+.tmp-*
 
 # Stray build artifacts from version testing (勿入库)
 dist.old-*/

@@ -101,6 +101,12 @@
   
         // Settings dialog — use form element IDs as stable anchors
         setSelText('#settings-dialog .dialog-header h2', t('settings'));
+        // 另外三个对话框的标题此前**没有任何翻译路径**（英文界面残留中文，审计发现 2026-09-25）：
+        // EULA 协议 / 导出 DOCX / 文件搜索。它们各自有 id（#eula-title 等），但 applyLanguage
+        // 只覆盖了 settings 与 about 两个对话框 → 这里按同一套"父级选择器"写法补上。
+        setSelText('#eula-dialog .dialog-header h2', t('eulaDialogTitle'));
+        setSelText('#docx-page-dialog .dialog-header h2', t('docxDialogTitle'));
+        setSelText('#file-search-dialog .dialog-header h2', t('fileSearchDialogTitle'));
         const setSectionTitle = (anchorId, text) => {
           const el = document.getElementById(anchorId);
           if (el) { const name = el.closest('.settings-section').querySelector('.settings-section-name'); if (name) name.textContent = text; }
