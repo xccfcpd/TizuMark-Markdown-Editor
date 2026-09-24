@@ -1035,7 +1035,10 @@ function sanitizeTagAttributes(tagName, inner) {
       }
       let raw = attrs.substring(nameStart, j);
       // 危险事件处理器 / javascript: URL：直接丢弃
-      if (attrName.startsWith('on') || isDangerousUrlAttr(attrName, raw)) {
+      // 注意保留原来的 `/javascript:/i.test(raw)` 整条丢弃：它不仅覆盖 URL 属性，也覆盖
+      // `style="…url(javascript:…)…"` 这类**整条 style 丢弃**的既有安全语义（tests 锁定了它）。
+      // 新增的 isDangerousUrlAttr 是额外一层（data:/vbscript:/自定义 scheme），不能替代它。
+      if (attrName.startsWith('on') || /javascript:/i.test(raw) || isDangerousUrlAttr(attrName, raw)) {
         continue;
       }
       // 内联样式：保留但做安全过滤（剥离 expression()/url(javascript:)/display:none 等）
@@ -1050,7 +1053,7 @@ function sanitizeTagAttributes(tagName, inner) {
       cleaned += raw;
     } else {
       let raw = attrs.substring(nameStart, j);
-      if (attrName.startsWith('on') || isDangerousUrlAttr(attrName, raw) || attrName === 'style') {
+      if (attrName.startsWith('on') || /javascript:/i.test(raw) || isDangerousUrlAttr(attrName, raw) || attrName === 'style') {
         continue;
       }
       cleaned += raw;

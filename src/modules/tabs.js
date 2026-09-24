@@ -59,10 +59,12 @@
           // 可能已经前移、而编辑器里仍是上一个文档。旧写法（写进 this.activeTab）在"快速连点两个
           // 标签、第一个还在读盘"时会把 A 的文本写进尚未加载的 B，B 的续体再把它写回编辑器
           // → 内容被静默覆盖（审计发现，2026-09-24）。
-          // 注：**不回退到 activeTab** —— 加载期间 activeTab 指向的正是"还没进编辑器"的那个标签，
-          // 回退会把编辑器里上一个文档的文本/光标/滚动写进它（审计复核发现）。
-          // 编辑器内容本身由 editor-core 的 change 处理器实时同步，跳过回写不会丢内容。
-          const oldTab = this._editorTab;
+          // 回退规则：优先 _editorTab（编辑器真正承载的标签）；启动期它可能尚未建立，则回退
+          // activeTab —— 但**绝不回退到"正在加载中"的标签**（`_loaded === false`）：那正是审计
+          // 复核发现的错写场景（把上一个文档的光标/滚动写进还没加载完的标签）。
+          // 注：取消回退曾把"切走前保存当前滚动位置"整条打断（CI 的 tab-scroll 用例变红）。
+          let oldTab = this._editorTab;
+          if (!oldTab && this.activeTab && this.activeTab._loaded !== false) oldTab = this.activeTab;
           if (oldTab && this.tabs.indexOf(oldTab) >= 0 && this.cm) {
             oldTab.content = this.cm.getValue();
             oldTab.cursorPos = this.cm.getCursor();
