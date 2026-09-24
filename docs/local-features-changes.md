@@ -1137,6 +1137,38 @@ find-replace / word-count / layout）。
 （1 个需构建产物的环境性跳过）。（`convertMathFences` / ECharts / Graphviz 三处修复依赖
 jsdom 或 wasm，只能由 CI 复核。）
 
+### 2.31 第十轮：按声明功能做「功能矩阵体检」（2026-09-25）
+
+方法：一次性脚本（查完即删），把 17 项声明能力对着**语言别名表 / 引擎脚本引用 / 中英指南 /
+词典键 / 用户验证文档的全部图块 / 纯函数边界**逐项核对。
+
+#### 真问题（2 处，已修）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **siunitx / 物理单位（`\si{}` / `\SI{}{}`）在中英指南从未提及** —— 声明了能力却没有文档（指南只写了 mhchem 的 `\ce`/`\pu`） | 两篇指南在化学段落后各补一段"单位写法（siunitx 子集）"，写明 `\si{}`/`\SI{}{}` 以及 空格与 `.` = 细空格、`//` = 每、`*` = 乘、`m/s` 原样 |
+| 2 | 甘特图**缺起始日期**时只给出笼统的"超出本地子集"，用户无法行动（Mermaid 的 gantt 必须有具体日期） | `UNSUPPORTED_HINTS.plantuml` 增规则：`@startgantt` 且既无 `YYYY-MM-DD` 也无 `starts` → 提示到具体写法（`Project starts 2026-09-01` / `[任务] starts at …`）；带日期的甘特图与普通时序图不触发（有回归用例钉住） |
+
+#### 复核通过（矩阵结论，无需改动）
+
+| 项 | 结论 |
+|---|---|
+| siunitx 边界（10 组） | `kg m`→`kg\,m`、`N.m`→`N\,m`、`kJ//mol`→`kJ/mol`、`100 km`→`100\,km`、`1.5 m`→`1.5\,m`、`m^2 s^-1`、`10^3` 不误插细空格、`m/s` 原样 ✓ |
+| 公式自动编号 | 连续编号 1,2 ✓；**前向** `\eqref`（定义在引用之后）解析为 `\href{#eq-2}{(2)}` ✓；正文引用带未定义标签兜底 `(?)` ✓；用户 `\tag{7}` 之后自动编号为 8 ✓；章节模式首个标题前 `1`、章内 `2.1` ✓ |
+| PlantUML 路由 | 时序 / 状态（含中文状态名）/ 类 / 活动 / 甘特（带日期）5/5 ✓ |
+| plot / TikZ / DOT 边界 | 11/11 ✓（含 `plot a*x` 明确失败、`arc`/`grid` 明确失败、DOT 中文补引号、HTML 串与注释不受影响） |
+| 文档图块 | 44 个受检图块全部正常，唯一"报错"是文档里**故意**写错的 ECharts JSON 样例（用来验证错误提示） |
+| i18n | 用到 360 键、中英各 0 缺失；`:snowflake:`/`:white_check_mark:` 等短码齐备 |
+
+#### 误报澄清（都不必改）
+
+| 现象 | 实际 |
+|---|---|
+| `hpcc` / `markmap` / `d3` 未在 `index.html` 引用 | 属**懒加载**：Markmap 走本地 vendor 懒包，hpcc 内联在 `graphviz.min.js` 里 |
+| `unified-math.js` 源码里没有 `mhchem` / `\ce` 字样 | `\ce`/`\pu` 由 KaTeX 的 mhchem 扩展在**渲染期**处理（`mhchem.min.js` 已引入）；本仓库只自实现 siunitx 子集 |
+| `parseAdmonitionHeader('::: tip')` 返回 null | `:::` 是**容器**语法，归 `parseContainerHeader` 管；`parseAdmonitionHeader` 只负责 `!!!` / `???` |
+| `\celsius` 产出 `^{\circ}C`（而非 `^{\circ}\mathrm{C}`） | 既有用例锁定且渲染正确，属排版取舍，不改 |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

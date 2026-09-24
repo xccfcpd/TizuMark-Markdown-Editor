@@ -488,6 +488,17 @@ test('tikz：标签文本里的 to[ / arc( 不应让整张图被判为不支持�
   assert.strictEqual(D.tikzToSvg('\\begin{tikzpicture}\n\\draw (0,0) arc (0:90:1);\n\\end{tikzpicture}', { width: 700 }), null);
 });
 
+test('plantuml 甘特图：缺起始日期时给出**可操作**的提示（而不是笼统"超出子集"）', () => {
+  // Mermaid 的 gantt 需要具体起始日期：只有 `[任务] lasts 3 days` 无法转换。
+  // 这里钉住"要提示到具体写法"，避免用户拿到一句无法行动的报错（审计发现，2026-09-25）。
+  const noDate = D.unsupportedHints('plantuml', '@startgantt\n[设计] lasts 3 days\n@endgantt');
+  assert.ok(noDate.some((h) => /起始日期|Project starts/.test(h)), '应提示补起始日期，实际: ' + JSON.stringify(noDate));
+  const withDate = D.unsupportedHints('plantuml', '@startgantt\nProject starts 2026-09-01\n[设计] lasts 3 days\n@endgantt');
+  assert.deepStrictEqual(withDate, [], '带日期的甘特图不应有"超出子集"提示');
+  const seq = D.unsupportedHints('plantuml', '@startuml\nA -> B\n@enduml');
+  assert.deepStrictEqual(seq, [], '普通时序图不应被误判');
+});
+
 test('tikz：grid / \\path 与 arc 同口径 → null + 提示（不再静默少画几段）', () => {
   assert.strictEqual(D.tikzToSvg('\\draw (0,0) grid (3,3);', { width: 700 }), null);
   assert.strictEqual(D.tikzToSvg('\\path[draw] (0,0) -- (1,1);', { width: 700 }), null);

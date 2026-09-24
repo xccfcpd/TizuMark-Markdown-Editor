@@ -209,6 +209,8 @@ The toolbar below the top bar provides quick formatting buttons (collapsible via
 > Inline math uses `$...$`, display math uses `$$...$$`. Formulas with `&` are auto-escaped.
 
 > **Chemistry (KaTeX mhchem extension)**: write formulas and reactions with `$\ce{...}$`, and physical units with `$\pu{...}$` — e.g. `$\ce{2H2 + O2 -> 2H2O}$`, `$\ce{H2SO4}$`, `$\pu{123 kJ//mol}$`. Reaction arrows, subscripts, isotopes and ion charges (`$\ce{SO4^2-}$`) all work; for multi-line reactions use a `$$` display block with `\\` line breaks.
+>
+> **Units (built-in siunitx subset)**: `$\si{...}$` for a unit and `$\SI{value}{unit}$` for a quantity — e.g. `$\SI{1.2e-3}{m s^-1}$`, `$\si{kJ//mol}$`. Spaces and `.` between units render as a thin space (`$\si{kg m}$` → kg m), so write them meaningfully: `kJ//mol` means "per" (→ kJ/mol), `kg*m` multiplies (→ kg·m), while `m/s` is kept as-is. Common unit macros (`\kilogram`, `\metre`, `\celsius`, `\percent`, …) also work.
 
 ### Diagrams & Visualization
 

@@ -1109,6 +1109,10 @@
       [/\b(?:create|destroy)\s+\w/i, '时序图 create/destroy'],
       [/^\s*(?:skinparam|!include|!define|!theme|!pragma)\b/im, 'skinparam / 预处理指令'],
       [/^\s*autonumber\b/im, '时序图 autonumber'],
+      // 甘特图必须有具体日期才能转成 Mermaid（Mermaid 的 gantt 需要起始日期）：
+      // 只有 `[任务] lasts 3 days` 而没有 `Project starts …` / `[任务] starts …` 时给出**可操作**的
+      // 提示，而不是笼统的"超出子集"（审计发现，2026-09-25）。
+      [/@startgantt(?![\s\S]*\d{4}-\d{2}-\d{2})(?![\s\S]*\bstarts?\b)/i, '甘特图的起始日期（写 `Project starts 2026-09-01` 或 `[任务] starts at …`）'],
     ],
     tikz: [
       [/\\begin\{axis\}/, 'pgfplots 的 \\begin{axis}'],
