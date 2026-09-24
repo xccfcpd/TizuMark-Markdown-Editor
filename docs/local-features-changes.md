@@ -1291,6 +1291,43 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 | `test/preview-post-inline-math.test.cjs` 在 KaTeX 缺失时是"静默跳过断言"（返回 `{ ok:false }`） | CI 有 `node_modules` 所以实际会跑；若要更严格可改 `t.skip()` 显式标记（本轮记录，未改） |
 | 指南（`guide.md`/`guide.en.md`）里没有图表示例块 | 图表示例集中在 `demo.md` 与 `渲染验证-全功能与边界.md`（后者 44 个图块已在第十轮全量跑通） |
 
+### 2.35 第十四轮：失败可见性 + **功能交叉场景**（2026-09-25）
+
+除继续核对声明功能外，这轮专门查两类此前没覆盖的角度：**引擎失败时用户看到什么**、以及
+**功能两两交叉**（提示块里的代码、折叠块里的图表、表格里的公式、代码里的 emoji）。
+
+#### 修复 1：markmap vendor 懒加载**没有超时**
+
+| 问题 | 影响 | 修法 |
+|---|---|---|
+| `loadMarkmapVendor()` 只靠 `script.onload` / `onerror` 收敛 Promise，二者都不触发时（请求被挂起 / 宿主环境不执行外链脚本，例如 jsdom）**永远 pending** | `renderMarkmap` 的 `await` 不返回 → 容器永远停在「图表渲染中…」（既无错误提示也无源码），且**整段渲染阶段永不结束**（其后的滚动恢复/度量都不执行） | 加 6 秒超时兜底：超时按失败处理 + 允许下次重试（`markmapVendorPromise = null`）；`finish()` 保证 onload/onerror/timeout 只生效一次 |
+
+#### 修复 2：`renderInto` 的 `false` 分支与错误 UI 不一致（契约一致性）
+
+`renderInto` 的注释写着「false = 引擎缺失/渲染失败」，但**只有抛异常**那条分支会画错误框（`renderError`：说明 + 源码）；
+`renderer(...) === false` 那条分支什么都不画 → 若将来某个引擎"礼貌地返回 false"，用户会看到一个**空框**。
+现在两条失败路径统一：错误说明 + **原始源码**（沿用「宁可看见源码，也不能把内容藏起来」）。
+
+> 诚实记录：逐引擎核对后确认**当前没有任何引擎会走 `=== false`**（全文件仅两处 `return false`：未知类型、
+> catch 兜底；ECharts / WaveDrom 等在资源缺失时是 `throw`，Markmap 也是 `throw`）——所以这条属于**安全网 + 契约一致**，
+> 不是已发生的用户可见缺陷。新增用例把"失败必须看得见源码"钉住，防止将来退化。
+
+#### 新增用例（并入 `test/feature-matrix.test.cjs`）
+
+| 用例 | 断言要点 |
+|---|---|
+| 引擎不可用也必须"有说明 + 有源码" | 测试环境缺 vendor → ECharts/WaveDrom/Graphviz/Markmap 容器进入 `.diagram-error`，每个都有 `.diagram-error-msg` **和** 可复制的源码；同时 TikZ / plot（纯函数引擎）**真的渲染出 SVG** 且不被标记失败 |
+| 交叉场景 | ① 代码块内（含提示块内代码块）的 `:fire:` / `:rocket:` **保持字面**、全文不出现被替换的 emoji；② 提示块里的代码块仍被高亮（`.alert pre code.hljs`）；③ 表格单元格里的 `$…$` / `\si{}` 正常处理（无 `MATHBLOCK`、无残留 `\si{`）；④ `???` 折叠块里的图表容器存在、`data-code` 在，且渲染期临时展开后**必须恢复收起**（`details.open === false`） |
+
+#### 本轮核实（无问题）
+
+| 项 | 结论 |
+|---|---|
+| 原生引擎容器替换语义 | `prepareNativePlaceholders` 用 `container.replaceWith(pre)` 替换源码块；源码保存在 `data-code` + 失败时的错误框里 ✓ |
+| 折叠块内图表的尺寸问题 | `withVisibleLayout` 渲染期间临时 `open` 祖先 `<details>`、`finally` 恢复 ✓（ECharts/Markmap 量得到尺寸） |
+| `renderError` 的 HTML 安全 | 用 `textContent` 写消息与源码 ✓ 无注入面 |
+| Mermaid 失败 | `<pre>` 仅在成功时被容器替换；失败时源码保持可见 + 摘掉 `diagram-src-pending` ✓ |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

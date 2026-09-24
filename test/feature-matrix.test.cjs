@@ -243,6 +243,30 @@ test('功能矩阵 · 渲染阶段结束必须摘掉所有占位（内容不得�
     '不应残留 .diagram-pending（CSS 会把内容设成 transparent → 永久看不见）');
 });
 
+test('功能矩阵 · 引擎不可用时必须"有说明 + 有源码"，纯函数引擎仍应出图', async () => {
+  const { env, prep, opts } = renderPipeline(DOC);
+  await PP.renderDiagramPlaceholders(env.preview, prep, opts, () => false);
+
+  // ① 依赖 vendor 的引擎（ECharts / WaveDrom / Graphviz / Markmap）在测试环境拿不到资源 →
+  //    必须进入错误态：**错误说明 + 源码**，绝不能只留一个空框（审计修复 2026-09-25）
+  const failed = [...env.preview.querySelectorAll('.diagram-container.diagram-error')];
+  assert.ok(failed.length >= 4, 'ECharts/WaveDrom/Graphviz/Markmap 缺引擎时应进入错误态，实际 ' + failed.length);
+  failed.forEach((el) => {
+    const type = el.getAttribute('data-diagram-type');
+    assert.ok(el.querySelector('.diagram-error-msg'), type + ' 失败时应给出错误说明');
+    const pre = el.querySelector('pre code');
+    assert.ok(pre && pre.textContent.trim().length > 0, type + ' 失败时应把源码放回容器，便于用户就地排查');
+  });
+
+  // ② TikZ / plot 是纯函数转换（不依赖 vendor），应当真的渲染出 SVG
+  ['tikz', 'plot'].forEach((type) => {
+    const el = env.preview.querySelector('.diagram-container[data-diagram-type="' + type + '"]');
+    assert.ok(el, type + ' 容器应存在');
+    assert.ok(el.querySelector('svg'), type + ' 应渲染出 SVG（纯函数引擎，无需 vendor）');
+    assert.ok(!el.classList.contains('diagram-error'), type + ' 不应被标记为失败');
+  });
+});
+
 test('功能矩阵 · 标题锚点：渲染后每个标题都有 id（供大纲/目录跳转）', () => {
   const { env } = renderPipeline(DOC);
   const h1 = env.preview.querySelector('h1');
@@ -257,4 +281,56 @@ test('功能矩阵 · 缩写：*[HTML]: … 定义被隐藏，正文出现带 ti
   assert.ok(abbr, '应生成 <abbr>');
   assert.ok((abbr.getAttribute('title') || '').indexOf('HyperText') >= 0, 'abbr 应带 title');
   assert.strictEqual(env.preview.querySelector('#abbr-data'), null, 'abbr-data 隐藏容器应被移除');
+});
+
+test('功能矩阵 · 交叉场景：提示块里的代码 / 表格里的公式 / 折叠块里的图表 / 代码里的 emoji', async () => {
+  const F = B + B + B;
+  const INTER = [
+    '# 交叉场景',
+    '',
+    F + 'javascript',
+    'const s = ":fire: 必须保持原样";',
+    F,
+    '',
+    '!!! note "带代码的提示块"',
+    '    ' + F + 'js',
+    '    const y = ":rocket: 也要保持原样";',
+    '    ' + F,
+    '',
+    '| 公式 | 单位 |',
+    '| ---- | ---- |',
+    '| $E = mc^2$ | $\\si{kg m}$ |',
+    '',
+    '??? tip "折叠里的图表"',
+    '    ' + F + 'plot',
+    '    plot cos(x)',
+    '    ' + F,
+  ].join('\n');
+  const { env, prep, opts } = renderPipeline(INTER);
+
+  // ① 代码块（含提示块内的代码块）里的 emoji 短码必须保持字面 —— 两个方向都要成立
+  const codeText = [...env.preview.querySelectorAll('pre code')].map((c) => c.textContent).join('\n');
+  assert.ok(codeText.indexOf(':fire:') >= 0, '普通代码块里的 :fire: 必须保持原样');
+  assert.ok(codeText.indexOf(':rocket:') >= 0, '提示块内代码块里的 :rocket: 必须保持原样');
+  assert.ok(env.preview.textContent.indexOf('🔥') < 0, '这段文档里不应出现被替换出的 emoji');
+
+  // ② 提示块里的代码块仍要被高亮
+  const inAlert = env.preview.querySelector('.alert pre code');
+  assert.ok(inAlert && inAlert.classList.contains('hljs'), '提示块内的代码块也应被高亮');
+
+  // ③ 表格单元格里的公式与单位照常处理（不残留占位符）
+  assert.ok(env.preview.querySelector('table'), '表格应渲染');
+  assert.ok(env.preview.innerHTML.indexOf('MATHBLOCK') < 0, '表格里的公式不应残留 MATHBLOCK 占位符');
+  assert.ok(env.preview.innerHTML.indexOf('\\si{') < 0, '表格里的 \\si{} 也应被展开');
+
+  // ④ 折叠块（???）里的图表：容器生成于 details 内；渲染期临时展开量尺寸，之后必须恢复收起
+  const details = env.preview.querySelector('details[data-admonition]');
+  assert.ok(details, '??? 应产出 details');
+  const container = details.querySelector('.diagram-container[data-diagram-type="plot"]');
+  assert.ok(container, '折叠块内的 plot 图应生成容器');
+  assert.ok(container.hasAttribute('data-code'), '容器应带源码');
+  assert.strictEqual(details.open, false, '渲染前 ??? 应保持收起（默认语义）');
+  await PP.renderDiagramPlaceholders(env.preview, prep, opts, () => false);
+  assert.strictEqual(details.open, false, '渲染后 ??? 必须恢复收起（临时展开只是为了量尺寸）');
+  assert.ok(container.querySelector('svg'), '折叠块内的 plot 应真的渲染出 SVG');
 });

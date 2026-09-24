@@ -430,8 +430,21 @@ function loadMarkmapVendor() {
     const el = document.createElement('script');
     el.src = MARKMAP_VENDOR;
     el.async = false;
-    el.onload = () => resolve(true);
-    el.onerror = () => { markmapVendorPromise = null; resolve(false); }; // 允许后续重试
+    // 超时兜底：只靠 onload / onerror 时，若两者都不触发（请求被挂起、被策略拦截、
+    // 或宿主环境（如 jsdom）根本不执行外链脚本），Promise 会**永远 pending** ——
+    // renderMarkmap 的 await 不返回 → 容器永远停在「图表渲染中…」，而且整段渲染阶段
+    // 也永不结束（审计发现，2026-09-25）。超时后按失败处理，并允许下次重试。
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!ok) markmapVendorPromise = null;   // 失败：允许后续重试
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 6000);
+    el.onload = () => finish(true);
+    el.onerror = () => finish(false);
     document.head.appendChild(el);
   });
   return markmapVendorPromise;
@@ -557,7 +570,8 @@ function disposeDetachedDiagrams(liveRoot) {
   return doomed.length;
 }
 
-// 对外：渲染单个容器。返回 true=成功，false=引擎缺失/渲染失败（后者会写入错误框）。
+// 对外：渲染单个容器。返回 true=成功，false=引擎缺失/渲染失败。
+// **两种失败都会写入错误框（说明 + 源码）** —— 用户永远不会只看到一个空框。
 // 异步：Graphviz 需要 await 实例化 wasm；其余引擎同步返回，await 同样适用。
 async function renderInto(container, type, code, opts) {
   const renderer = RENDERERS[type];
@@ -568,7 +582,18 @@ async function renderInto(container, type, code, opts) {
     // canvas 已经挂在 DOM 上，只有登记过才能被 disposeDetachedDiagrams 回收到（审计发现，2026-09-24）。
     diagramContainers.add(container);
     const ok = (await renderer(container, code, opts)) !== false;
-    if (!ok) diagramContainers.delete(container);   // 引擎缺失等完全失败：不必保留登记
+    if (!ok) {
+      diagramContainers.delete(container);   // 引擎缺失等完全失败：不必保留登记
+      // 引擎"礼貌地失败"（vendor 未加载 / window.echarts 缺失 / markmap 懒包加载失败 …）原本
+      // **什么都不显示**：抛异常路径有错误框，这条路径却没有 → 容器里既无图也无源码，用户只看到
+      // 一个空框，还不知道发生了什么（审计发现，2026-09-25）。与抛异常路径统一成同一套 UI：
+      // 错误说明 + **原始源码**，用户可以就地复制排查（"宁可看见源码，也不能把内容藏起来"）。
+      // 注：这里的失败发生在创建实例之前，所以删除登记是安全的；创建实例之后才失败的引擎（如
+      // ECharts setOption）会走 catch 分支，登记保留、由 disposeDetachedDiagrams 正常回收。
+      if (!container.querySelector('.diagram-error-msg')) {
+        renderError(container, type, code, new Error('引擎未就绪或资源未加载'));
+      }
+    }
     return ok;
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[diagram] ' + type + ' render failed:', e);
