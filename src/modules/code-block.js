@@ -73,6 +73,10 @@ function processCodeBlocks(preview, opts) {
       preview.querySelectorAll('pre code').forEach((block) => {
         const cls = block.className || '';
         if (/language-(math|mermaid|katex)/.test(cls)) return;
+        // 图表块一律不碰：mermaid 系（含 PlantUML / D2 转换结果）的源码要在渲染阶段被引擎
+        // 原样读取（.code-line 包裹会把 textContent 弄脏）；原生引擎块此刻已是占位容器，
+        // 这里再兜一层以防顺序变化。
+        if (block.closest && block.closest('pre.diagram-src-pending, .diagram-container')) return;
         // 已包裹过（上一次渲染的结果）直接跳过，避免对已包 code-line 的内容重复切分/高亮
         if (block.querySelector('.code-scroll')) return;
         // 缓存键纳入行号状态：开/关行号不共用可能不匹配 display 规则的缓存

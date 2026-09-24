@@ -636,10 +636,10 @@ vendor 体积、内部监听泄漏）。
 
 ### 2.18 图表源码不再闪动（两阶段重构）+ 移除「联系我们」板块（2026-09-24）
 
-用户报的两件事：① About 对话框里的「联系我们」板块要去掉；② 预览里图表**仍然**
-「一会儿源码、一会儿图」地闪（PlantUML 等）。
+用户报的两件事：① About 对话框里的「联系我们」板块要去掉；② 预览里**所有代码块**都会
+「一会儿源码、一会儿图/样式」地闪（不只 PlantUML —— 这一点由用户在看完首轮修复后补充澄清）。
 
-#### ② 闪动的真实根因：占位做得太晚
+#### ② 闪动的真实根因之一：图表占位做得太晚
 
 预览主流程（`preview-controller.js`）是：
 
@@ -667,6 +667,19 @@ await processDiagrams()
 | `preview-post.js` | `processMermaid` / `processDiagrams` 各自拆成 **prepare（同步占位）+ render（异步渲染）**；新增组合入口 `prepareDiagramPlaceholders()` / `renderDiagramPlaceholders()`；两个旧函数保留为「先占位再渲染」的兼容包装 |
 | `preview-controller.js` | 紧跟 innerHTML 之后**同步**调用 `prepareDiagramPlaceholders()`；原 `processMermaid` / `processDiagrams` 两行合并为一次 `renderDiagramPlaceholders()`（PlantUML/D2 的源码改写也随之提前到 prepare 内） |
 | `styles.css` | 新增 `pre.diagram-src-pending`：mermaid 系源码必须留在 `<pre>` 内到渲染为止（各后处理器都按 `PRE`/`CODE` 跳过，搬进容器反而有被误改的风险），所以「隐藏源码」改成给 `<pre>` 打标记 —— 用 `visibility: hidden` 隐藏 `<code>`（`color: transparent` 压不住高亮/主题给子元素设的色），并 `::after` 居中显示占位；保留原有高度，避免渲染完成瞬间跳动 |
+
+#### ②-2 根因之二：**普通代码块**的「定型」也排在 await 之后（用户澄清的那半）
+
+`CodeBlock.processCodeBlocks`（高亮 + 行号）与 `PreviewPost.addCopyButtons` 原本同样排在
+`await processImages()` / 图表渲染**之后**。于是同一篇里的普通代码块会先以「朴素代码」形态
+出现（无高亮、无行号、无复制按钮），过一会儿才变成最终样式 —— 「所有代码都在闪」正是这一条。
+
+修法：把「代码块定型」也放进同一个**同步**阶段（紧跟 innerHTML，先于任何 await）：
+
+| 位置 | 改动 |
+|---|---|
+| `preview-controller.js` | `postOpts` 提前定义；`addCopyButtons` + `CodeBlock.processCodeBlocks` 移到同步阶段（`prepareDiagramPlaceholders` 之后、`await processImages()` 之前）；原位置的两处调用删除，只保留需要布局的「代码块按需滚动」那一趟 |
+| `code-block.js` | 新增显式跳过：`pre.diagram-src-pending` / `.diagram-container` 内的 `code` 一律不包裹（原先只按 `language-(math\|mermaid\|katex)` 跳过）—— mermaid 系源码要在渲染阶段被引擎原样读取，`.code-line` 包裹会把 textContent 弄脏 |
 
 #### 顺带修掉「占位摘不掉」：图已出来、中间还压着一行「图表渲染中…」
 

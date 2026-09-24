@@ -207,6 +207,34 @@
           });
         } catch (e) { console.warn('[preview] Diagram prepare error:', e); }
 
+        // 后处理选项（提到这里：下面的**同步**定型阶段要用）
+        const postOpts = {
+          t: (k) => this.app.t(k),
+          isDark: this.app.isDark,
+          escapeHtml: (s) => this.app.escapeHtml(s),
+          escapeAttr: (s) => this.app.escapeAttr(s),
+          headingToId: (s) => this.app.headingToId(s),
+          mermaidCache: this.app._mermaidCache,
+        };
+
+        // 代码块「定型」也必须在同一个**同步**阶段做完：高亮（hljs）+ 行号 + 复制按钮。
+        // 否则要等到 processImages / 图表渲染那些 await 之后才做，用户先看到的是**朴素代码**
+        // （无高亮、无行号），随后才变成最终样式 —— 这就是"所有代码都在闪"的来源（不只图表块）。
+        // 此刻 <pre> 的状态：
+        //   · 原生引擎（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）已在上一步换成
+        //     占位容器，不会被这里碰到；
+        //   · mermaid 系仍是 <pre><code class="language-mermaid">，由两者的既有规则跳过
+        //     （code-block.js 跳过 language-(math|mermaid|katex)；另外还显式跳过
+        //     pre.diagram-src-pending —— 它们的源码要在渲染阶段被引擎原样读取）。
+        try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
+        try {
+          CodeBlock.processCodeBlocks(this.app.preview, {
+            hljs,
+            cache: this.app._hljsCache,
+            lineNumbers: this.app.preview.classList.contains('code-line-numbers'),
+          });
+        } catch (e) { console.warn('[preview] Code block error:', e); }
+
         // 超大文档：顶部全局横幅提示（不塞进预览内容，避免随滚动/重渲染消失）
         if (this.app._previewTruncated) {
           const totalLines = content.split('\n').length;
@@ -229,14 +257,6 @@
 
         try { await this.app.processImages(); } catch (e) { console.warn('[preview] Images error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
-        const postOpts = {
-          t: (k) => this.app.t(k),
-          isDark: this.app.isDark,
-          escapeHtml: (s) => this.app.escapeHtml(s),
-          escapeAttr: (s) => this.app.escapeAttr(s),
-          headingToId: (s) => this.app.headingToId(s),
-          mermaidCache: this.app._mermaidCache,
-        };
         try { PreviewPost.processEmojiShortcodes(this.app.preview); } catch (e) { console.warn('[preview] Emoji error:', e); }
         try { PreviewPost.processMath(this.app.preview); } catch (e) { console.warn('[preview] Math error:', e); }
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
@@ -247,16 +267,7 @@
         // 复用缓存、以及主题切换后的重绘。
         try { await PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts); } catch (e) { console.warn('[preview] Diagram render error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
-        try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
-
-        // 代码高亮 + 行号：抽到 src/modules/code-block.js（独立模块，便于单独测试）
-        try {
-          CodeBlock.processCodeBlocks(this.app.preview, {
-            hljs,
-            cache: this.app._hljsCache,
-            lineNumbers: this.app.preview.classList.contains('code-line-numbers'),
-          });
-        } catch (e) { console.warn('[preview] Code block error:', e); }
+        // 高亮 / 行号 / 复制按钮已在**同步**阶段完成（见上方「代码块定型」），这里只剩按需滚动。
 
         // 代码块按需滚动：CSS 默认 overflow-y:hidden（避免 Windows always-show 滚动条
         // 轨道在短代码块上也出现），只有内容真的超出 max-height 时才显式设 auto（必须
