@@ -1250,6 +1250,47 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 | `notify.js` 的 30s 心跳 `setInterval` 与 1.5s 外部变更轮询 `setInterval` 从不 `clear` | 应用级常驻是有意为之；轮询有 `_watching` 重入锁 + `finally` 复位（异常也不会卡死）✓ |
 | 缓存淘汰是 FIFO 而非 LRU（`Map.set` 刷新已存在键不会移到队尾） | 只影响命中率、不影响正确性与内存上界 |
 
+### 2.34 第十三轮：逐功能端到端接线核对 + **CI 功能矩阵用例**（2026-09-25）
+
+问的是"这些声明功能是否都正常"。做法：先按「别名 → 路由 → 容器属性 → 引擎文件/懒加载 →
+主题重绘 → 缓存放行 → **导出路径** → 降级提示」逐环节核对接线，再把 17 项功能写进**一个矩阵用例**
+让 CI 每次跑。
+
+#### 交付：`test/feature-matrix.test.cjs`（9 个用例 / 47 条断言，CI 运行）
+
+走与 `preview-controller` **相同的同步后处理序列**（`renderMarkdown` → `prepareDiagramPlaceholders`
+→ `processCodeBlocks` → `processEmojiShortcodes` → `processMath` → `processAbbreviations` →
+`processHeadings`），一篇文档覆盖全部 17 项功能，逐项断言：
+
+| 用例 | 断言要点 |
+|---|---|
+| 基础 Markdown | 标题 / 表格 / 任务列表复选框 / `<del>` / `<mark>` / 脚注 / `<dl>` / 链接 href |
+| 代码高亮 | `code.hljs` + `data-highlighted` + 语言类 + `.code-scroll` + **多行块有行号节点** |
+| Unicode 符号 | `:fire:`/`:rocket:` 被替换成 emoji 且原文消失 |
+| 公式与单位 | `\si{kg m}` → `kg\,m`（细空格）、不残留 `\si{`；`\ce{…}` 原样透传；`\label` → `eq-N` 锚点、`\eqref` 展开；KaTeX 产出 `.katex` 且无 `MATHBLOCK` 残留 |
+| Admonition | `:::` / `!!!` / `???` / `> [!NOTE]` **四种写法**各产出提示块，`???` 产出 `details[data-admonition]`，正文都保留 |
+| 图表占位 | Mermaid（含 PlantUML 转换结果）与 Graphviz / ECharts / WaveDrom / TikZ / plot / Markmap 各有一个 `.diagram-container[data-diagram-type=…]`，都带 `data-code` + `data-theme`；PlantUML 块带 `data-diagram-source="plantuml"` |
+| 渲染收尾 | 跑完渲染阶段后 `pre.diagram-src-pending` 与 `.diagram-pending` **必须为 0**（否则内容被永久藏住） |
+| 标题锚点 / 缩写 | 渲染后 h1/h2 都有 id；`*[HTML]:` 定义被隐藏、正文出现带 title 的 `<abbr>` |
+
+#### 接线核对：这些环节**已确认正常**
+
+| 环节 | 结论 |
+|---|---|
+| `unified-*` 辅助函数 | `expandSiunitx` / `expandEqref` / `expandProseEqref` / `assignEquationNumbers` / `insertEquationTag` / `buildSectionResolver` **都由 unified-renderer 调用** ✓；`parseAdmonitionHeader` / `parseContainerHeader` 是 `convertAdmonitions` 的**内部**步骤（被 `unified-renderer` 经 `convertAdmonitions`/`restoreAdmonitions` 使用）✓ —— 先前"未接线"的结论是探测脚本把调用方一起排除导致的误报 |
+| 导出覆盖（Word/PNG） | `export.js` 的容器集合是 `clone.querySelectorAll('.mermaid-container')`，而**原生引擎容器刻意共用该类名** → SVG 快路覆盖 **Mermaid / TikZ / plot / Graphviz / WaveDrom / Markmap**；ECharts 走 `_snapshotEchartsForExport`（`[data-diagram-type="echarts"]`），再不行才 html2canvas 兜底 ✓；`export-docx.js` 对 `mermaid-container|diagram-container` 取其中的 `<img>` ✓ |
+| Admonition 两套语法 | `!!!` / `???` / `:::` 走 `unified-admonitions.js`（产物 `alert alert-<type> admonition admonition-<type>`，可折叠为 `details[data-admonition]`）；`> [!TYPE]` 走 `unified-renderer` 的 `convertAlerts` ✓，顺序为 admonition → alert → 还原时 alert 先、admonition 后 ✓ |
+| Admonition 样式 | `.alert-note/tip/warning/danger/info/important/success/question/failure/bug/example/quote/abstract` **都有样式** ✓（`admonition-summary` 是 `<summary>` 标题专用类 ✓） |
+| 容器属性 | `buildMermaidContainer` / `buildDiagramContainer` 都设置 `data-diagram-type` / `data-theme` / `data-code`（+ `data-source-line`）✓ |
+
+#### 记录（非缺陷）
+
+| 项 | 说明 |
+|---|---|
+| `??? details` 这种写法产出 `.alert-details`，而 CSS 只覆盖了上述 13 类、没有 `.alert-details` | 仅是"少一层配色"，折叠行为正常（`<details>` 原生语义）；`??? ` 常用法是 `??? note`（有样式） |
+| `test/preview-post-inline-math.test.cjs` 在 KaTeX 缺失时是"静默跳过断言"（返回 `{ ok:false }`） | CI 有 `node_modules` 所以实际会跑；若要更严格可改 `t.skip()` 显式标记（本轮记录，未改） |
+| 指南（`guide.md`/`guide.en.md`）里没有图表示例块 | 图表示例集中在 `demo.md` 与 `渲染验证-全功能与边界.md`（后者 44 个图块已在第十轮全量跑通） |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
