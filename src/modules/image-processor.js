@@ -40,11 +40,26 @@ function fail(img) {
 // 策略与 app.js 的 _imageURLCache 一致：超上限就回收最旧的（保留最近若干张，避免刚用完就被释放）。
 const INLINE_BLOB_URL_MAX = 32;
 const inlineBlobUrls = [];
+// 该 Blob URL 是否仍被文档里的 <img> 引用 —— 被引用的**绝不回收**，
+// 否则图片会当场裂开。历史 bug：只按数量裁剪，同一屏显示的图超过上限时最早的 URL 被撤销，
+// 于是「原来正常的图片回归」（用户 2026-09-24 报障）。
+function blobUrlInUse(url) {
+  if (!url || typeof document === 'undefined' || !document.querySelector) return false;
+  try {
+    return !!document.querySelector('img[src="' + String(url).replace(/"/g, '\\"') + '"]');
+  } catch (_e) {
+    return false;
+  }
+}
 function trackInlineBlobUrl(url) {
   if (!url) return url;
   inlineBlobUrls.push(url);
-  while (inlineBlobUrls.length > INLINE_BLOB_URL_MAX) {
+  // 超出上限才考虑回收，且只在"已不被任何 <img> 使用"时真回收；
+  // 仍在用的放回队尾，等它从 DOM 消失后的下一轮再处理（guard 防死循环）。
+  let guard = 0;
+  while (inlineBlobUrls.length > INLINE_BLOB_URL_MAX && guard++ < inlineBlobUrls.length) {
     const old = inlineBlobUrls.shift();
+    if (blobUrlInUse(old)) { inlineBlobUrls.push(old); continue; }
     try {
       if (typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(old);
     } catch (_e) { /* 回收失败不影响显示 */ }

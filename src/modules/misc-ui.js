@@ -68,7 +68,18 @@
           if (href.startsWith('#')) {
             // href 经 rehype-stringify 后非 ASCII 会被 URL 编码（如 #数学公式 → #%E6%95%B0...），
             // 需 decode 才能匹配 heading 的字面 id（id="数学公式"）。
-            const id = decodeURIComponent(href.substring(1));
+            //
+            // ⚠ 两个历史坑（用户 2026-09-24 报障：点 `[链接](#)` 立刻弹红色错误条）：
+            //  ① `href="#"`（空锚点，文档里极常见的写法）→ id 为空 → 拼出 `querySelector('#')`
+            //     → **SyntaxError: '#' is not a valid selector**；因为本处理器是 async，
+            //     抛出后成为「未处理的 Promise 拒绝」→ 全局错误条；
+            //  ② decodeURIComponent 遇到非法转义（如 `#%`）会抛 URIError。
+            // 故：decode 加保护、空 id 直接忽略、选择器只在读到非空 id 时才拼接。
+            let id = href.substring(1);
+            try {
+              id = decodeURIComponent(id);
+            } catch (_e) { /* 非法转义：按原样使用，交给 CSS.escape 兜住 */ }
+            if (!id) return;   // 空锚点：不跳转，也不报错（已 preventDefault）
             const target = this.preview.querySelector(`#${CSS.escape(id)}`);
             if (target) {
               const previewHeight = this.preview.clientHeight;

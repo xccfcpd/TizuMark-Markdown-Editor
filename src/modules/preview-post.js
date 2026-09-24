@@ -609,21 +609,34 @@ async function processDiagrams(preview, opts) {
     return ok;
   };
 
-  // 1) 首次渲染：围栏代码块 → 图表容器（顺序 await：同一篇里的多个图只触发一次 wasm 初始化）
+  // 1) 首次渲染：围栏代码块 → 图表容器。
+  //    **两阶段**：先把所有源码块换成占位容器，再逐个渲染。
+  //    历史 bug：原来是"替换一个、await 渲染一个"，于是还没轮到的图仍以**源码**形式显示，
+  //    表现为"代码与渲染图交替闪现"（用户 2026-09-23、09-24 两次报障）。
   const blocks = collectDiagramBlocks(preview, typeOf);
+  const jobs = [];
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, i);
+    container.classList.add('diagram-pending');   // 占位文案：既不显示源码，也不是白块
     b.pre.replaceWith(container);
+    jobs.push({ container: container, type: b.type, code: b.code });
+  }
+  // 2) 逐个渲染（顺序 await：同一篇里的多个图只触发一次 wasm 初始化）
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
     // 单个图出错绝不能影响后续图：这里再兜一层。
     // renderInto 内部已有 try/catch，但它只覆盖**同步**异常；引擎若在 await 期间以
     // 别的方式抛出（或 renderInto 被替换/扩展），整篇文档里靠前的一个图就会让后面
     // 所有图都渲染不出来 —— 这个代价远大于"多一层 try"。
     try {
-      await paint(container, b.type, b.code);
+      await paint(job.container, job.type, job.code);
     } catch (e) {
-      console.warn('[diagrams] ' + b.type + ' 渲染异常（已隔离，不影响其它图）：', e);
-      if (container && container.classList) container.classList.add('diagram-error');
+      console.warn('[diagrams] ' + job.type + ' 渲染异常（已隔离，不影响其它图）：', e);
+      if (job.container && job.container.classList) job.container.classList.add('diagram-error');
+    } finally {
+      // 无论成败都摘掉占位：失败时错误框/源码要可见
+      job.container.classList.remove('diagram-pending');
     }
   }
 
