@@ -255,17 +255,22 @@
         // 任务列表 checkbox：remark-gfm 默认输出 disabled 不可交互，渲染后移除 disabled 使其可点击
         this.app.preview.querySelectorAll('input[type="checkbox"][disabled]').forEach(cb => cb.removeAttribute('disabled'));
 
-        try { await this.app.processImages(); } catch (e) { console.warn('[preview] Images error:', e); }
-        if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
+        // 其余**同步**后处理也在这里做完：emoji / 数学 / 缩写 / 脚注 / 标题锚点。
+        // 它们只读写 DOM 文本、与图片内联没有依赖关系，提前后浏览器一次绘制就是最终形态；
+        // 顺带让图表渲染（最慢的一环）可以在下面与图片内联**并行**跑。
         try { PreviewPost.processEmojiShortcodes(this.app.preview); } catch (e) { console.warn('[preview] Emoji error:', e); }
         try { PreviewPost.processMath(this.app.preview); } catch (e) { console.warn('[preview] Math error:', e); }
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
         try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
         try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
-        // 图表渲染（Mermaid + 原生引擎）：PlantUML / D2 的源码改写与「源码块 → 占位」
-        // 已在上面的**同步**阶段（prepareDiagramPlaceholders）完成，这里只负责真正渲染、
-        // 复用缓存、以及主题切换后的重绘。
-        try { await PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts); } catch (e) { console.warn('[preview] Diagram render error:', e); }
+
+        // 图表渲染（Mermaid + 原生引擎）**立刻启动**，与下面的图片内联并行：
+        // 命中缓存的图已在同步阶段复原，这里只渲染没缓存过的；await 放在图片内联之后。
+        const diagramRender = PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts);
+
+        try { await this.app.processImages(); } catch (e) { console.warn('[preview] Images error:', e); }
+        if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
+        try { await diagramRender; } catch (e) { console.warn('[preview] Diagram render error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
         // 高亮 / 行号 / 复制按钮已在**同步**阶段完成（见上方「代码块定型」），这里只剩按需滚动。
 
@@ -417,15 +422,48 @@
     _syncPreviewVirtualScroll() {
       if (!this.app._previewVirtual || !this.app.previewWindow) return;
       const win = this.app.previewWindow;
-      const avg = this.app._avgLineHeight || 22;
       const total = this.app.cm.lineCount();
-      const anchor = Math.max(0, Math.min(total - 1, Math.round(this.app.preview.scrollTop / avg)));
+      // 视口顶行优先用**实测**的「源码行 → 像素」映射（_buildWindowLineTops）二分求得。
+      // 为什么不用 scrollTop / 平均行高：含大图 / 表格 / 图表时平均行高会被拉偏，
+      // 估算出的行号可能一下子偏出窗口边界，于是**稍一滚动就被判定越界并重渲染**
+      // （用户报障「屏幕一滚动马上就重新渲染」）。实测映射与真实布局一致，不会误判。
+      let anchor = null;
+      const tops = this.app._windowLineTops;
+      if (tops && tops.length) {
+        const y = this.app.preview.scrollTop;
+        let lo = 0, hi = tops.length - 1, best = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (tops[mid][1] <= y) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        anchor = tops[best][0];
+      }
+      if (anchor == null) {
+        const avg = this.app._avgLineHeight || 22;
+        anchor = Math.round(this.app.preview.scrollTop / avg);
+      }
+      anchor = Math.max(0, Math.min(total - 1, anchor));
       if (anchor >= win.start + PREVIEW_WINDOW_LEAD && anchor <= win.end - PREVIEW_WINDOW_LEAD) return;
       if (this.app._virtualRenderTimer) return;
       this.app._virtualRenderTimer = setTimeout(() => {
         this.app._virtualRenderTimer = null;
-        const avg2 = this.app._avgLineHeight || 22;
-        const a2 = Math.max(0, Math.min(this.app.cm.lineCount() - 1, Math.round(this.app.preview.scrollTop / avg2)));
+        // 用最新 scrollTop 重新求一次锚定行（同上：优先实测映射，避免滚动期间位置过期）
+        let a2 = null;
+        const tops2 = this.app._windowLineTops;
+        if (tops2 && tops2.length) {
+          const y2 = this.app.preview.scrollTop;
+          let lo2 = 0, hi2 = tops2.length - 1, best2 = 0;
+          while (lo2 <= hi2) {
+            const mid2 = (lo2 + hi2) >> 1;
+            if (tops2[mid2][1] <= y2) { best2 = mid2; lo2 = mid2 + 1; } else { hi2 = mid2 - 1; }
+          }
+          a2 = tops2[best2][0];
+        }
+        if (a2 == null) {
+          const avg2 = this.app._avgLineHeight || 22;
+          a2 = Math.round(this.app.preview.scrollTop / avg2);
+        }
+        a2 = Math.max(0, Math.min(this.app.cm.lineCount() - 1, a2));
         this.app._previewFocusLine = a2;
         this.app._previewScrollDriven = true; // 滚动驱动：重渲染后保留当前 scrollTop，避免回弹
         this.app.updatePreview();

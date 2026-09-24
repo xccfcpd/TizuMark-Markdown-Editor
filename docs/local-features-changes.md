@@ -707,6 +707,38 @@ await processDiagrams()
 prepare 阶段源码即被占位/标记、渲染后摘占位并写缓存且**缓存命中不再出现占位态**、
 以及 **渲染失败也必须摘掉占位**（锁死上面那个「占位摘不掉」的回归）。
 
+### 2.19 滚动/重渲染不再「满屏图表渲染中…」（2026-09-24 续）
+
+用户反馈：`09d5716` 之后代码不再显示了 ✓，但**渲染不稳定 —— 屏幕一滚动就重新渲染**，
+截图里整屏都是「图表渲染中…」。
+
+#### 原因一：缓存只在异步阶段才复原（本次主因）
+
+`_mermaidCache` 与原生引擎缓存本是无上限 Map（只有主题切换才清），因此窗口切片重渲染时
+**绝大多数图都命中缓存**；但「命中缓存 → 复原成图」这个动作写在 `renderDiagramPlaceholders()`
+里，而它排在 `await processImages()` **之后** —— 于是每轮重渲染，整屏图先集体退回占位，
+等异步阶段才变回图（用户看到的「一滚动就重新渲染」）。
+
+**改法：把缓存复原提前到同步阶段**（`prepareDiagramPlaceholders` 内）：
+
+| 位置 | 改动 |
+|---|---|
+| `preview-post.js` | 新增 `buildMermaidContainer()` 统一构造容器；`prepareMermaidPlaceholders(preview, opts)` 命中 `themeKey::code` 就**当场换成带 SVG 的容器**（连占位都不出现），未命中才打 `.diagram-src-pending` |
+| `preview-post.js` | `prepareNativePlaceholders(preview, opts)` 同理：可序列化引擎（WaveDrom / Graphviz / TikZ / plot）命中即同步填入，且**不进入渲染队列**；ECharts / Markmap 无法序列化（canvas / 内部交互态），仍走占位 + 重渲染 |
+| `preview-controller.js` | 编排改为：同步阶段（图表占位/复原 + 复制按钮 + 代码块高亮行号 + emoji/数学/缩写/脚注/标题）→ **图表渲染立即启动**（先不 await）→ `await processImages()`（与图表渲染**并行**）→ `await diagramRender` |
+
+#### 原因二：视口顶行估算不准 → 稍一滚动就判「越界」
+
+`_syncPreviewVirtualScroll()` 原来用 `scrollTop ÷ _avgLineHeight` 估算视口顶行。
+含大图 / 表格 / 图表时这个平均行高会被拉偏，估算出的行号可能一下子跨过窗口边界，
+于是**稍微滚一下就触发 120ms debounce 的重渲染**。
+
+**改法**：优先用**实测**的「源码行 → 像素」映射（`_buildWindowLineTops()` 已经建好）二分求顶行，
+取不到映射时才退回平均行高；debounce 计时器里的那次重算同样如此。
+
+**测试**：`test/preview-post.test.cjs` 新增 1 例 —— 预置缓存后调用 prepare，
+mermaid 与 tikz 两个块都必须**已复原成图、无占位、且不在渲染队列**（锁死"滚动重渲染不再退占位"）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

@@ -242,6 +242,31 @@ function stubMermaid(behavior) {
   return () => { global.mermaid = prev; };
 }
 
+test('两阶段①-补：命中缓存的图在**同步**阶段就复原（不再先显示「图表渲染中…」）', () => {
+  const { preview } = createPreviewDom();
+  const src = '<pre><code class="language-mermaid">graph TD; A-->B;</code></pre>';
+  preview.innerHTML = src + '<pre><code class="language-tikz">\\draw (0,0) -- (1,1);</code></pre>';
+  // 预置缓存：mermaid 与 tikz（可序列化的 SVG 引擎）各一条
+  const cache = new Map();
+  cache.set('light::graph TD; A-->B;', '<svg class="cached-mermaid"></svg>');
+  cache.set('tikz::light::\\draw (0,0) -- (1,1);', '<svg class="cached-tikz"></svg>');
+  const restore = stubMermaid('ok');
+  try {
+    const jobs = PP.prepareDiagramPlaceholders(preview, { isDark: false, mermaidCache: cache });
+    // 两个块都应已**同步**变成带内容的容器，且不处于占位态、也不再需要渲染
+    const m = preview.querySelector('.diagram-container[data-diagram-type="mermaid"]');
+    assert.ok(m && m.querySelector('svg.cached-mermaid'), 'mermaid 命中缓存应在同步阶段复原');
+    assert.ok(!m.classList.contains('diagram-pending'), '缓存命中的 mermaid 不应是占位态');
+    const t = preview.querySelector('.diagram-container[data-diagram-type="tikz"]');
+    assert.ok(t && t.querySelector('svg.cached-tikz'), 'tikz 命中缓存应在同步阶段复原');
+    assert.ok(!t.classList.contains('diagram-pending'), '缓存命中的原生引擎不应是占位态');
+    assert.strictEqual(preview.querySelectorAll('.diagram-pending, pre.diagram-src-pending').length, 0,
+      '整体不应残留任何占位（滚动重渲染时正是靠这一点做到"不闪"）');
+    assert.strictEqual(jobs.mermaid.length, 0, '命中缓存的 mermaid 不应进入渲染队列');
+    assert.strictEqual(jobs.native.length, 0, '命中缓存的原生引擎不应进入渲染队列');
+  } finally { restore(); }
+});
+
 test('两阶段①：prepare 同步把源码换成/标记为占位（此时尚未渲染）', () => {
   const { preview } = createPreviewDom();
   preview.innerHTML =
