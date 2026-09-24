@@ -66,6 +66,10 @@
           // 注 2：**不清空 _editorTab** —— 加载期间编辑器里仍是旧标签的内容，只有它还是
           // "真正承载者"，editor-core 的 change/cursor 处理器也据此回写。
           let oldTab = this._editorTab;
+          // ⚠ _editorTab 可能指向**已被移除的死标签**（关闭标签 / 会话重建 / 测试直接改 tabs）。
+          // 此时它是 truthy，若不判有效性就会挡住下面的回退 → "切走前保存当前滚动位置"整条被跳过
+          // （CI 的 tab-scroll 两个用例都因此拿到 0 —— 审计复核已提示这条残余，2026-09-24）。
+          if (oldTab && this.tabs.indexOf(oldTab) < 0) oldTab = null;
           if (!oldTab && this.activeTab && this.activeTab._loaded !== false) oldTab = this.activeTab;
           if (oldTab && this.tabs.indexOf(oldTab) >= 0 && this.cm) {
             oldTab.content = this.cm.getValue();
@@ -112,6 +116,8 @@
           // 统一恢复该 tab 记忆的编辑器/预览滚动位置。临时关闭滚动同步，避免恢复过程中
           // 程序化滚动事件互相重定位（分屏 + 滚动同步开启时预览会被编辑器同步覆盖，
           // 表现为「切换后预览/页面跳到别处」）。
+          // ⚠ 这里之前**不能**插"代际过期就 return"的判定：一旦 return 掉，滚动位置永远不会恢复
+          // （CI 的 tab-scroll 用例正是钉住这一条）。代际校验只放在 ensureTabLoaded 之后。
           this._restoreSwitchScroll(restoreScroll, restorePreviewTop);
           this.updateWordCount();
           this.updateOutline();

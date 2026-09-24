@@ -966,6 +966,18 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
 | 危险模式清单里的既有使用点（`eval`/`new Function` 未见、`JSON.parse` 均在 try 附近、`innerHTML=` 均为既有受控写入） | 逐一核对后属设计内用法，无需改动 |
 | Rust 侧 7 项（超时/大小上限/路径校验/原子写/BOM 保留/监视回声/黑名单按段匹配） | 见 §2.23：本机无 cargo，需在能编译验证的环境里做 |
 
+### 2.25 CI 红修复（第二轮）：盘符协议误判 + `_editorTab` 死对象挡住回退（2026-09-24）
+
+把 CI 的失败清单拉全后（`d25c70b` 上是 3 个用例，其中我上轮只修掉了 1 个），定位到两个真因：
+
+| 用例 | 真因 | 修法 |
+|---|---|---|
+| `demo-features.test.cjs:437`「图片：绝对路径（Windows 盘符）」 | 我上轮新增的 `isDangerousUrlAttr` 把 `D:/project/a.png` 中的 **`D:` 当成未知协议** → `src` 属性被整条丢弃 | 单字母"协议"视为 Windows 盘符并放行（`scheme.length === 1`） |
+| `tab-scroll.test.cjs:65 / :100`（两者都是"切回后预览应恢复，实际 0"） | `_editorTab` 指向**已从 `tabs` 移除的死标签**时仍是 truthy → 挡住 `activeTab` 回退 → "切走前保存当前滚动位置"整条被跳过（第五轮审计已提示这条残余，当时判断为"无可观测损失"，实测会直接打断滚动记忆） | 先判 `_editorTab` 是否仍在 `tabs` 里，不在则视为无效并回退到 `activeTab` |
+
+> 教训记录：**本地无 `npm`/`node_modules` → 这两个文件（jsdom / 需 `unified` 的用例）本地跑不了**，
+> 只能靠 CI 验证；对这类改动必须把"CI 失败清单拉全"（不要只看第一条注解），否则会漏修。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

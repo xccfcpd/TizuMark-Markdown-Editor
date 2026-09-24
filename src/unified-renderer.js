@@ -1002,6 +1002,9 @@ function isDangerousUrlAttr(name, raw) {
   const schemeM = /[:=]\s*["']?\s*([a-z][a-z0-9+.-]*):/i.exec(raw);
   if (!schemeM) return false;
   const scheme = schemeM[1].toLowerCase();
+  // 单字母"协议"其实是 **Windows 盘符**（`D:/project/a.png`、`C:\x.png`）—— 绝不能当未知
+  // 协议丢掉，否则绝对路径图片全部消失（CI 的 demo-features「绝对路径（Windows 盘符）」钉住了它）。
+  if (scheme.length === 1) return false;
   if (scheme === 'http' || scheme === 'https' || scheme === 'mailto' ||
       scheme === 'tel' || scheme === 'file' || scheme === 'blob') return false;
   if (scheme === 'data') return !/=\s*["']?\s*data:image\//i.test(raw);   // 仅放行 data:image/*
