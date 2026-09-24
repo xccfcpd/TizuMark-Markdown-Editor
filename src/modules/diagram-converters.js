@@ -77,7 +77,14 @@
     let n = 0;
     return function idOf(raw, fallback) {
       const key = String(raw == null ? '' : raw).trim();
-      if (!key) return fallback || 'n';
+      if (!key) {
+        // 空名（退化行，如 `"" --> ""`）同样要去重：否则两个空名会拿到同一个 id 互相覆盖，
+        // 非空名有唯一性保证而空名没有 —— 审计发现的最后一处不闭合。
+        let eid = (fallback || 'n') + (++n);
+        while (used.has(eid)) eid = (fallback || 'n') + (++n);
+        used.add(eid);
+        return eid;
+      }
       if (byName.has(key)) return byName.get(key);
       // 注意：不能写 mid(key, '')—— mid 的 `fallback || 'n'` 会把空串变成 'n'，
       // 于是第一个中文名拿到 'n'、其余拿到 C1/C2…，编号风格不一致。这里显式判空。
@@ -252,7 +259,9 @@
 
     // 状态图优先于时序图：`Idle --> Running : ev` 与时序图 `A -> B : msg` 形态相近，
     // 但状态图必带 [*] 起止或 state 关键字，故先用它们消歧（否则状态图会被误判为时序图）。
-    if (/^\s*\[\*\]\s*-+>/m.test(text) || /^\s*state\s+["\w]/mi.test(text)) return 'state';
+    // 注意 `state\s+[^\s{]`（而不是旧的 `["\w]`）：旧写法不认 `state 空闲 as Idle` 这类
+    // 中文状态名，于是整张状态图会被后面的 `--+>` 分支判成类图（审计发现）。
+    if (/^\s*\[\*\]\s*-+>/m.test(text) || /^\s*state\s+[^\s{]/mi.test(text)) return 'state';
 
     // 活动图：start/stop 独立成行、:动作; 语句、if(...) / while(...)
     if (/^\s*(start|stop)\s*$/mi.test(text) || /^\s*:[^;\n]+;\s*$/m.test(text) ||
@@ -271,6 +280,14 @@
     if (/^\s*usecase\s+/mi.test(text) || /^\s*component\s+/mi.test(text) ||
         /^\s*\[[^\]]+\]/m.test(text)) return 'component';
     if (/^\s*\(\s*[^)]+\s*\)/m.test(text)) return 'usecase';
+    // 容器声明单独出现时也是组件图（`database 缓存` + `folder 源码` 曾被判成时序图）。
+    // 消歧依据：**单短横线消息箭头 `A -> B` 只有时序图会用**（状态/类图都用双短横 `-->`），
+    // 所以出现单短横箭头时不抢判。
+    const oneDashArrow = /^\s*("[^"]+"|[^\s:<>=\-\\/]+)\s*->\s*("[^"]+"|[^\s:<>=\-\\/]+)/m.test(text);
+    // 关键字后的名字用 `[^\s{]` 而不是旧的 `["\w]`：后者不认中文名
+    //（`database 缓存` 匹配不到 → 兜到 seqDecl 被误判成时序图，审计发现）
+    if (!oneDashArrow &&
+        /^\s*(package|node|folder|frame|cloud|database)\s+[^\s{]/mi.test(text)) return 'component';
 
     // 时序图
     const seqDecl = /^\s*(participant|actor|boundary|control|entity|database|collections|queue)\s+/mi.test(text);
@@ -286,7 +303,7 @@
 
     if (/^\s*\(\s*[^)]+\s*\)/m.test(text)) return 'usecase';
     if (/^\s*\[[^\]]+\]/m.test(text) || /^\s*component\s+/mi.test(text) ||
-        /^\s*(package|node|folder|frame|cloud|database)\s+["\w]/mi.test(text)) return 'component';
+        /^\s*(package|node|folder|frame|cloud|database)\s+[^\s{]/mi.test(text)) return 'component';
 
     // 只剩 --> 关系、无关键字：按类图处理（最常见）
     if (/--+>|\.\.>/.test(text)) return 'class';
@@ -395,7 +412,7 @@
     const idOf = makeIdAllocator();
     // 名字 token 允许非 ASCII（中文参与者/角色名很常见）；箭头前后不留空格也要认
     const MSG = /^("[^"]*"|[^\s:<>=\-\\/]+)\s*([<>ox\\\/]*[-=.]+[<>ox\\\/]*)\s*("[^"]*"|[^\s:<>=\-\\/]+)\s*(?::\s*([\s\S]*))?$/;
-    const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|newpage\b|autoactivate\b|return\b|ref\s+over\b|group\b|end\s+group\b|\.\.\.\s*$|==+.*==+\s*$|--+\s*$)/i;
+    const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|newpage\b|autoactivate\b|ref\s+over\b|group\b|end\s+group\b|\.\.\.\s*$|==+.*==+\s*$|--+\s*$)/i;
 
     const declare = (raw) => {
       const name = stripQuotes(String(raw || '').trim());
@@ -410,6 +427,8 @@
 
     let i = 0;
     let noteBlock = null;
+    let lastFrom = null;   // 上一条消息的发起/接收方：供 `return` 反向成回复箭头
+    let lastTo = null;
     while (i < lines.length) {
       const l = lines[i].trim();
       i++;
@@ -421,6 +440,16 @@
           noteBlock = null;
         } else {
           noteBlock.lines.push(l);
+        }
+        continue;
+      }
+      // `return <msg>`：PlantUML 的"返回调用者"。本地不维护调用栈，按**上一条消息反向**
+      // 处理（覆盖绝大多数写法）——比原来整行丢弃更接近原意（审计发现 return 在 SKIP 里）。
+      const retM = l.match(/^return\s*([\s\S]*)$/i);
+      if (retM) {
+        const text = (retM[1] || '').trim();
+        if (lastFrom && lastTo) {
+          out.push('    ' + lastTo + '-->>' + lastFrom + (text ? ': ' + text.replace(/\n/g, '<br/>') : ''));
         }
         continue;
       }
@@ -480,6 +509,8 @@
         const text = (mm[4] || '').trim();
         if (/^</.test(arrow)) { const t = from; from = to; to = t; }
         const a = pumlSeqArrow(arrow);
+        lastFrom = from;
+        lastTo = to;
         out.push('    ' + from + a + to + (text ? ': ' + text.replace(/\n/g, '<br/>') : ''));
         continue;
       }
@@ -493,6 +524,13 @@
     const lines = stripPlantumlDecorations(src).split('\n');
     const out = ['stateDiagram-v2'];
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|note\b)/i;
+    // state 转换器与其他转换器不同：Mermaid 的 stateDiagram **接受 CJK 状态名直接作 id**，
+    // 所以不做「英文 id + 中文 label」映射，而是「ASCII 名走 mid() 归一，非 ASCII 名原样保留」——
+    // 否则 mid('空闲','S') 会把所有中文状态塌成同一个 'S'（幽灵状态，审计发现，2026-09-24）。
+    const sid = (raw) => {
+      const s = stripQuotes(String(raw == null ? '' : raw).trim());
+      return /^[\w."\-\[\]*]+$/.test(s) ? mid(s, 'S') : s;
+    };
     let inBlock = 0;
     for (const raw of lines) {
       const l = raw.trim();
@@ -501,10 +539,10 @@
       if (tm) { out.push('    accTitle: ' + tm[1].trim()); continue; }
 
       const sm = l.match(/^state\s+("[^"]*"|\S+)\s+as\s+(\S+)/i);
-      if (sm) { out.push('    state ' + mq(stripQuotes(sm[1])) + ' as ' + mid(sm[2], 'S')); continue; }
+      if (sm) { out.push('    state ' + mq(stripQuotes(sm[1])) + ' as ' + sid(sm[2])); continue; }
       const sm2 = l.match(/^state\s+("[^"]*"|\S+)\s*(\{)?\s*$/i);
       if (sm2) {
-        const id = mid(stripQuotes(sm2[1]), 'S');
+        const id = sid(stripQuotes(sm2[1]));
         out.push('    state ' + id + (sm2[2] ? ' {' : ''));
         if (sm2[2]) inBlock++;
         continue;
@@ -513,8 +551,8 @@
 
       const rm = l.match(/^([\w."\-\[\]*]+)\s*-+>\s*([\w."\-\[\]*]+)\s*(?::\s*(.*))?$/);
       if (rm) {
-        const from = rm[1] === '[*]' ? '[*]' : mid(rm[1], 'S');
-        const to = rm[2] === '[*]' ? '[*]' : mid(rm[2], 'S');
+        const from = rm[1] === '[*]' ? '[*]' : sid(rm[1]);
+        const to = rm[2] === '[*]' ? '[*]' : sid(rm[2]);
         out.push('    ' + from + ' --> ' + to + (rm[3] ? ' : ' + rm[3] : ''));
         continue;
       }
@@ -771,8 +809,12 @@
           declare(rt);
           const raw2 = arrow[2];
           let arrowStr = /\.\./.test(raw2) ? '-.->' : '-->';
-          if (/^</.test(raw2)) out.push('    ' + rt.id + ' ' + arrowStr + ' ' + lt.id);
-          else out.push('    ' + lt.id + ' ' + arrowStr + ' ' + rt.id);
+          // 边标签：`[A] --> [B] : 数据流` 以前整段被丢弃（图看起来正常、语义却没了）。
+          // 这里取出冒号后的内容，用 `-->|标签|` 表达（审计发现，2026-09-24）。
+          const labelM = rest.match(/^\s*[^:]*:\s*([\s\S]+)$/);
+          const ltag = labelM ? '|' + mpipe(labelM[1].trim()) + '|' : '';
+          if (/^</.test(raw2)) out.push('    ' + rt.id + ' ' + arrowStr + ltag + ' ' + lt.id);
+          else out.push('    ' + lt.id + ' ' + arrowStr + ltag + ' ' + rt.id);
           continue;
         }
       }
@@ -1007,6 +1049,7 @@
       [/\b(?:node\s+distance|right\s+of|left\s+of|above\s+of|below\s+of)\b/i, '相对定位（node distance / right of…）'],
       [/(?:\barc\b|\.\.\s*controls|\]\s*to\s*\[)/, '弧线 / 贝塞尔曲线 / to[…]'],
       [/\b(?:rotate|skew\s*[xy])\s*=/, 'rotate / skew'],
+      [/\b(?:grid|sin|cos|parabola)\b|\\path\b/, 'grid / sin / cos / parabola / \\path'],
       [/\\(?:clip|shade|pattern|decorate)\b/, '\\clip / \\shade / \\pattern / decorations'],
     ],
   };
@@ -1152,7 +1195,11 @@
         }
 
         // 单节点：key: label
+        // 但**已知的 D2 图级属性**要先排除，否则 `grid-columns: 2` 会凭空建出一个
+        // 名叫 grid-columns 的幽灵节点（审计发现，2026-09-24）。
+        const GRAPH_ATTR = /^(grid(-\w+)?|direction|label|near|icon|class|classes|layers|scenario|vars|shape|style(-\w+)?)$/i;
         const sm = l.match(/^("[^"]*"|[\w.$-]+)\s*:\s*([\s\S]+)$/);
+        if (sm && GRAPH_ATTR.test(stripQuotes(sm[1]))) continue;
         if (sm) {
           const id = idOf(sm[1]);
           const n = nodes.get(id) || {};
@@ -1991,7 +2038,9 @@
         items.push({ kind: 'text', at: at, text: tikzText(nm[4]), color: st2.color, font: st2.font, anchor: anchor });
         continue;
       }
-      if (c.cmd === 'path') continue;
+      // `\path` 只在带 draw 等选项时才画线（`\path[draw] (0,0) -- (1,1)`），本地不解析选项 →
+      // 静默忽略会得到"少一条线却看似成功"的图，故交回调用方（保留原块 + 提示）。
+      if (c.cmd === 'path') return null;
 
       // 路径：draw / fill / filldraw / shade
       const isFill = c.cmd === 'fill' || c.cmd === 'filldraw' || c.cmd === 'shade';
@@ -2092,10 +2141,10 @@
             continue;
           }
           if (op === 'grid' || op === 'arc' || op === 'sin' || op === 'cos' || op === 'controls' || op === 'parabola') {
-            // 不支持：跳过其后的坐标参数，避免误画
-            i++;
-            while (toks[i] && toks[i].t === 'coord') i++;
-            continue;
+            // 这些路径语法解析不了。历史行为是「跳过其后的坐标参数」—— 结果是一张**少了几段
+            // 却看起来正常**的图（比失败更危险，用户会误信渲染成功）。与 arc / controls 口径一致：
+            // 交回调用方（保留原代码块 + 提示缺哪条语法）。
+            return null;
           }
           i++;
           continue;

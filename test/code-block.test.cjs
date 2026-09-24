@@ -38,6 +38,22 @@ test('代码块基础结构合法（行号关闭）', async () => {
   assert.deepStrictEqual(structureOf(preview), { ok: true });
 });
 
+test('高亮缓存键含语言：同文本不同语言不得互相命中（审计修复 2026-09-24）', async () => {
+  const { preview } = createPreviewDom();
+  const hljs = loadHljs(preview.ownerDocument.defaultView);
+  // 同一段文本、两个不同语言标记：旧实现只用「文本 + 行号状态」作键 → 第二块直接吃到
+  // 第一块的 JS 高亮（缓存是 app 级 Map，跨文档同样会污染）
+  preview.innerHTML =
+    '<pre><code class="language-javascript">const x = 1</code></pre>' +
+    '<pre><code class="language-python">const x = 1</code></pre>';
+  const cache = new Map();
+  processCodeBlocks(preview, { hljs, cache, lineNumbers: false });
+  assert.strictEqual(cache.size, 2, '两种语言应各写一条缓存（键含语言），实际 ' + cache.size);
+  const blocks = preview.querySelectorAll('pre code');
+  assert.ok(blocks[0].querySelector('.code-scroll'), '第一块结构应正常');
+  assert.ok(blocks[1].querySelector('.code-scroll'), '第二块结构应正常');
+});
+
 test('行号开关来回切换不出现结构破损 / 无 previously highlighted 警告', async () => {
   const warns = [];
   const origWarn = console.warn;

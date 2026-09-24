@@ -68,7 +68,17 @@
         // 主题切换：旧主题的 SVG 缓存失效，清空后让下次 updatePreview / 本函数按新主题重渲染
         this._mermaidCache.clear();
         const gen = ++this._mermaidGeneration;
-        const containers = this.preview.querySelectorAll('.mermaid-container');
+        // 只挑 **mermaid** 容器：原生引擎（ECharts / Graphviz / TikZ / plot / WaveDrom / Markmap）
+        // 复用了同一个 .mermaid-container 类名，若不按 data-diagram-type 过滤，就会被当成
+        // mermaid 重渲染 —— 它们的 data-code（DOT / ECharts option / 波形 JSON）会被当 Mermaid
+        // 语法解析，用户只是点了一下主题切换，整屏原生图就被毁掉（且要等下次编辑才自愈）。
+        // export.js 早已按同一条件过滤，这里补齐（审计发现，2026-09-24）。
+        const isMermaidContainer = (el) => {
+          const t = el.getAttribute('data-diagram-type');
+          return !t || t === 'mermaid';
+        };
+        const containers = Array.from(this.preview.querySelectorAll('.mermaid-container'))
+          .filter(isMermaidContainer);
         if (containers.length === 0) return;
   
         // 保存代码并创建全新容器（避免复用旧容器的渲染状态）
@@ -87,8 +97,12 @@
         // 重建容器
         containerData.forEach((data, i) => {
           const newContainer = document.createElement('div');
-          newContainer.className = 'mermaid-container';
+          // 与 preview-post.buildMermaidContainer 保持一致的属性集：
+          // 少了 data-diagram-type 会让后续按类型过滤的代码（本函数、导出、主题 stale 重绘）判断失真
+          newContainer.className = 'mermaid-container diagram-container';
           newContainer.id = 'mermaid-' + Date.now() + '-' + i;
+          newContainer.setAttribute('data-diagram-type', 'mermaid');
+          newContainer.setAttribute('data-theme', this.isDark ? 'dark' : 'light');
           newContainer.setAttribute('data-code', data.code);
           if (data.sourceLine) newContainer.setAttribute('data-source-line', data.sourceLine);
           newContainer.textContent = data.code;
@@ -108,14 +122,17 @@
           mermaid.initialize({
             startOnLoad: false,
             theme: this.isDark ? 'dark' : 'default',
-            securityLevel: 'loose',
+            // strict（与 preview-post 的渲染路径一致）：loose 会允许图内嵌 HTML / click 事件
+            // 在 WebView 里执行，属 XSS 面；两条渲染路径的安全级别必须相同
+            securityLevel: 'strict',
             fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-preview').trim() || '-apple-system, sans-serif',
           });
           // 主题切换重渲染全部图表。一次性 mermaid.run(全部节点) 是同步 CPU 密集任务
           // （layout 计算），图表多时阻塞主线程造成明显卡顿（含转圈动画被卡住）。
           // 分批渲染：每批【渲染前】先让出主线程一帧（保证转圈持续转动、不被阻塞），
           // 图表较多时再叠加预览区 loading 提示。
-          const nodes = Array.from(this.preview.querySelectorAll('.mermaid-container'));
+          const nodes = Array.from(this.preview.querySelectorAll('.mermaid-container'))
+            .filter(isMermaidContainer);   // 同前：原生图表容器不能喂给 mermaid.run
           const BATCH = 2;
           const showLoading = nodes.length > 6;
           if (showLoading) this._beginPaneLoad();

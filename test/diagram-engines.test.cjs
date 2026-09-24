@@ -93,6 +93,62 @@ test('package.json / lock 声明各引擎依赖且已无 abcjs（npm ci 需要 l
     lock.packages[''].dependencies.abcjs), 'package-lock.json 根依赖仍声明 abcjs');
 });
 
+test('Graphviz：中文裸节点名自动补引号（DOT 词法只允许 ASCII 裸 ID）', () => {
+  // 背景：中文文档里最常见的写法 `来料 --> 检验` 会让 Graphviz 报 "syntax error ... near '--'"
+  // （用户不知道"DOT 要求引号"），2026-09-24 由导出复核发现 → 交给引擎前自动补引号。
+  const src = [
+    'digraph G {',
+    '  rankdir=LR;',
+    '  来料 --> 检验;',
+    '  "已引号" --> 合格品;',
+    '  node [shape=box, width=0.5];',
+    '  // 注释里的 中文 不应被改动',
+    '}',
+  ].join('\n');
+  const out = DR.quoteDotIds(src);
+  assert.match(out, /"来料" --> "检验";/, '中文裸名应加引号');
+  assert.match(out, /"已引号" --> "合格品";/, '已加引号的不重复加');
+  assert.match(out, /shape=box, width=0\.5/, '属性名与数字不受影响');
+  assert.match(out, /rankdir=LR;/, '普通 ASCII 不变');
+  assert.strictEqual(DR.quoteDotIds('A -- B;'), 'A -- B;', '纯 ASCII 原样返回');
+});
+
+test('theme.js：重绘 mermaid 必须按 data-diagram-type 过滤（原生图表容器共用类名）', () => {
+  // 审计修复（2026-09-24）：原生引擎容器也叫 .mermaid-container，主题切换时若不过滤，
+  // 它们的 data-code（DOT / ECharts option）会被当 Mermaid 语法喂给 mermaid.run → 整屏图被毁。
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'modules', 'theme.js'), 'utf8');
+  const re = /querySelectorAll\('\.mermaid-container'\)/g;
+  let m;
+  let checked = 0;
+  while ((m = re.exec(src))) {
+    checked++;
+    const after = src.slice(m.index, m.index + 300);
+    assert.ok(/isMermaidContainer|data-diagram-type/.test(after),
+      '第 ' + checked + ' 处 .mermaid-container 查询必须按 data-diagram-type 过滤');
+  }
+  assert.ok(checked >= 2, '应至少两处（重建容器 + 批次渲染），实际 ' + checked);
+});
+
+test('Graphviz：DOT 的 HTML 串 << … >> 原样透传（内部中文不能被加引号）', () => {
+  const src = 'digraph G {\n  a [label=<<B>标题</B>>];\n  b [label=<多行<br/>标签>];\n}';
+  const out = DR.quoteDotIds(src);
+  assert.match(out, /label=<<B>标题<\/B>>/, 'HTML 串整体不得改动');
+  assert.match(out, /label=<多行<br\/>标签>/, '单尖括号 HTML 串同样不改动');
+  assert.ok(!/"标题"/.test(out), '不应给 HTML 串内的中文加引号，实际:\n' + out);
+});
+
+test('WaveDrom：assign 写成裸字符串时给可读中文提示（而非引擎的 read only 报错）', () => {
+  const saved = global.wavedrom;
+  global.wavedrom = { waveSkin: {}, renderWaveElement() {} };
+  try {
+    assert.throws(
+      () => DR.renderWavedrom({ style: {} }, '{ "reg": { "bits": 4 }, "assign": ["写指针", "读指针"] }', {}),
+      /assign 每一项需要数组结构/,
+      '应给出可操作的中文提示',
+    );
+  } finally { global.wavedrom = saved; }
+});
+
 test('ResizeObserver 良性告警已处理（rAF 内 resize + 全局兜底过滤）', () => {
   // 症状：ECharts 容器上的 ResizeObserver 在回调里同步 resize 会触发
   // "ResizeObserver loop completed with undelivered notifications"，

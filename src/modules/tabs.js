@@ -45,6 +45,11 @@
         this._largeFileNoticeDismissed = false;
         this._previewFocusLine = 0;
         this.previewWindow = null;
+        // 换文档必须复位虚拟滚动的两项度量（审计发现，2026-09-24）：
+        //   · 待触发的滚动重渲染定时器：否则它会在新文档上按旧映射触发一次多余/错误焦点的重渲染
+        //   · 平均行高：它只校准一次后恒定，跨文档复用会让 spacer 高度与滚动落点系统性偏移
+        if (this._virtualRenderTimer) { clearTimeout(this._virtualRenderTimer); this._virtualRenderTimer = null; }
+        this._avgLineHeight = null;
         this._beginPaneLoad();
         try {
           const oldTab = this.activeTab;

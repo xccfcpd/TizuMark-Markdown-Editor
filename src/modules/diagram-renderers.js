@@ -101,8 +101,10 @@ function renderEcharts(container, code, opts) {
 
   container.style.height = height + 'px';
   const chart = echarts.init(container, opts && opts.isDark ? 'dark' : null, { renderer: 'canvas' });
-  chart.setOption(option, true);
+  // 先登记再 setOption：setOption 抛错（option 结构不合法等）时实例与 canvas 已挂在 DOM 上，
+  // 若尚未登记，disposeDetachedDiagrams 就回收不到它 → 反复重渲染会持续泄漏（审计发现，2026-09-24）。
   chartRegistry.set(container, chart);
+  chart.setOption(option, true);
 
   // 容器宽度随窗口变化时同步尺寸（窗口缩放、分屏比例调整）。
   // 必须在 rAF 里执行 resize：在 ResizeObserver 回调内同步改布局会触发浏览器
@@ -153,6 +155,16 @@ function renderWavedrom(container, code, opts) {
   const source = parseJSONSource(code);
   if (!source || typeof source !== 'object') throw new Error('WaveDrom 需要 JSON 对象形式的 source');
 
+  // assign 的每一项**不能是裸字符串**：WaveDrom 内部会对它做下标赋值，字符串不可写，
+  // 于是抛出 "Cannot assign to read only property '1' of string '写指针'" —— 用户完全看不懂。
+  // 这里提前拦下，给出可操作的中文提示（JSON 本身合法，问题在结构）。
+  if (Array.isArray(source.assign)) {
+    const bad = source.assign.find((a) => typeof a === 'string');
+    if (bad) {
+      throw new Error('WaveDrom 的 assign 每一项需要数组结构（如 [["写指针", "表达式"]]），不能写裸字符串："' + bad + '"');
+    }
+  }
+
   const skins = wavedromSkins();
   const skinName = opts && opts.isDark ? 'dark' : 'default';
   source.config = Object.assign({}, source.config);
@@ -190,12 +202,71 @@ function extractDotEngine(code) {
   return { source: lines.slice(1).join('\n'), engine };
 }
 
+// 给「非 ASCII 的裸节点名」自动补引号。
+// 为什么必须做：DOT 词法只允许 ASCII 字母/数字/下划线（以及 latin-1）作为裸 ID，
+// 于是**中文文档里最常见的写法** `来料 --> 检验` 会被 Graphviz 判为语法错误
+// （实测报 "syntax error in line N near '--'"），用户完全看不懂 —— 他们并不知道
+// "DOT 要求引号" 这回事。这里在交给引擎前自动补上：`"来料" --> "检验"`。
+// 只在**引号外**、且 token 含非 ASCII 字符时补；已引号内容、HTML 标签 <...>、数字、
+// 边操作符（-- / ->）与属性（shape=box、width=0.5）都不受影响。
+function quoteDotIds(src) {
+  const TOKEN = /[A-Za-z0-9_.\u00A0-\uFFFF]/;
+  let htmlBlock = false;   // DOT 的 HTML 串 `<< … >>` 可跨行
+  return String(src == null ? '' : src).split('\n').map((line) => {
+    if (htmlBlock) {
+      // 处在跨行的 HTML 串里：整行原样透传，直到遇到收尾的 `>>`
+      const close = line.indexOf('>>');
+      if (close >= 0) { htmlBlock = false; return line; }
+      return line;
+    }
+    let out = '';
+    let i = 0;
+    let quoted = false;
+    while (i < line.length) {
+      const c = line[i];
+      if (quoted) { out += c; if (c === '\\') { out += line[i + 1] || ''; i += 2; continue; } if (c === '"') quoted = false; i++; continue; }
+      if (c === '"') { quoted = true; out += c; i++; continue; }
+      // DOT 的 HTML 串：`<< … >>` 或 `< … >`，内部可含成对标签（`<B>…</B>`、`<br/>`）。
+      // 不能"一遇到 > 就结束"：那样 `label=<<B>标题</B>>` 里的中文会被当普通 token 加引号，
+      // 图里多出一对引号（审计发现）。这里用尖括号**配平深度**判断串尾。
+      if (c === '<') {
+        let depth = 0;
+        let j = i;
+        while (j < line.length) {
+          if (line[j] === '<') depth++;
+          else if (line[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+          j++;
+        }
+        if (depth !== 0) { htmlBlock = true; out += line.slice(i); break; }   // 跨行 HTML 串
+        out += line.slice(i, j);
+        i = j;
+        continue;
+      }
+      if (!TOKEN.test(c)) { out += c; i++; continue; }
+      let j = i;
+      while (j < line.length && TOKEN.test(line[j])) j++;
+      const token = line.slice(i, j);
+      // 含非 ASCII → 必须加引号；纯 ASCII/数字保持原样（不改变既有写法）
+      out += /[^\x00-\x7F]/.test(token) ? '"' + token.replace(/"/g, '\\"') + '"' : token;
+      i = j;
+    }
+    return out;
+  }).join('\n');
+}
+
 async function renderGraphviz(container, code, opts) {
   const mod = hpccGraphvizModule();
   if (!mod || typeof mod.Graphviz !== 'function') throw new Error('Graphviz 未加载（lib/graphviz.min.js）');
   const { source, engine } = extractDotEngine(code);
   const gv = await mod.Graphviz.load();
-  const svg = gv.layout(source, 'svg', engine);
+  let svg = null;
+  try {
+    svg = gv.layout(quoteDotIds(source), 'svg', engine);
+  } catch (e) {
+    // 原样保留引擎信息，并补一句可操作提示（中文名已自动加引号，仍报错多为语法问题）
+    throw new Error('DOT 解析失败：' + (e && e.message ? e.message : String(e)) +
+      '（提示：节点/边名含中文或空格时请写成 "名字" 形式；本例已自动为中文名补引号）');
+  }
   if (!svg) throw new Error('Graphviz 未产出 SVG（检查 DOT 语法，如 digraph { a -> b }）');
   container.style.height = '';
   container.innerHTML = svg; // 含 <?xml?> 声明与 DOCTYPE：HTML 解析器会忽略，<svg> 正常入树
@@ -422,7 +493,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
-    extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
+    extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
     DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,
   };
 }
@@ -431,7 +502,7 @@ if (typeof module !== 'undefined' && module.exports) {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
-    extractDotEngine, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
+    extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
     DEFAULT_SVG_WIDTH, DEFAULT_PLOT_HEIGHT, DEFAULT_MARKMAP_HEIGHT,
   };
 }

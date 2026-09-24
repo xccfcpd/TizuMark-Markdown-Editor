@@ -218,6 +218,9 @@
         this._largeFileNoticeDismissed = false;
         this._previewFocusLine = 0;
         this.previewWindow = null;
+        // 同 tabs.js：换文件时清掉待触发的滚动重渲染定时器并复位平均行高（审计发现）
+        if (this._virtualRenderTimer) { clearTimeout(this._virtualRenderTimer); this._virtualRenderTimer = null; }
+        this._avgLineHeight = null;
         // 类型判断：unsupported 直接提示，不打开
         const kind = (window.FileTypes && window.FileTypes.classifyFile)
           ? window.FileTypes.classifyFile(filePath)

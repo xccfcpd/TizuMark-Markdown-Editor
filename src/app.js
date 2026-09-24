@@ -154,6 +154,9 @@ class MarkdownEditor {
     if (elapsed < minDuration) {
       await new Promise(r => setTimeout(r, minDuration - elapsed));
     }
+    // 等待最短显示时长期间可能又发起了新的加载（引用计数 > 0）—— 此时**不能**隐藏：
+    // 否则计数为 1 时遮罩已消失，后续大文档渲染期间用户完全没有 loading 反馈（审计发现的竞态）。
+    if ((this._paneLoadingCount || 0) > 0) return;
     el.classList.add('hidden');
   }
   // 引用计数的加载层控制：多次嵌套的「开始/结束」只在实际最外层结束（count 归零）时才隐藏，

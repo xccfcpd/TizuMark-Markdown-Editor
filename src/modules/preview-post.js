@@ -34,7 +34,10 @@ const EMOJI_MAP = {
 
 function processEmojiShortcodes(preview) {
   const emojiMap = EMOJI_MAP;
-  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA', 'A'];
+  // 注意 skipTags 里的 'svg'：主题/滚动重渲染时，命中缓存的 mermaid 图在**同步阶段**就已经
+  // 是 <svg>（不是 <pre><code>），若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，
+  // 造成"同一份源码第一次正常、第二次被改坏"（审计发现，2026-09-24）。
+  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA', 'A', 'svg', 'SVG'];
   const walker = document.createTreeWalker(
     preview,
     NodeFilter.SHOW_TEXT,
@@ -152,7 +155,10 @@ function processMath(preview) {
   try {
     // 先把不成对的 $ / $$ 包进 <span class="katex-ignore">，让 KaTeX 跳过、原样显示 $，
     // 避免孤 $ 跨段配对吞掉正文/表格。
-    const skipTags = ['CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA'];
+    // 'svg'：命中缓存的图表在**同步阶段**就已经是 <svg>（不再包在 <pre><code> 里），
+    // KaTeX 若进去插节点会破坏 SVG 结构（同一份源码第一次正常、第二次被改坏 —— 审计发现）。
+    // 注：SVG 元素的 tagName 保持小写（HTML 元素才大写），两种都列上更稳。
+    const skipTags = ['CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'svg', 'SVG'];
     const walker = document.createTreeWalker(
       preview,
       NodeFilter.SHOW_TEXT,
@@ -259,7 +265,8 @@ function processAbbreviations(preview, opts) {
 
     abbrs.sort((a, b) => b[0].length - a[0].length);
 
-    const skipTags = ['CODE', 'PRE'];
+    // 'svg'：同 processMath —— 不往已渲染的图表 SVG 里插 <abbr>
+    const skipTags = ['CODE', 'PRE', 'svg', 'SVG'];
     const walker = document.createTreeWalker(
       preview,
       NodeFilter.SHOW_TEXT,
@@ -760,7 +767,12 @@ async function renderDiagramPlaceholders(preview, jobs, opts) {
       console.warn('[diagrams] 原生引擎渲染异常（已隔离）：', e);
     }
     // 兜底：任何没被替换掉的占位标记都要摘掉 —— 宁可看见源码，也不能把内容藏起来。
+    // 两种情况都要覆盖（审计发现这里原来只覆盖了前者）：
+    //   · pre.diagram-src-pending：mermaid 系未走到容器替换
+    //   · .diagram-container.diagram-pending：某引擎的 await 不 settle 时 finally 不会执行，
+    //     容器会带着 pending 常驻，而 `color: transparent` 会把内容永久藏住（只剩「渲染中…」）
     preview.querySelectorAll('pre.diagram-src-pending').forEach((pre) => pre.classList.remove('diagram-src-pending'));
+    preview.querySelectorAll('.diagram-container.diagram-pending').forEach((el) => el.classList.remove('diagram-pending'));
   }
 }
 

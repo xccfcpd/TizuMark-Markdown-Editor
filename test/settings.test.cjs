@@ -1131,6 +1131,22 @@ test('关于折叠块：3 块统一结构，默认全部展开，每次打开重
   } finally { cleanup(w); }
 });
 
+test('关于 → 第三方组件：切英文后每条描述都被翻译（数量与 DOM 条目一一对应）', async () => {
+  // 审计修复（2026-09-24）：depKeys 曾只有 7 个而 DOM 有 12 项 → 第 3 项起文案整体串位、
+  // 第 8 项之后被静默跳过（切英文仍是中文）。这条用例钉住"数量对齐 + 全部翻译"。
+  const { w, ed } = await makeEditor();
+  try {
+    ed.settings.language = 'en';
+    ed.applyLanguage();
+    await ed.showAbout();
+    const items = [...w.document.querySelectorAll('#about-dialog .dependency-item p')];
+    assert.ok(items.length >= 10, '第三方组件条目数应 >= 10，实际 ' + items.length);
+    const cjk = /[\u4e00-\u9fff]/;
+    const untranslated = items.filter((p) => cjk.test(p.textContent)).map((p) => p.textContent);
+    assert.deepStrictEqual(untranslated, [], '不应有仍含中文（未翻译/串位）的依赖描述');
+  } finally { cleanup(w); }
+});
+
 test('图标源统一为 Lucide（内联 SVG，无 Feather 残留）', () => {
   const fs = require('fs');
   const path = require('path');

@@ -288,7 +288,7 @@
         // Side buttons
         this.applyViewMode();
   
-        // About dialog（4 个折叠块：版本信息/联系我们/许可协议/第三方组件）
+        // About dialog（3 个折叠块：版本信息 / 许可协议 / 第三方组件 —— 「联系我们」已于 2026-09-24 移除）
         document.querySelector('#about-dialog .dialog-header h2').textContent = t('aboutTitle');
         const aboutSections = document.querySelectorAll('#about-dialog .dependency-details');
         if (aboutSections.length >= 1) {
@@ -317,7 +317,15 @@
           const title = aboutSections[2].querySelector('.dependency-title .dependency-name');
           if (title) title.textContent = t('thirdParty');
           const depDescs = aboutSections[2].querySelectorAll('.dependency-item p');
-          const depKeys = ['depCodeMirror', 'depHighlight', 'depCmark', 'depKatex', 'depMermaid', 'depHtml2canvas', 'depTauri'];
+          // ⚠ 必须与 index.html 里 .dependency-item 的**顺序和数量**严格一一对应：
+          // 旧版只有 7 个键、DOM 已有 12 项 → 第 3 项起文案整体串位（markdown-it 显示成
+          // 「Markdown 解析器（Rust）」），且第 8 项之后被静默跳过（切英文后仍是中文）。
+          // 新增依赖时**两处同时改**，并由 test/dialogs-i18n-deps 之类用例钉住数量。
+          const depKeys = [
+            'depCodeMirror', 'depHighlight', 'depMarkdownIt', 'depUnified', 'depKatex',
+            'depMhchem', 'depMermaid', 'depEcharts', 'depGraphviz', 'depWavedrom',
+            'depHtml2canvas', 'depTauri',
+          ];
           depDescs.forEach((p, i) => {
             if (i < depKeys.length) p.textContent = t(depKeys[i]);
           });

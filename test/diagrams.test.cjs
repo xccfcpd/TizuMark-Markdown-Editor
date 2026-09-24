@@ -341,6 +341,48 @@ test('tikz：弧线 / 贝塞尔 / to[…] → null（不画出一张"少了几�
   assert.ok(D.tikzToSvg('\\draw (0,0) -- (1,1);', { width: 700 }), '普通折线仍要能画');
 });
 
+/* -------- 第二轮审计修复的回归（2026-09-24 下午） -------- */
+
+test('plantuml 状态图：中文状态名不再塌成幽灵状态 S，且 state+中文名能正确路由', () => {
+  // 路由：`state 空闲 as Idle` 旧正则只认 ["\w]，中文名漏判 → 整张图被判成类图
+  const out = D.plantumlToMermaid('@startuml\nstate 空闲 as Idle\nIdle --> Running\n@enduml');
+  assert.ok(out.startsWith('stateDiagram-v2'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /as Idle/);
+  // 中文状态名直接作 id（Mermaid 支持 CJK 状态名）——不得出现 mid() 塌陷出的 'S'
+  const out2 = D.plantumlToMermaid('@startuml\n[*] --> 空闲\n空闲 --> 忙碌 : 任务\n忙碌 --> [*]\n@enduml');
+  assert.ok(out2.startsWith('stateDiagram-v2'));
+  assert.match(out2, /\[\*\] --> 空闲/);
+  assert.ok(!/ --> S\b/.test(out2), '不应出现幽灵状态 S，实际:\n' + out2);
+});
+
+test('plantuml 组件图：边标签不再被丢弃（`[A] --> [B] : 数据流`）', () => {
+  const out = D.plantumlToMermaid('@startuml\n[采集] --> [存储] : 数据流\n@enduml');
+  assert.ok(out.startsWith('flowchart LR'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /-->\|数据流\|/, '边标签应保留，实际:\n' + out);
+});
+
+test('plantuml 路由：只有容器声明（database/folder）时判组件图，但有时序单短横箭头时仍判时序图', () => {
+  const comp = D.plantumlToMermaid('@startuml\ndatabase 缓存\nfolder 源码\n@enduml');
+  assert.ok(comp.startsWith('flowchart LR'), '应判为组件图，实际: ' + String(comp).split('\n')[0]);
+  // 防回归：带 participant/database 声明 + 单短横消息 → 仍是时序图
+  const seq = D.plantumlToMermaid('@startuml\nparticipant A\ndatabase DB\nA -> DB : 查询\n@enduml');
+  assert.ok(seq.startsWith('sequenceDiagram'), '应判为时序图，实际: ' + String(seq).split('\n')[0]);
+});
+
+test('plantuml 时序图：return 映射为反向回复箭头（不再整行丢弃）', () => {
+  const out = D.plantumlToMermaid('@startuml\nA -> B : 请求\nreturn 结果\n@enduml');
+  assert.ok(out.startsWith('sequenceDiagram'));
+  assert.match(out, /B-->>A: 结果/, '实际:\n' + out);
+});
+
+test('tikz：grid / \\path 与 arc 同口径 → null + 提示（不再静默少画几段）', () => {
+  assert.strictEqual(D.tikzToSvg('\\draw (0,0) grid (3,3);', { width: 700 }), null);
+  assert.strictEqual(D.tikzToSvg('\\path[draw] (0,0) -- (1,1);', { width: 700 }), null);
+  const hints = D.unsupportedHints('tikz', '\\draw (0,0) grid (3,3);');
+  assert.ok(hints.some((h) => /grid/.test(h)), '提示应指出 grid，实际: ' + JSON.stringify(hints));
+  assert.ok(D.tikzToSvg('\\draw (0,0) -- (1,1) -- (2,0);', { width: 700 }), '普通折线不受影响');
+});
+
 test('d2: shape 与 direction', () => {
   const out = D.d2ToMermaid('direction: down\na.shape: circle\na -> b');
   assert.ok(out.startsWith('flowchart TB'), 'down 应映射为 TB');

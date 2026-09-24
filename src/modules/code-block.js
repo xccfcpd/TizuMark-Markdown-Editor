@@ -79,8 +79,13 @@ function processCodeBlocks(preview, opts) {
         if (block.closest && block.closest('pre.diagram-src-pending, .diagram-container')) return;
         // 已包裹过（上一次渲染的结果）直接跳过，避免对已包 code-line 的内容重复切分/高亮
         if (block.querySelector('.code-scroll')) return;
+        // 语言要先算出来：缓存键**必须含语言**，否则不同语言同文本会命中错误高亮
+        // （如两处都是 `true`，一处 ```js 一处 ```python；缓存是 app 级 Map，跨文档也会互相污染
+        //  —— 审计发现，2026-09-24）。detectLanguage 对带 language- 类的块是零成本匹配，
+        //  只有无语言标记的块才会走 highlightAuto。
+        const lang = detectLanguage(hljs, block);
         // 缓存键纳入行号状态：开/关行号不共用可能不匹配 display 规则的缓存
-        const key = block.textContent + '|' + (lineNumOn ? 1 : 0);
+        const key = (lang || 'auto') + '|' + block.textContent + '|' + (lineNumOn ? 1 : 0);
         const cached = cache.get(key);
         if (cached !== undefined) {
           block.innerHTML = cached;
@@ -98,7 +103,6 @@ function processCodeBlocks(preview, opts) {
           block.className = (block.className || '').replace(/\bhljs\b/g, '').trim();
         }
         // 先按原始文本拆分行并包裹行号，再对每行单独高亮，避免跨行 span 被切断。
-        const lang = detectLanguage(hljs, block);
         const lines = block.textContent.split('\n');
         const finalHtml = buildCodeScroll(lines, hljs, lang);
         block.innerHTML = finalHtml;

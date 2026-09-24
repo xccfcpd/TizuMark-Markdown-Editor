@@ -187,13 +187,16 @@
           this.app.preview.style.position = '';
           this.app.preview.style.padding = '';
           this.app.preview.innerHTML = finalHtml;
-          // 新内容已入 DOM：此刻上一批容器才真正脱离文档，回收它们的图表资源
-          // （ECharts 实例 / ResizeObserver / 引擎内部引用）—— 否则长会话内存只增不减，
-          // 表现为「用久了莫名卡顿、要重启才恢复」。只清脱离的那些，在 DOM 中的实例不动。
-          const DR = (typeof DiagramRenderers !== 'undefined') ? DiagramRenderers : null;
-          if (DR && typeof DR.disposeDetachedDiagrams === 'function') {
-            DR.disposeDetachedDiagrams(this.app.preview);
-          }
+        }
+        // 新内容已入 DOM：此刻上一批容器才真正脱离文档，回收它们的图表资源
+        // （ECharts 实例 / ResizeObserver / 引擎内部引用）—— 否则长会话内存只增不减，
+        // 表现为「用久了莫名卡顿、要重启才恢复」。只清脱离的那些，在 DOM 中的实例不动。
+        // 注意：**两条分支都要调**。虚拟窗口（纯预览 + 大文档）走 _renderPreviewWindowBlock，
+        // 它同样会整体替换窗口内容（滚动切片重渲染），此前漏调 → ECharts 实例与其
+        // ResizeObserver 永不释放（审计发现，2026-09-24）。
+        const DR = (typeof DiagramRenderers !== 'undefined') ? DiagramRenderers : null;
+        if (DR && typeof DR.disposeDetachedDiagrams === 'function') {
+          try { DR.disposeDetachedDiagrams(this.app.preview); } catch (e) { console.warn('[preview] dispose diagrams error:', e); }
         }
 
         // 图表「源码 → 占位」：**同步**执行，必须早于下面任何 await（processImages 等）。
@@ -267,6 +270,9 @@
         // 图表渲染（Mermaid + 原生引擎）**立刻启动**，与下面的图片内联并行：
         // 命中缓存的图已在同步阶段复原，这里只渲染没缓存过的；await 放在图片内联之后。
         const diagramRender = PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts);
+        // 提前 return 的分支（generation 失效）不会 await 它 —— 先挂一个空 catch，
+        // 避免变成 unhandled rejection（全局红条），也避免"被抛弃的渲染"在后台继续改 DOM。
+        diagramRender.catch(() => {});
 
         try { await this.app.processImages(); } catch (e) { console.warn('[preview] Images error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }

@@ -760,6 +760,67 @@ tikz → tikzToSvg，plot → plotToSvg，echarts/wavedrom → JSON.parse，数�
 本地 **58/58 通过**；文档校验对 77 个围栏块逐一核对「标注能渲染的确实能渲染、标注失败的确实失败」，
 并检查引用标签齐全、无重复块 —— 全部通过。
 
+#### 追加：用导出的 HTML 复核后，又补了两处**源码**侧的兜底（同日）
+
+用户用 `09d5716` 的 exe 导出 HTML 逐块复核（54 个图表容器），结论是：**49 个正常**，
+5 个有问题 —— 其中 3 个是文档里故意写错的用例（TikZ 超子集 / plot 非法表达式 / ECharts 坏 JSON），
+另 2 个是「引擎本该兜住、却直接报错」的写法，已在源码里修掉：
+
+| 现象 | 根因 | 源码修法 |
+|---|---|---|
+| `digraph { 来料 --> 检验 }` → Graphviz 报 `syntax error ... near '--'` | DOT 词法只允许 ASCII 裸 ID，中文名必须加引号 —— 但这恰恰是中文文档里最自然的写法 | 新增 `quoteDotIds()`：交给引擎前**自动为引号外的非 ASCII token 补引号**（已引号内容 / `<>` / 数字 / 属性 / 边操作符不受影响）；同时把引擎错误包成「DOT 解析失败：…（提示：节点/边名含中文请写成 "名字" 形式）」 |
+| `assign: ["写指针", "读指针"]` → WaveDrom 报 `Cannot assign to read only property '1' of string '写指针'` | WaveDrom 的 `assign` 每一项需要数组结构；裸字符串会被它当下标赋值 → 报错信息对用户毫无意义 | `renderWavedrom` 提前校验：出现裸字符串项时抛出中文提示「assign 每一项需要数组结构（如 [["写指针", "表达式"]]）」并保留源码 |
+
+**测试**：`test/diagram-engines.test.cjs` 新增 2 例（`quoteDotIds` 的引号/数字/注释不受影响、
+WaveDrom 的中文提示），本地 **60/60 通过**。
+
+### 2.21 第二轮全面审计：修掉 14 处缺陷（2026-09-24 下午）
+
+利用空档对全仓做了一次系统排查。流程：208 个源文件语法检查 → 全部守卫脚本
+（check-globals / check-offline / check-updater / coupling-report / audit-split）→ 全量测试
+（137 个测试文件，本地 12 个因缺 `node_modules`/`unified-bundle.js` 属环境跳过）→
+再派三路**只读审计**（预览管线 / 图表引擎 / 移除改动遗留）逐模块读代码。
+结论：**14 处真实缺陷**，其中 3 处用户可感知的高危问题，全部已修 + 补回归测试。
+
+#### 高危（用户可感知）
+
+| # | 现象与复现 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | **点一次主题切换，所有非 Mermaid 图表被毁**：ECharts / Graphviz / TikZ / plot / WaveDrom / Markmap 变成 Mermaid 错误图，要等下次编辑才自愈 | `theme.js` 用 `.mermaid-container` 选容器重渲染，而原生引擎**共用该类名** —— 它们的 `data-code`（DOT / ECharts option / 波形 JSON）被当 Mermaid 语法解析 | 两处查询都按 `data-diagram-type` 过滤（`isMermaidContainer`）；重建容器补齐 `diagram-container` / `data-diagram-type` / `data-theme`；顺带把 `securityLevel` 从 `loose` 改回 **`strict`**（与预览管线一致；loose 允许图内 HTML/click 在 WebView 执行，属 XSS 面） |
+| 2 | **关于对话框切英文后第三方组件文案整体串位**：markdown-it 显示成「Markdown 解析器（Rust）」，ECharts / Graphviz / WaveDrom / html2canvas / Tauri 5 条完全**不翻译** | `i18n.js` 的 `depKeys` 只有 7 项，而 `index.html` 已有 12 项 | 键扩到 12 项并与 DOM 逐一对齐；新增 `depMarkdownIt` / `depUnified` / `depMhchem` / `depEcharts` / `depGraphviz` / `depWavedrom`（中英），删掉已无对应项的 `depCmark`；补 jsdom 用例钉住「切英文后不得再有中文」 |
+| 3 | **纯预览模式滚大文档越来越卡**（要重启才恢复）：ECharts 实例与其 ResizeObserver 永不释放 | `disposeDetachedDiagrams` 只在普通分支调用，虚拟窗口分支（`_renderPreviewWindowBlock`）漏调 | 提到两条分支之外统一调用（并加 try/catch 隔离） |
+
+#### 中危（行为不一致 / 语义丢失 / 竞态）
+
+| # | 现象 | 修法 |
+|---|---|---|
+| 4 | 命中缓存的图在**同步阶段**已是 `<svg>`，而 emoji / 数学 / 缩写后处理器在其后运行 → 图内 `:fire:` / `$x$` 被替换、KaTeX 往 SVG 里插节点（同一份源码"第一次正常、第二次被改坏"） | 三个后处理器的 `skipTags` 加 `svg` |
+| 5 | `_hljsCache` 键漏语言 → 同文本不同语言命中错误高亮（缓存是 app 级 Map，跨文档也污染） | 键改为 `语言\|文本\|行号状态`，语言提前计算 |
+| 6 | 主题重绘后仍可能残留 `diagram-pending`（引擎 await 不 settle 时 `finally` 不执行）→ `color: transparent` 把内容永久藏住 | 兜底清理同时覆盖 `pre.diagram-src-pending` 与 `.diagram-container.diagram-pending` |
+| 7 | 提前 return 时不 await 图表渲染 promise → unhandled rejection + 被抛弃的渲染继续改 DOM | 启动后立即挂 `.catch(() => {})` |
+| 8 | 加载遮罩引用计数竞态：计数为 1 时遮罩可能已隐藏（大文档渲染途中无反馈） | `hidePaneLoading` 隐藏前复核计数 |
+| 9 | 换文档不复位 `_avgLineHeight` / 不清 `_virtualRenderTimer` → spacer 高度与滚动落点系统性偏移、多余重渲染 | `tabs.js` / `files.js` 换文档处复位二者 |
+| 10 | 状态转换器仍用 `mid()` → `state 空闲` 塌成幽灵状态 `S`；`state 空闲 as Idle` 因 ASCII-only 正则漏判 → 整图被判成**类图** | 状态名改用 `sid()`（ASCII 归一、非 ASCII 原样保留 —— Mermaid 支持 CJK 状态名）；判定正则改 `state\s+[^\s{]` |
+| 11 | 组件/用例图边标签 `[A] --> [B] : 数据流` 被整段丢弃（图正常、语义没了） | 解析为 `-->\|数据流\|` |
+| 12 | 只有容器声明的组件图（`database 缓存` + `folder 源码`）被判成时序图 | 容器关键字在「**无单短横消息箭头**」时前置判组件图（单短横只有时序图用，据此消歧） |
+| 13 | 时序 `return` 被 SKIP 整行丢弃 | 按上一条消息反向映射为回复箭头 |
+| 14 | TikZ `grid / sin / cos / parabola / \path` 静默跳过（画出"少几段却看似正常"的图）；`quoteDotIds` 会改坏 DOT 的 HTML 串 `<<B>标题</B>>`；ECharts `setOption` 抛错时实例泄漏；D2 `grid-columns:` 建出幽灵节点；id 分配器空名不去重 | 前两者改为 `return null` + 提示；HTML 串按尖括号**配平深度**整段透传；ECharts 先登记再 `setOption`；D2 增图级属性黑名单；空名也去重 |
+
+**回归测试**：`test/diagrams.test.cjs` 41 → 49 例、`test/diagram-engines.test.cjs` 9 → 12 例（含
+theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.test.cjs` 各 +1 例 → 本地 **67/67**。
+（写测试时还被自己的新测试抓到两个**新引入**的问题：`quoteDotIds` 的 HTML 串深度判断、以及容器关键字
+正则仍用 ASCII-only 字符类 —— 都已修。）
+
+#### 明确**不改**的（有取舍，记录在案）
+
+| 项 | 原因 |
+|---|---|
+| `Idle --> Running : ev`（无 `[*]`/`state`）仍判为时序图 | 与 PlantUML 自身启发式一致；若反过来优先判状态图，会误伤**用 `-->` 画回复箭头**的时序图（更常见）。§4 已写明判定规则 |
+| 时序 `group … end group` 仍被忽略 | Mermaid 无等价语义块（映射到 `alt` 会改变含义），忽略比错画更安全 |
+| `.code-scroll` 的 `overflowY` 仍在 await 之后设置 | 它需要真实布局（`scrollHeight`），放进同步阶段会强制同步布局；影响仅"滚动条晚一帧出现" |
+| mermaid 缓存键未含字体 | 预览字体**不是运行时可配项**（只在导出克隆上覆写 `--font-preview`），当前不存在混字体路径 |
+| 指南 FAQ 的「QQ 群：1035294939」 | 与「关于对话框」不是同一处，等产品口径确认（见 §2.18） |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
