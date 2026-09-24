@@ -534,6 +534,17 @@
         parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
   
         const keyStr = parts.join('+');
+        // 裸键（无 Ctrl/Alt，且不是 F1–F12 等功能键）**必须拒绝**：`applyShortcuts` 会把它写进
+        // CodeMirror 的 `extraKeys`，于是 `B` 这类条目会拦住真实打字（用户发现"字母输入不进去"）。
+        // 全局派发通道虽有"纯字母不参与"的保护，但救不了 extraKeys（复核审计发现，2026-09-24）。
+        const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+        const isFunctionKey = /^(F([1-9]|1[0-2])|Escape|Insert|Delete|Home|End|PageUp|PageDown|Arrow(Up|Down|Left|Right))$/.test(e.key);
+        if (!hasModifier && !isFunctionKey) {
+          this.showToast(this.t('shortcutNeedsModifier'));
+          this.recordingAction = null;
+          this.renderShortcutsList();
+          return true;
+        }
         const dup = this.findDuplicateShortcut(keyStr, this.recordingAction);
         if (dup) {
           this.showToast(this.t('shortcutOccupied', { key: keyStr, name: this.t('shortcutLabel')[dup] || dup }));
@@ -899,6 +910,17 @@
       // 时处理，行为与重构前一致；裸按键或 Alt 组合不在此拦截（避免误吞打字/系统组合）。
       if (ctrl) {
         const key = e.key.toLowerCase();
+
+        // 焦点在输入框 / 可编辑区域时，不要拦文本编辑类组合键（Ctrl+Backspace 删词、
+        // Ctrl+Delete、Ctrl+↑/↓ 跳段）：项目在 CodeMirror 之外没有这些键的快捷键需求，
+        // 拦下来只表现为"按键毫无反应"（复核审计发现，2026-09-24）。
+        const tgt = e.target;
+        const inEditable = !!(tgt && (tgt.isContentEditable ||
+          (tgt.tagName === 'INPUT' && !/^(file|checkbox|radio|button|submit)$/i.test(tgt.type || 'text')) ||
+          tgt.tagName === 'TEXTAREA'));
+        if (inEditable && (key === 'backspace' || key === 'delete' || key === 'arrowup' || key === 'arrowdown')) {
+          return;
+        }
 
         // 文档导航键（Home/End）：与 a/c/v/x 同逻辑，放行给 CodeMirror 处理。
         // 事件自然到达 CM，由 extraKeys 注册的 handler 接管（Ctrl+End 落末行末列、

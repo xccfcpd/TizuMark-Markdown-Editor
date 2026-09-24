@@ -10,6 +10,14 @@
         const fmtToolbar = document.getElementById('format-toolbar');
         if (fmtToolbar) {
           fmtToolbar.classList.toggle('collapsed', !!this.settings.toolbarCollapsed);
+          // 折叠按钮文案必须**初始化时就写好**：以前只在 click 里赋值，于是首次启动（或以
+          // 折叠状态启动）时按钮没有可读文案，要先点一下才出现（复核审计发现，2026-09-24）。
+          const fmtCollapseBtn = document.getElementById('fmt-collapse');
+          const syncFmtToggleLabel = () => {
+            const lbl = fmtCollapseBtn && fmtCollapseBtn.querySelector('.fmt-toggle-label');
+            if (lbl) lbl.textContent = this.settings.toolbarCollapsed ? this.t('expandToolbar') : this.t('collapseToolbar');
+          };
+          syncFmtToggleLabel();
           fmtToolbar.querySelectorAll('[data-action]').forEach(item => {
             item.addEventListener('click', (e) => {
               e.stopPropagation();
@@ -32,8 +40,7 @@
               e.stopPropagation();
               this.settings.toolbarCollapsed = !this.settings.toolbarCollapsed;
               fmtToolbar.classList.toggle('collapsed', this.settings.toolbarCollapsed);
-              const lbl = fmtCollapse.querySelector('.fmt-toggle-label');
-              if (lbl) lbl.textContent = this.settings.toolbarCollapsed ? this.t('expandToolbar') : this.t('collapseToolbar');
+              syncFmtToggleLabel();
               this.saveSettings();
             });
           }

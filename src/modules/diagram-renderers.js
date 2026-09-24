@@ -98,10 +98,23 @@ function renderEcharts(container, code, opts) {
   }
   // 声明"仅 2D"（未打包 echarts-gl）：3D/GL 系列在缺插件时只会画出一片空白 → 提前给可读错误
   if (Array.isArray(option.series)) {
-    const bad3d = option.series.find((s) => s && typeof s.type === 'string' && /3D$|^surface$|^lines3D$|^scatter3D$/i.test(s.type));
+    // 判定放宽到所有 echarts-gl 专属类型（`geo3D` / `globe` / `map3D` / `surface` …）：
+    // 只看 `3D$` 会漏掉它们，落到下面的"没有可绘制内容"分支，提示词还是误导的
+    const bad3d = option.series.find((s) => s && typeof s.type === 'string' && /3D$|^surface$|^globe$|^map3D$/i.test(s.type));
     if (bad3d) {
       throw new Error('ECharts 仅支持 2D 图表（未打包 echarts-gl），不支持 series.type = "' + bad3d.type + '"');
     }
+  }
+  // 「成功但什么都没有」必须在 **init 之前**判定：否则会先创建一块空 canvas（还进了注册表），
+  // 再抛错把 innerHTML 清掉 —— 短时悬挂实例（复核审计发现，2026-09-24）。
+  // 白名单也要收全：timeline 多 option（顶层没有 series）、极坐标/日历/单轴都能独立成图。
+  const hasContent = (Array.isArray(option.series) && option.series.length > 0) ||
+    (Array.isArray(option.options) && option.options.length > 0) ||
+    !!option.dataset || !!option.graphic || !!option.geo || !!option.radar ||
+    !!option.parallel || !!option.tree || !!option.sankey || !!option.polar ||
+    !!option.calendar || !!option.singleAxis;
+  if (!hasContent) {
+    throw new Error('ECharts 的 option 里没有可绘制内容（缺少 series / dataset / graphic），检查示例块是否为空');
   }
   delete option.tizuHeight;
 
@@ -118,13 +131,6 @@ function renderEcharts(container, code, opts) {
   // 若尚未登记，disposeDetachedDiagrams 就回收不到它 → 反复重渲染会持续泄漏（审计发现，2026-09-24）。
   chartRegistry.set(container, chart);
   chart.setOption(option, true);
-  // 「成功但什么都没有」也要报错：空画布比明确的错误更让人困惑（用户会以为渲染成功了）
-  const hasContent = (Array.isArray(option.series) && option.series.length > 0) ||
-    !!option.dataset || !!option.graphic || !!option.geo || !!option.radar ||
-    !!option.parallel || !!option.tree || !!option.sankey;
-  if (!hasContent) {
-    throw new Error('ECharts 的 option 里没有可绘制内容（缺少 series / dataset / graphic），检查示例块是否为空');
-  }
 
   // 容器宽度随窗口变化时同步尺寸（窗口缩放、分屏比例调整）。
   // 必须在 rAF 里执行 resize：在 ResizeObserver 回调内同步改布局会触发浏览器
@@ -322,8 +328,13 @@ async function renderGraphviz(container, code, opts) {
   const { source, engine } = extractDotEngine(code);
   // 规模守卫：`gv.layout` 是**同步阻塞**的 wasm 调用（无超时/取消），超大 DOT 会把整篇预览卡死。
   // 这里给一个保守上限，超出即给可读错误而不是让界面假死（审计发现，2026-09-24）。
-  const edgeCount = (source.match(/->|--/g) || []).length;
-  const nodeLines = (source.match(/^\s*[^\s{}]+[^;{}]*;/gm) || []).length;
+  // ⚠ 计数前先**剥掉注释**：DOT 里 `// ----------` 分隔线极常见，不剥会让边数虚高、
+  // 把正常规模的图误判为"过大"（复核审计发现，2026-09-24）。
+  const noComment = String(source)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^\s*(?:\/\/|#).*$/gm, ' ');
+  const edgeCount = (noComment.match(/->|--/g) || []).length;
+  const nodeLines = (noComment.match(/^\s*[^\s{}]+[^;{}]*;/gm) || []).length;
   if (edgeCount + nodeLines > 4000) {
     throw new Error('DOT 规模过大（约 ' + (edgeCount + nodeLines) + ' 条语句），可能长时间卡住界面；请拆分后再渲染');
   }
@@ -337,8 +348,10 @@ async function renderGraphviz(container, code, opts) {
       '（提示：节点/边名含中文或空格时请写成 "名字" 形式；本例已自动为中文名补引号）');
   }
   if (!svg) throw new Error('Graphviz 未产出 SVG（检查 DOT 语法，如 digraph { a -> b }）');
-  // 空图（只有 `digraph { }` 或只有属性）同样报错，而不是留一个塌陷的空白框
-  if (!/<(path|polygon|polyline|ellipse|text)\b/.test(svg)) {
+  // 空图（只有 `digraph { }` 或只有属性）同样报错，而不是留一个塌陷的空白框。
+  // 含 `image` / `use`：`shape=none` + `image=` 的"图片节点"只有 <image>，不能被判为空
+  //（复核审计发现，2026-09-24）。
+  if (!/<(path|polygon|polyline|ellipse|text|image|use)\b/.test(svg)) {
     throw new Error('Graphviz 的 DOT 里没有节点或边（图是空的），检查是否只写了 digraph { }');
   }
   container.style.height = '';

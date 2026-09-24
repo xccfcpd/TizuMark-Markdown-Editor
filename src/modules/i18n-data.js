@@ -145,6 +145,11 @@
       alreadyOpen: '文件已在打开中',
       saved: '已保存',
       savedAs: '已另存为',
+      // 补漏（复核审计发现，2026-09-24）：这两个键在 files.js 里由 t() 调用，但中英词典都缺
+      // —— t() 对缺失键返回**键名本身**，于是 `t('noFileToReload') || '中文兜底'` 的兜底永不触发，
+      // 状态栏会直接显示 `noFileToReload` / `reloaded` 这样的键名。
+      noFileToReload: '当前文件无关联路径，无法重新加载',
+      reloaded: '已重新加载',
       saveFailed: '保存失败',
       failed: '失败',
       externalChanged: '文件已在外部被修改',
@@ -342,6 +347,7 @@
       donateWechat: '微信赞赏',
       donateAlipay: '支付宝赞赏',
       lightboxUnsupported: '该图表类型暂不支持放大查看',
+      shortcutNeedsModifier: '快捷键至少要包含 Ctrl / Alt（或使用 F1–F12 等功能键）',
       depCodeMirror: '代码编辑器组件',
       depHighlight: '语法高亮库',
       depMarkdownIt: 'Markdown 解析与自动链接识别（预览管线）',
@@ -656,6 +662,8 @@
       alreadyOpen: 'File already open',
       saved: 'Saved',
       savedAs: 'Saved as',
+      noFileToReload: 'This file has no path on disk and cannot be reloaded',
+      reloaded: 'Reloaded',
       saveFailed: 'Save failed',
       failed: 'Failed',
       openFailed: 'Open failed',
@@ -845,6 +853,7 @@
       donateWechat: 'WeChat Pay',
       donateAlipay: 'Alipay',
       lightboxUnsupported: 'This chart type cannot be zoomed yet',
+      shortcutNeedsModifier: 'A shortcut must include Ctrl / Alt (or use a function key such as F1–F12)',
       depCodeMirror: 'Code editor component',
       depHighlight: 'Syntax highlighting library',
       depMarkdownIt: 'Markdown parsing and autolink detection (preview pipeline)',

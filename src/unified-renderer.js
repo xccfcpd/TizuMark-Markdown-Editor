@@ -427,9 +427,11 @@ function convertMathFences(content) {
   const body = [];
   while (i < lines.length) {
     const line = lines[i];
-    const trimmed = line.trim();
+    // ⚠ 围栏判定必须限制在**≤3 个前导空格**（CommonMark）：早先用 trim() 判定闭合，
+    // 于是代码块正文里一行缩进 4 格的 ``` 会被当成"闭合"提前收尾，后面的 ```math 再也
+    // 不被识别（复核审计发现，2026-09-24）。
     if (!inFence) {
-      const open = trimmed.match(/^(`{3,}|~{3,})\s*(math|latex|tex)\s*$/i);
+      const open = line.match(/^ {0,3}(`{3,}|~{3,})\s*(math|latex|tex)\s*$/i);
       if (open) {
         inFence = true;
         fenceChar = open[1][0];
@@ -441,7 +443,7 @@ function convertMathFences(content) {
       // 【非数学围栏】整块跳过：否则**代码块内部**的 ```math 行会被误认成数学围栏开始，
       // 而普通围栏的闭合行被数学分支消费 → 其后整篇文档被 remark 吞进代码块（数据级破坏：
       // 公式/图表/正文全失效；审计发现，2026-09-24）。
-      const other = trimmed.match(/^(`{3,}|~{3,})/);
+      const other = line.match(/^ {0,3}(`{3,}|~{3,})/);
       if (other) {
         const ch = other[1][0];
         const len = other[1].length;
@@ -449,7 +451,7 @@ function convertMathFences(content) {
         i++;
         while (i < lines.length) {
           const l2 = lines[i];
-          const close2 = l2.trim().match(/^(`{3,}|~{3,})\s*$/);
+          const close2 = l2.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
           out.push(l2);
           i++;
           if (close2 && close2[1][0] === ch && close2[1].length >= len) break;
@@ -460,7 +462,7 @@ function convertMathFences(content) {
       i++;
       continue;
     }
-    const close = trimmed.match(/^(`{3,}|~{3,})\s*$/);
+    const close = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
     if (close && close[1][0] === fenceChar && close[1].length >= fenceLen) {
       out.push('$$');
       for (const b of body) out.push(b);

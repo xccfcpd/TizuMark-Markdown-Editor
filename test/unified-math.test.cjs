@@ -80,6 +80,30 @@ test('siunitx: 空格 / `.` / `//` / `*` 是单位分隔（不得粘成 kgm＝�
   assert.strictEqual(M.expandSiunitx('\\si{\\kilogram\\metre}'), '\\,\\mathrm{kg\\,m}', '宏写法仍然正确');
 });
 
+test('siunitx: 数字与小数点也是原子（`1.5 m` 不得变成 `15m`）', () => {
+  // 复核审计发现：`.` 被当连接符直接丢弃 → `\si{1.5 m}` 渲染成 `15m`（数值被改坏）；
+  // 数字与单位之间也不补细空格（`100 km` → `100km`）。
+  assert.strictEqual(M.expandSiUnit('100 km'), '100\\,km');
+  assert.strictEqual(M.expandSiUnit('1.5 m'), '1.5\\,m');
+  assert.strictEqual(M.expandSiUnit('m^2 s^-1'), 'm^2\\,s^-1', '指数标记不参与分隔');
+  assert.strictEqual(M.expandSiUnit('10^3'), '10^3', '指数里的数字不得被当成相邻单位补 \\,');
+});
+
+test('公式编号: 章节模式下"标题之前"的公式同样要避让用户 \\tag；\\tag* 不占号', () => {
+  // 复核审计发现：抬升只在非章节模式生效 → 章节模式下首个标题之前的公式照样与 \tag 撞号。
+  const secNull = [ph('$$a\\tag{1}$$'), ph('$$b\\label{eq:b}$$')];
+  M.assignEquationNumbers(secNull, { sectionAt: () => null });
+  assert.strictEqual(secNull[1].eqNumber, 2, '章节模式下标题前的公式也应为 2');
+  // `\tag*{2}` 是"不加括号的标签"，语义上不占编号
+  const star = [ph('$$a\\tag*{2}$$'), ph('$$b\\label{eq:b}$$')];
+  M.assignEquationNumbers(star, {});
+  assert.strictEqual(star[1].eqNumber, 1, '\\tag*{2} 不应抬高流水号');
+  // 归属到章节时仍按章节编号，不受 tag 影响
+  const sec1 = [ph('$$a\\label{eq:a}$$'), ph('$$b\\label{eq:b}$$')];
+  M.assignEquationNumbers(sec1, { sectionAt: () => 1 });
+  assert.strictEqual(sec1[1].eqNumber, '1.2');
+});
+
 test('公式编号: 用户 \\tag{1} 占用流水号，后续自动编号不与其撞号', () => {
   // 审计发现：只写 \tag 没写 \label 的公式不占号 → 紧随其后的自动编号也得到 1（同页两个 (1)）
   const list = [ph('$$a\\tag{1}$$'), ph('$$b\\label{eq:b}$$'), ph('$$c\\label{eq:c}$$')];

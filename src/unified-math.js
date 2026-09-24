@@ -180,7 +180,25 @@ function expandSiUnit(raw) {
     //（`m/\,s` ✗ —— 既有用例 `expandSiUnit('m/s') === 'm/s'` 正是钉这条）
     if (c === '/') { flush(); out += '/'; lastWasUnit = false; i++; continue; }
     if (c === '*') { flush(); out += '\\cdot '; lastWasUnit = false; i++; continue; }
-    if (c === '^' || c === '_') { flush(); out += c; i++; continue; }
+    // 指数标记不是单位：清掉标记，否则 `10^3` 里的 `3` 会被当成"相邻单位"补上 `\,`（`10^\,3`）
+    if (c === '^' || c === '_') { flush(); out += c; lastWasUnit = false; i++; continue; }
+    // 数字（含小数点）也是一个原子：`\si{100 km}` → `100\,km`、`\si{1.5 m}` → `1.5\,m`。
+    // 旧实现把 `.` 当连接符直接丢弃 → `1.5 m` 变成 `15m`（数值被改坏；复核审计发现，2026-09-24）。
+    if (/[0-9]/.test(c)) {
+      let j = i;
+      while (j < s.length && /[0-9]/.test(s[j])) j++;
+      if (s[j] === '.' && /[0-9]/.test(s[j + 1] || '')) {
+        j++;
+        while (j < s.length && /[0-9]/.test(s[j])) j++;
+      }
+      if (lastWasUnit) out += '\\,';
+      out += pending + s.slice(i, j) + pendingExp;
+      pending = '';
+      pendingExp = '';
+      lastWasUnit = true;
+      i = j;
+      continue;
+    }
     // 连续字母是**一个单位原子**（`kg` 不能被拆成 k + g）。旧实现把字母逐字符当普通字符，
     // 于是 `lastWasUnit` 永远为 false → 上一步补的分隔逻辑形同虚设，`kg m` 仍会粘成 `kgm`
     //（= 毫秒，语义完全变了；审计复核发现，2026-09-24）。
@@ -418,13 +436,20 @@ function assignEquationNumbers(placeholders, options) {
     // 用户自带 `\tag`：即使没有 `\label` 也必须**占用编号**。否则紧随其后的自动编号会与它撞号
     // （同页出现两个 (1)，且 \eqref 指向的号与视觉不符 —— 审计发现，2026-09-24）。
     // 数字型 tag 直接抬高流水号；非数字（如 \tag{$\ast$}）无法参与流水，保持原样。
-    if (!sectionAt) {
-      const tagOnly = /\\tag\*?\s*\{([^{}]*)\}/.exec(ph.text);
-      if (tagOnly) {
-        const shown = String(tagOnly[1]).trim();
-        if (/^\d+$/.test(shown)) {
-          const n = parseInt(shown, 10);
-          if (n > counter) counter = n;
+    {
+      // 抬升条件：该公式**最终会按全局流水号编号** —— 即非章节模式，或章节模式下它位于
+      // 首个标题之前（此时 sectionAt 返回 null，仍走全局 counter）。旧实现只在非章节模式
+      // 抬升，于是章节模式下"标题前的公式"照样与 \tag 撞号（复核审计发现，2026-09-24）。
+      // 另：`\tag*{2}` 是"不加括号的标签"，语义上不占编号，不参与抬升。
+      const sec = sectionAt ? sectionAt(ph.line) : null;
+      if (!sec) {
+        const tagOnly = /\\tag(?!\*)\s*\{([^{}]*)\}/.exec(ph.text);
+        if (tagOnly) {
+          const shown = String(tagOnly[1]).trim();
+          if (/^\d+$/.test(shown)) {
+            const n = parseInt(shown, 10);
+            if (n > counter) counter = n;
+          }
         }
       }
     }

@@ -141,13 +141,6 @@
         if (typeof raw !== 'object' || Array.isArray(raw)) return null;
         return raw;
       },
-      // 预览字体一改，缓存里烘焙的就是旧字体（mermaid/原生图表的 SVG 把 fontFamily 写进了产物）。
-      // 缓存键不含字体，故这里整体清一次，让下一次渲染用新字体（审计发现，2026-09-24）。
-      __clearDiagramCacheIfFontChanged() {
-        if (this._mermaidCache && typeof this._mermaidCache.clear === 'function') {
-          this._mermaidCache.clear();
-        }
-      },
       saveSettings() {
         try { localStorage.setItem('tizumark-settings', JSON.stringify(this.settings)); } catch {}
       },
@@ -562,8 +555,6 @@
       },
       async applySettings() {
         const s = this.settings;
-        // 预览字体/字号变了 → 图表缓存里烘焙的是旧字体，清一次（键不含字体；见方法注释）
-        this.__clearDiagramCacheIfFontChanged();
         this.editorZoom = null; // 应用设置时回落到设置字号（编辑器字号全局，非 per-tab）
         this.cm.getWrapperElement().style.fontSize = s.fontSize + 'px';
         this.cm.setOption('tabSize', s.tabSize);
