@@ -45,11 +45,13 @@ function extractHeadings(content, opts) {
     const match = line.match(/^(#{1,6})\s+(.+)/);
     if (match) {
       const level = match[1].length;
-      // 轻量清理文本用于生成 id，保持与改动前完全一致，避免影响大纲/面包屑点击跳转锚点
-      const idText = match[2].replace(/[*`~\[\]]/g, '').trim();
       // 完整清理文本用于显示（面包屑 / 大纲），剥离 Markdown 内联语法残留
       const text = stripInlineMarkdown(match[2]);
-      const baseId = headingToId ? headingToId(idText) : idText;
+      // 锚点 id 必须与**渲染器**生成的 id 一致（unified-renderer.js 的 slugifyHeading 作用于
+      // 渲染后的文本）——旧实现用「源码里剥掉 [*`~[]] 的字符串」做 slug，于是
+      // `# [Link](url)` 得到 `linkurl`（大纲）而渲染成 `id="link"`，点击大纲静默失效
+      // （审计发现，2026-09-24）。这里改用与渲染一致的纯文本。
+      const baseId = headingToId ? headingToId(text) : text;
       const n = idCount[baseId] || 0;
       idCount[baseId] = n + 1;
       const id = n === 0 ? baseId : baseId + '-' + (n + 1);

@@ -791,20 +791,25 @@
           const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
           const url = (typeof URL !== 'undefined' && URL.createObjectURL) ? URL.createObjectURL(blob) : '';
           if (!url) return '';
-          const img = new Image();
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = url;
-          });
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          if (!ctx) { URL.revokeObjectURL(url); return ''; }
-          canvas.width = Math.max(1, Math.floor(width));
-          canvas.height = Math.max(1, Math.floor(height));
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          URL.revokeObjectURL(url);
-          return canvas.toDataURL('image/png');
+          try {
+            const img = new Image();
+            await new Promise((resolve, reject) => {
+              img.onload = resolve;
+              img.onerror = reject;
+              img.src = url;
+            });
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return '';
+            canvas.width = Math.max(1, Math.floor(width));
+            canvas.height = Math.max(1, Math.floor(height));
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/png');
+          } finally {
+            // 无论成功 / 失败 / 提前 return 都释放。以前只在成功路径 revoke，而
+            // `img.onerror` 是导出 Word/PNG 的常见降级路径 → 每次失败泄漏一个 Blob（审计发现）。
+            if (typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(url);
+          }
         } catch (e) {
           return '';
         }
@@ -1175,7 +1180,10 @@
         if (typeof mermaid !== 'undefined') {
           const ff = getComputedStyle(document.documentElement).getPropertyValue('--font-preview').trim() || '-apple-system, sans-serif';
           // mermaid.initialize 失败不致命：下方 mermaid.render 有独立 try/catch，且初始化异常不应阻断导出
-          try { mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } }); } catch (e) { console.error('[export] mermaid.initialize 失败（不影响导出）:', e); }
+          // securityLevel 必须是 strict（与预览管线一致）：导出会把 result.svg 用 innerHTML 注入
+          // **真实 DOM**，loose 下文档里的 <img onerror> / click 指令会被保留并在 WebView 内执行，
+          // 且同一段 SVG 还会写进导出的 HTML/PDF/DOCX（审计发现，2026-09-24）。
+          try { mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'strict', fontFamily: ff, themeVariables: { fontSize: '14px' } }); } catch (e) { console.error('[export] mermaid.initialize 失败（不影响导出）:', e); }
         }
         // 注意：本循环**必须遍历所有 `.mermaid-container`** —— 它除了「重渲染 Mermaid」，还负责
         // 把容器截图成 PNG（Word 的 HTML 导入器不支持内联 SVG）。我们的图表容器（Graphviz /
@@ -2080,6 +2088,16 @@
           clone.style.overflow = 'visible';
           clone.style.height = 'auto';
           document.body.appendChild(clone);
+
+          // ECharts 是 <canvas> 渲染：cloneNode **不复制** canvas 像素，html2canvas 只克隆不快照
+          // → 导出长图时 ECharts 图表整块空白。HTML / Word / PDF 三路都已做「快照 → 替换成 <img>」，
+          // 唯独 PNG 这一路漏了（审计发现，2026-09-24）。
+          try {
+            const echSnapsImg = await this._snapshotEchartsForExport();
+            this._applyEchartsSnapshots(clone, echSnapsImg);
+          } catch (e) {
+            console.warn('[export] ECharts 快照失败（不影响其它内容）:', e);
+          }
   
           // 图片加载策略与实时预览 processImages 保持一致：
           // data:/http(s):/file:/blob: 直接保留；绝对路径直接读取；相对路径按当前文档目录解析
@@ -2211,7 +2229,7 @@
           const mermaidContainers = this._mermaidContainersForRerender(clone);
           if (typeof mermaid !== 'undefined' && mermaidContainers.length) {
             const ff = this._exportPdfFontStack();
-            mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'loose', fontFamily: ff, themeVariables: { fontSize: '14px' } });
+            mermaid.initialize({ startOnLoad: false, theme: this.isDark ? 'dark' : 'default', securityLevel: 'strict', fontFamily: ff, themeVariables: { fontSize: '14px' } });
             for (let i = 0; i < mermaidContainers.length; i++) {
               const code = (mermaidContainers[i].getAttribute('data-code') || mermaidContainers[i].textContent || '').trim();
               if (!code) continue;
@@ -2402,9 +2420,22 @@
           if (this._imageURLCache.size > this._imageURLCacheMax) {
             const oldestKey = this._imageURLCache.keys().next().value;
             const oldestUrl = this._imageURLCache.get(oldestKey);
-            this._imageURLCache.delete(oldestKey);
-            if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
-              URL.revokeObjectURL(oldestUrl);
+            // 淘汰前必须确认该 Blob URL **已不在文档中被 <img> 引用**：撤销在用 URL 会让正在
+            // 显示的图片当场裂开（image-processor 早有 blobUrlInUse 护栏，这条热路径漏了同款判断
+            // —— 内联 base64 图片较多的大文档滚一滚就会掉图，审计发现，2026-09-24）。
+            let inUse = false;
+            try {
+              inUse = !!(typeof document !== 'undefined' && document.querySelector('img[src="' + oldestUrl + '"]'));
+            } catch (_e) { inUse = false; }
+            if (inUse) {
+              // 还在显示：放到队尾延后淘汰（宁可暂时超出上限，也不能撤销在用 URL）
+              this._imageURLCache.delete(oldestKey);
+              this._imageURLCache.set(oldestKey, oldestUrl);
+            } else {
+              this._imageURLCache.delete(oldestKey);
+              if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
+                URL.revokeObjectURL(oldestUrl);
+              }
             }
           }
           return url;

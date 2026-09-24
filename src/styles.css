@@ -852,12 +852,6 @@ body {
   flex-shrink: 0;
 }
 
-.dropdown-item .icon {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
 .dropdown-item .shortcut {
   margin-left: auto;
   font-size: calc(var(--ui-font-size) * 0.8462);
@@ -2973,18 +2967,6 @@ details.admonition[open] > summary.admonition-summary::after {
   border-right-width: 0;
 }
 
-.outline-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  font-size: calc(var(--ui-font-size) * 0.9231);
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
 .outline-content {
   flex: 1 1 0;
   overflow: auto;
@@ -3672,9 +3654,6 @@ body.is-resizing-row .sidebar-h-resizer {
 }
 
 .outline-item.level-1 { font-weight: 600; }
-.outline-item.level-2 { }
-.outline-item.level-3 { }
-.outline-item.level-4 { }
 .outline-item.level-5 { font-size: calc(var(--ui-font-size) * 0.8462); }
 .outline-item.level-6 { font-size: calc(var(--ui-font-size) * 0.8462); }
 
@@ -4000,8 +3979,10 @@ body.is-resizing-row .sidebar-h-resizer {
   font-size: calc(var(--ui-font-size) * 1.0769);
   border: 1px solid var(--border-color, #d0d0d0);
   border-radius: 6px;
-  background: var(--input-bg, #fff);
-  color: var(--text-color, #222);
+  /* 改用主题变量：--input-bg / --text-color 全仓**从未定义** → 暗色主题下这里永远是白底黑字
+     （Ctrl+P 文件搜索框在暗主题里突兀发白，审计发现，2026-09-24） */
+  background: var(--bg-primary, #fff);
+  color: var(--text-primary, #222);
   outline: none;
 }
 .file-search-input:focus {
@@ -4079,7 +4060,7 @@ body.is-resizing-row .sidebar-h-resizer {
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
-  color: var(--text-color, #222);
+  color: var(--text-primary, #222);
 }
 .file-search-item .fs-icon {
   flex: 0 0 auto;
@@ -4252,7 +4233,8 @@ body.is-resizing-row .sidebar-h-resizer {
 }
 .about-version-body .about-build {
   margin: 0;
-  color: var(--text-tertiary);
+  /* 补回退值：--text-tertiary 全仓未定义，无回退时该声明整条失效（审计发现） */
+  color: var(--text-tertiary, var(--text-secondary, #8a8a8e));
   font-size: calc(var(--ui-font-size) * 0.9231);
 }
 
@@ -4366,33 +4348,6 @@ body.is-resizing-row .sidebar-h-resizer {
   margin: 4px 0 0 0;
   font-size: calc(var(--ui-font-size) * 0.9231);
   color: var(--text-secondary);
-}
-
-.copyright-text {
-  font-size: calc(var(--ui-font-size) * 0.9231) !important;
-  color: var(--text-secondary) !important;
-  margin-bottom: 8px !important;
-}
-
-.copyright-list {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 8px 0;
-}
-
-.copyright-list li {
-  font-size: calc(var(--ui-font-size) * 0.9231);
-  color: var(--text-secondary);
-  padding: 2px 0;
-  padding-left: 12px;
-  position: relative;
-}
-
-.copyright-list li:before {
-  content: "•";
-  position: absolute;
-  left: 0;
-  color: var(--accent-color);
 }
 
 /* Settings Dialog */
@@ -4973,24 +4928,8 @@ select option {
 .shortcuts-list {
   padding: 0 0 8px;
 }
-
-.settings-group {
-  margin-bottom: 16px;
-}
 .settings-group:last-child {
   margin-bottom: 0;
-}
-.settings-group-title {
-  font-size: calc(var(--ui-font-size) * 0.9231);
-  font-weight: 600;
-  color: var(--accent-color);
-  padding: 8px 16px 4px;
-  margin: 0 0 4px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
-  letter-spacing: .02em;
-}
-.scheme-row {
-  padding: 4px 16px 8px;
 }
 
 .shortcut-group {
@@ -5168,9 +5107,6 @@ select option {
 .shortcut-section-name {
   flex: 1 1 auto;
 }
-.shortcut-section-hint {
-  display: none;
-}
 .collapse-caret {
   flex: 0 0 auto;
   width: 16px;
@@ -5315,9 +5251,11 @@ select option {
   justify-content: space-between;
   gap: 16px;
   padding: 8px 16px;
-  background: var(--warning-bg, #fff7e6);
-  border-bottom: 1px solid var(--warning-border, #ffd591);
-  color: var(--warning-text, #874d00);
+  /* --warning-* 全仓未定义 → 回退成"浅黄底 + 深棕字"，暗色主题下横幅刺眼（审计发现）。
+     改成与主题无关的琥珀色调 + 主题文字色，亮/暗都成立。 */
+  background: var(--warning-bg, rgba(250, 173, 20, 0.14));
+  border-bottom: 1px solid var(--warning-border, rgba(250, 173, 20, 0.45));
+  color: var(--warning-text, var(--text-primary, #874d00));
   font-size: calc(var(--ui-font-size) * 1);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
@@ -5356,15 +5294,16 @@ select option {
 .ecb-btn {
   padding: 4px 12px;
   border-radius: 4px;
-  border: 1px solid var(--warning-border, #ffd591);
+  border: 1px solid var(--warning-border, rgba(250, 173, 20, 0.45));
   background: transparent;
-  color: var(--warning-text, #874d00);
+  color: var(--warning-text, var(--text-primary, #874d00));
   cursor: pointer;
   font-size: calc(var(--ui-font-size) * 0.9231);
   white-space: nowrap;
 }
 .ecb-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
+  /* 深色底上 rgba(0,0,0,.04) 是看不见的，改用同一琥珀色（亮/暗都可见） */
+  background: rgba(250, 173, 20, 0.16);
 }
 .ecb-reload,
 .ecb-reload-all {

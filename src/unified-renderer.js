@@ -993,6 +993,21 @@ function sanitizeStyleValue(css) {
   return out.join('; ');
 }
 
+// 字符串级兜底净化（rehype-sanitize 不可用时的退路）原本只挡 `javascript:`，
+// `data:`（含 text/html）/ `vbscript:` / 任意自定义 scheme 都会通过，并随导出 HTML 一起
+// 交给浏览器执行（审计发现，2026-09-24）。下面对 URL 类属性做协议白名单。
+const URL_ATTR_RE = /^(href|src|xlink:href|action|formaction|poster|background|cite|data)$/i;
+function isDangerousUrlAttr(name, raw) {
+  if (!URL_ATTR_RE.test(name)) return false;
+  const schemeM = /[:=]\s*["']?\s*([a-z][a-z0-9+.-]*):/i.exec(raw);
+  if (!schemeM) return false;
+  const scheme = schemeM[1].toLowerCase();
+  if (scheme === 'http' || scheme === 'https' || scheme === 'mailto' ||
+      scheme === 'tel' || scheme === 'file' || scheme === 'blob') return false;
+  if (scheme === 'data') return !/=\s*["']?\s*data:image\//i.test(raw);   // 仅放行 data:image/*
+  return true;   // javascript / vbscript / 其它自定义 scheme
+}
+
 function sanitizeTagAttributes(tagName, inner) {
   // Remove dangerous event handlers and javascript: URLs
   let attrs = inner.substring(tagName.length);
@@ -1020,7 +1035,7 @@ function sanitizeTagAttributes(tagName, inner) {
       }
       let raw = attrs.substring(nameStart, j);
       // 危险事件处理器 / javascript: URL：直接丢弃
-      if (attrName.startsWith('on') || /javascript:/i.test(raw)) {
+      if (attrName.startsWith('on') || isDangerousUrlAttr(attrName, raw)) {
         continue;
       }
       // 内联样式：保留但做安全过滤（剥离 expression()/url(javascript:)/display:none 等）
@@ -1035,7 +1050,7 @@ function sanitizeTagAttributes(tagName, inner) {
       cleaned += raw;
     } else {
       let raw = attrs.substring(nameStart, j);
-      if (attrName.startsWith('on') || /javascript:/i.test(raw) || attrName === 'style') {
+      if (attrName.startsWith('on') || isDangerousUrlAttr(attrName, raw) || attrName === 'style') {
         continue;
       }
       cleaned += raw;

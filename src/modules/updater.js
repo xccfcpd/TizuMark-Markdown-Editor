@@ -131,7 +131,9 @@
             if (window.markdownit) {
               notesEl.innerHTML = window.markdownit({ html: false, linkify: true }).render(update.body);
             } else {
-              notesEl.innerHTML = update.body.replace(/\n/g, '<br>');
+              // 用 textContent：update.body 来自远端 Release 说明，直注 HTML 即注入点
+        //（textContent 下换行靠 CSS white-space 处理，不再拼 <br>）
+        notesEl.textContent = update.body;
             }
           } else {
             notesEl.textContent = this.t('noUpdateNotes');

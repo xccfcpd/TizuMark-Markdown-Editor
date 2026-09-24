@@ -235,9 +235,14 @@ TizuMark 会根据文件类型自动选择最合适的视图，无需手动配�
 | 代码块 | 引擎 | 内容写法 |
 |--------|------|----------|
 | ```` ```mermaid ```` | Mermaid | 流程图 / 时序图 / 甘特图 / 类图 / 状态图 / 饼图 / **脑图 mindmap** |
+| ```` ```plantuml ```` | PlantUML → Mermaid | 时序图 / 用例图 / 组件图 / 类图 / 状态图 / 活动图 / 甘特图（`uml` / `puml` / `pu` 为别名）；不支持的分支（`fork` / `split` / `repeat` 等）会保留源码并提示 |
+| ```` ```d2 ```` | D2 → Mermaid | D2 的节点/边语法与 `shape` / `style` 等常用属性 |
 | ```` ```echarts ```` | ECharts | ECharts 的 option JSON（可选顶层 `tizuHeight` 指定画布高度，默认 360） |
 | ```` ```wavedrom ```` | WaveDrom | WaveDrom 的 source JSON（`signal` / `assign` / `reg`；`wave` 为别名） |
-| ```` ```dot ```` | Graphviz | DOT 语言描述的节点/边关系图，自动布局（`graphviz` / `gv` 为别名；首行写 `// engine: neato` 可切换布局引擎） |
+| ```` ```dot ```` | Graphviz | DOT 语言描述的节点/边关系图，自动布局（`graphviz` / `gv` 为别名；首行写 `// engine: neato` 可切换布局引擎）；**中文节点名会自动补引号**，可直接写 `来料 --> 检验` |
+| ```` ```tikz ```` | TikZ | `\draw` / `\fill` / `\node` 常用子集（`pgf` / `tikzpicture` 为别名）；`arc` / `.. controls` / `grid` 等未支持的路径语法会保留源码并提示 |
+| ```` ```plot ```` | gnuplot | 函数绘图，如 `plot sin(x)`，支持 `set xlabel` / `set grid` 等（`gnuplot` 为别名） |
+| ```` ```markmap ```` | Markmap | 缩进式 Markdown 大纲 → 思维导图 |
 
 > 导出长图 / PDF / DOCX 时，这些图表会自动转成图片嵌入，无需额外处理。
 > 语法写错时不会静默空白，而是显示失败原因并保留原始源码，便于就地修改。

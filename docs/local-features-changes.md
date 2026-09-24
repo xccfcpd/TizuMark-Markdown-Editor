@@ -821,6 +821,62 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
 | mermaid 缓存键未含字体 | 预览字体**不是运行时可配项**（只在导出克隆上覆写 `--font-preview`），当前不存在混字体路径 |
 | 指南 FAQ 的「QQ 群：1035294939」 | 与「关于对话框」不是同一处，等产品口径确认（见 §2.18） |
 
+### 2.22 第三轮审计（补漏）：导出/安全、编辑器与文件、样式与文档（2026-09-24）
+
+第二轮只覆盖了预览管线 / 图表引擎 / 移除遗留三块。这一轮把**尚未审过的区域**补齐：
+导出与安全（`export.js` / `unified-renderer.js` / `updater.js` / `misc-ui.js`）、
+编辑器与文件状态（`tabs.js` / `files.js` / `notify.js` / `format.js` / `outline.js` / `i18n.js`）、
+样式与文档（`styles.css` / `index.html` / 两篇 guide）。又修掉 **18 组**问题。
+
+#### 安全
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | 导出链路（Word / PDF）把 mermaid 降到 `securityLevel: 'loose'` 后再 `innerHTML = result.svg` 注入**真实 DOM**：文档里的 `<img onerror>` / click 指令会被保留并在 WebView 内执行，且同一段 SVG 会写进导出的 HTML/PDF/DOCX。与预览管线的 `strict` 基线自相矛盾 | 两处改回 `strict`（并补注释说明为何不能放开） |
+| 2 | 外链兜底把任意协议交给系统 shell / `window.open`：净化只挡 `javascript:`，`data:` / `vbscript:` / `file:` / 自定义 scheme 可直达 OS 边界 | `openExternal` 兜底分支加协议白名单（http/https/mailto/tel） |
+| 3 | 字符串级兜底净化（`rehype-sanitize` 不可用时的退路）同样只挡 `javascript:`，`data:text/html` 等会随导出 HTML 交给浏览器 | 新增 `isDangerousUrlAttr()`：对 URL 类属性做协议白名单（放行 http(s)/mailto/tel/file/blob 与 `data:image/*`） |
+| 4 | 更新说明回退分支 `innerHTML = update.body`（远端内容直注） | 改 `textContent`（该分支当前不可达，属提前拆除） |
+
+#### 数据与正确性
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 5 | **快速连点两个标签会静默覆盖内容**：`switchTab` 在 `await ensureTabLoaded` 之前就把 `cm.getValue()` 写进 `this.activeTab`，而此时 activeTab 已前移、编辑器里仍是上一个文档 | 新增 `_editorTab`（编辑器真正承载的标签）+ `_switchGen` 代际号：只回写 `_editorTab`，加载期间置 null，过期续体直接放弃 |
+| 6 | `openFilePath` 并发打开：读盘是异步的，"先读到的后落地"会显示错文件 | 新增 `_openGen` 代际号，过期的那次不再 addTab |
+| 7 | **PNG 导出丢 ECharts**：`cloneNode` 不复制 canvas 像素，HTML/Word/PDF 三路都做了「快照 → 换 `<img>`」，只有 PNG 一路漏了 | `exportImage` 补 `_snapshotEchartsForExport` + `_applyEchartsSnapshots` |
+| 8 | 图片 LRU 淘汰**不检查 URL 是否仍在被 `<img>` 引用** → 撤销在用 blob URL，正在显示的图片当场裂开（image-processor 早有同款护栏，这条热路径漏了） | 淘汰前查 `img[src="…"]`，在用则放回队尾不撤销 |
+| 9 | `_svgToPngDataUrl` 只在成功路径 `revokeObjectURL`，`img.onerror`（Word/PNG 的常见降级路径）每次泄漏一个 Blob | 包 `try/finally`，任何出口都释放 |
+| 10 | 外部变更轮询在"判定为已修改"时不记录 meta → 每 1.5s 重新命中 mtime 差异、整份重读文件并反复刷横幅 | 无论结论如何都吞下这次 `fileMeta` |
+| 11 | **点击大纲无反应**：大纲 id 由"源码剥掉 `[*\`~[]]`"生成，渲染器 id 由渲染后文本生成 —— `# [链接](u)` 得到 `加粗-代码-链接u` vs 渲染 `加粗-代码-链接` | 大纲改用与渲染器一致的纯文本 slug（`test/outline.test.cjs` 同步更新，旧断言锁的正是这个错配） |
+| 12 | 表格操作把单元格里的转义竖线 `a \| b` 拆成两列（数据被改坏） | `_splitCells` 跳过转义竖线 |
+| 13 | `applyLanguage()` 有 21 处**无守卫直写**（`document.getElementById('x').textContent = …`）：任一元素改名/删除就中途抛错，**后半段文案残留旧语言** | 统一换成已有的守卫助手 `setText` / 新增 `setSelText`（缺失即跳过） |
+
+#### 样式、文档与无障碍
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 14 | 13 条死/空/重复 CSS 规则（`copyright-*` 4 条、`outline-header`、`settings-group*` 2 条、`scheme-row`、`shortcut-section-hint`、3 条空 `outline-item.level-*`、重复的 `.dropdown-item .icon`） | 脚本按选择器精确删除，删后校验花括号平衡 0 且无残留引用 |
+| 15 | 三组**从未定义**的 CSS 变量导致主题失效：`--input-bg`/`--text-color`（文件搜索框在暗色下永远白底黑字）、`--warning-*`（外部变更横幅暗色下浅黄）、`--text-tertiary`（无回退 ⇒ 整条声明失效） | 分别改挂 `--bg-primary`/`--text-primary`、琥珀色调 + 主题文字色、补回退 |
+| 16 | 指南「图表与可视化」表只列 4 类引擎，实际支持 9 类（PlantUML / D2 / TikZ / plot / Markmap 均缺） | 中英两表补全到 9 行，并写明未支持语法的降级行为 |
+| 17 | 帮助菜单给「开发者工具」标了 `Ctrl+Shift+I`，而该组合实际是**插入图片**（DevTools 没有键盘绑定） | 移除该假快捷键提示 |
+| 18 | `#confirm-dialog` 有 `h2#confirm-dialog-title` 却未关联 `aria-labelledby`（其余对话框都有） | 补上 |
+
+#### 本轮**报告但未改**的（需产品决策或风险较高）
+
+| 项 | 原因 |
+|---|---|
+| 导出无并发锁（连点两次可能互相打断；`_previewForceFull` 是布尔而非计数） | 需在 4 条导出路径统一加锁 + 计数，改动面大，建议单独立项 |
+| 长图 PNG 无 canvas 尺寸上限/分片（极高文档可能导出空白） | 需要分片绘制 + 竖向拼接，工作量较大 |
+| 远程图片内联 `fetch` 无超时（一个挂起的 URL 会卡住 HTML/PDF 导出） | 建议加 `AbortController` 超时；涉及导出取消语义 |
+| Word 取消按钮只在图表循环内轮询（无图表文档点取消无效） | 同上，与取消语义一起改 |
+| 导出 `<style>` 片段未转义 `</` | 内容来自本机自导入字体/样式，风险低 |
+| CRLF / BOM 保存后不保留（保存即归一为 LF、BOM 丢失） | 需贯穿读取/保存/比较三处 + Rust 侧，属行为约定变更 |
+| 会话不保存未命名草稿（重启丢失） | 涉及"是否把正文写入本地存储"的隐私取舍 |
+| 时序 `group … end group` 忽略；无 `[*]`/`state` 的状态图判为时序图 | 与 PlantUML 自身启发式一致（§2.21 已记录） |
+| 有序列表重编号从 1 重排、已有 `1. ` 前缀会叠加 | 属格式化行为变更，需先确认期望语义 |
+| 路径迁移（另存为 / 重命名 / 粘贴）未同步「最近文件」与标签名 | 需一处统一的路径迁移辅助函数 |
+| `layout.js` / `slash.js` 若干硬编码中文未走 `t()` | 纯文案补齐，可与其他文案一起做 |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

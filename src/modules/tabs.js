@@ -50,14 +50,25 @@
         //   · 平均行高：它只校准一次后恒定，跨文档复用会让 spacer 高度与滚动落点系统性偏移
         if (this._virtualRenderTimer) { clearTimeout(this._virtualRenderTimer); this._virtualRenderTimer = null; }
         this._avgLineHeight = null;
+        // 切换代际号：加载文件是异步的，期间用户可能又点了别的标签 —— 下面每个 await 之后都要
+        // 校验代际，过期就放弃（否则旧续体会把内容写回编辑器，覆盖用户真正想看的文件）。
+        const gen = ++this._switchGen;
         this._beginPaneLoad();
         try {
-          const oldTab = this.activeTab;
-          oldTab.content = this.cm.getValue();
-          oldTab.cursorPos = this.cm.getCursor();
-          oldTab.scrollPos = { top: this.cm.getScrollInfo().top, left: this.cm.getScrollInfo().left };
-          oldTab.previewScrollTop = this.preview.scrollTop;
-  
+          // 只把编辑器内容写回**真正承载它的那个标签**（this._editorTab）：此刻 activeTabIndex
+          // 可能已经前移、而编辑器里仍是上一个文档。旧写法（写进 this.activeTab）在"快速连点两个
+          // 标签、第一个还在读盘"时会把 A 的文本写进尚未加载的 B，B 的续体再把它写回编辑器
+          // → 内容被静默覆盖（审计发现，2026-09-24）。
+          const oldTab = this._editorTab || this.activeTab;
+          if (oldTab && this.cm) {
+            oldTab.content = this.cm.getValue();
+            oldTab.cursorPos = this.cm.getCursor();
+            oldTab.scrollPos = { top: this.cm.getScrollInfo().top, left: this.cm.getScrollInfo().left };
+            oldTab.previewScrollTop = this.preview.scrollTop;
+          }
+          // 加载期间编辑器内容不属于任何标签：期间再切一次时不会把当前文本错写到别人身上
+          this._editorTab = null;
+
           this.activeTabIndex = index;
           const newTab = this.activeTab;
           // 编辑器字号为全局（editorZoom），切 tab 不改变字号
@@ -66,6 +77,8 @@
           if (!newTab._loaded && newTab.filePath) {
             await this.ensureTabLoaded(newTab);
           }
+          // 读盘期间用户又切走了 → 本次切换已过期，交给更新的那次处理
+          if (gen !== this._switchGen) return;
   
           // 关键：先把恢复值读到局部变量。setValue 会同步触发 scroll / cursorActivity 事件，
           // 此刻 this.activeTab 已是 newTab，事件处理器会把 newTab.scrollPos / cursorPos 覆盖为 0，
@@ -83,6 +96,8 @@
               : (newTab.kind === 'markdown' ? 'md' : '');
             this._applyCodeMode(newExt);
           }
+          // 编辑器此刻承载的就是 newTab（供下一次切换正确回写内容）
+          this._editorTab = newTab;
           clearTimeout(this.debounceTimer);
           this.cm.setCursor(restoreCursor);
           this.cm.clearHistory();

@@ -52,6 +52,9 @@ class MarkdownEditor {
     this._previewForceFull = false;  // 导出前临时要求全量渲染（跳过滑动窗口），见 export.js 的 _preparePreviewForExport
     this._avgLineHeight = null;      // 虚拟滚动平均行高（首次渲染后校准一次，之后恒定）
     this._virtualRenderTimer = null; // 虚拟滚动重渲染 debounce 计时器
+    this._editorTab = null;          // 编辑器当前承载的标签（异步切换期间为 null，防内容错写）
+    this._switchGen = 0;             // 切换标签的代际号（过期续体直接放弃）
+    this._openGen = 0;               // 打开文件的代际号（同上）
     this._previewScrollDriven = false; // 虚拟滚动：滚动驱动的重渲染保留 scrollTop（不回弹贴顶）
     this._previewSliceOffset = 0;    // 窗口切片起点（0-based），用于把 data-source-line 还原为绝对行号
     this._previewFocusLine = 0;      // 窗口焦点（0-based 源码行），决定窗口中心

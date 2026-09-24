@@ -217,9 +217,14 @@ Fenced code blocks render diagrams — no plugins needed, fully offline, theme-a
 | Fence | Engine | Content |
 |-------|--------|---------|
 | ```` ```mermaid ```` | Mermaid | Flowchart / sequence / gantt / class / state / pie / **mindmap** |
+| ```` ```plantuml ```` | PlantUML → Mermaid | Sequence / use case / component / class / state / activity / gantt (`uml` / `puml` / `pu` aliases); unsupported branches (`fork` / `split` / `repeat`) keep the source and show a hint |
+| ```` ```d2 ```` | D2 → Mermaid | D2 node/edge syntax plus common attributes such as `shape` / `style` |
 | ```` ```echarts ```` | ECharts | ECharts option JSON (optional top-level `tizuHeight` for canvas height, default 360) |
 | ```` ```wavedrom ```` | WaveDrom | WaveDrom source JSON (`signal` / `assign` / `reg`; `wave` is an alias) |
-| ```` ```dot ```` | Graphviz | DOT graph source with automatic layout (`graphviz` / `gv` aliases; put `// engine: neato` on the first line to switch layout engine) |
+| ```` ```dot ```` | Graphviz | DOT graph source with automatic layout (`graphviz` / `gv` aliases; put `// engine: neato` on the first line to switch layout engine). Non-ASCII node names are auto-quoted, so `来料 --> 检验` just works |
+| ```` ```tikz ```` | TikZ | Common `\draw` / `\fill` / `\node` subset (`pgf` / `tikzpicture` aliases); unsupported path syntax such as `arc` / `.. controls` / `grid` keeps the source and shows a hint |
+| ```` ```plot ```` | gnuplot | Function plots, e.g. `plot sin(x)`, with `set xlabel` / `set grid` (`gnuplot` is an alias) |
+| ```` ```markmap ```` | Markmap | Indented Markdown outline → mind map |
 
 > Long-image / PDF / DOCX export converts these diagrams to images automatically.
 > Invalid syntax is never silently blank: the failure reason plus the original source are shown in place.

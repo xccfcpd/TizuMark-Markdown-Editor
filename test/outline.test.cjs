@@ -37,8 +37,10 @@ test('标题文本去除 markdown 标记（显示用完整清理）', async () =
   const hs = extractHeadings('# **加粗** `代码` [链接](u)', opts);
   // 完整清理：链接括号 (u) / 反引号 / 强调标记均剥离，显示更干净
   assert.strictEqual(hs[0].text, '加粗 代码 链接');
-  // id 仍由轻量清理文本生成，保持与改动前一致（不影响锚点跳转）
-  assert.strictEqual(hs[0].id, '加粗-代码-链接u');
+  // id 必须与**渲染器**生成的锚点 id 一致（unified-renderer 的 slugifyHeading 作用于渲染后文本）。
+  // 旧实现用「源码里剥掉 [*`~[]] 的字符串」做 slug —— `[链接](u)` 会残留 'u'，与预览里真实
+  // 生成的 id 不符，导致点击大纲跳转静默失效（审计发现，2026-09-24 已修正）。
+  assert.strictEqual(hs[0].id, '加粗-代码-链接');
 });
 
 test('标题完整清理：图片/链接/代码/强调/尾随# 均剥离（仅影响显示）', async () => {

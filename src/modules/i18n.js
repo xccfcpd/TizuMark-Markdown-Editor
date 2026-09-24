@@ -25,6 +25,8 @@
         const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
         const setPlaceholder = (id, text) => { const el = document.getElementById(id); if (el) el.placeholder = text; };
         const setTitle = (id, text) => { const el = document.getElementById(id); if (el) el.title = text; };
+        // 选择器版：同样带缺失守卫（取不到就跳过，绝不抛异常）
+        const setSelText = (sel, text) => { const el = document.querySelector(sel); if (el) el.textContent = text; };
   
         // Toolbar buttons — skip the dropdown-arrow span, target the label span
         const updateToolbarBtn = (btnId, text) => {
@@ -79,12 +81,12 @@
   
         // Status bar
         setText('status-text', t('ready'));
-        document.getElementById('word-count').textContent = t('words') + ': 0';
-        document.getElementById('preview-word-count').textContent = t('previewWords') + ': 0';
-        document.getElementById('line-count').textContent = t('lines') + ': 0';
+        setText('word-count', t('words') + ': 0');
+        setText('preview-word-count', t('previewWords') + ': 0');
+        setText('line-count', t('lines') + ': 0');
         if (this.cm) {
           const cur = this.cm.getCursor();
-          document.getElementById('cursor-position').textContent = this.t('cursorPos', { line: cur.line + 1, col: cur.ch + 1 });
+          setText('cursor-position', this.t('cursorPos', { line: cur.line + 1, col: cur.ch + 1 }));
         }
   
         // Drag overlay
@@ -98,7 +100,7 @@
         });
   
         // Settings dialog — use form element IDs as stable anchors
-        document.querySelector('#settings-dialog .dialog-header h2').textContent = t('settings');
+        setSelText('#settings-dialog .dialog-header h2', t('settings'));
         const setSectionTitle = (anchorId, text) => {
           const el = document.getElementById(anchorId);
           if (el) { const name = el.closest('.settings-section').querySelector('.settings-section-name'); if (name) name.textContent = text; }
@@ -170,10 +172,10 @@
         if (trayHint) trayHint.textContent = t('showTrayIconHint');
         const allFilesHint = document.querySelector('#setting-show-all-files-hint .hint-text');
         if (allFilesHint) allFilesHint.textContent = t('showAllFilesHint');
-        document.querySelector('#setting-image-store-hint .hint-text').textContent = t('imageSettingHint');
+        setSelText('#setting-image-store-hint .hint-text', t('imageSettingHint'));
         const assetPathHint = document.querySelector('#setting-image-asset-path-hint-text');
         if (assetPathHint) assetPathHint.innerHTML = t('imageAssetPathRelativeHint');
-        document.getElementById('settings-reset').textContent = t('resetDefault');
+        setText('settings-reset', t('resetDefault'));
         // 语言/界面文本刷新时跳过处于 loading 态的按钮：否则 applyPendingSettings 内部的
         // applyLanguage() 会在保存/应用进行中把按钮文案重置回「保存/应用」，让 spinner +
         // 「保存中…」只显示不到一帧（本地同步落盘极快），视觉上等于没有 loading。
@@ -182,8 +184,8 @@
         const saveBtn = document.getElementById('settings-save-btn');
         if (saveBtn && !saveBtn.classList.contains('is-loading')) saveBtn.textContent = t('save');
         document.getElementById('settings-close-x').setAttribute('aria-label', t('cancel'));
-        document.getElementById('confirm-dialog-confirm').textContent = t('confirm');
-        document.getElementById('confirm-dialog-cancel').textContent = t('cancel');
+        setText('confirm-dialog-confirm', t('confirm'));
+        setText('confirm-dialog-cancel', t('cancel'));
         // 配色方案自绘下拉：随语言刷新选项文案（optionsProvider 依赖注入 t）
         if (this._selects && this._selects.colorScheme) this._selects.colorScheme.applyI18n(t);
         // 三个字体 FontPicker 的 i18n（占位符/默认项/无匹配文案）；须 bind(this) 否则 t 的 this 指向 FontPicker
@@ -289,7 +291,7 @@
         this.applyViewMode();
   
         // About dialog（3 个折叠块：版本信息 / 许可协议 / 第三方组件 —— 「联系我们」已于 2026-09-24 移除）
-        document.querySelector('#about-dialog .dialog-header h2').textContent = t('aboutTitle');
+        setSelText('#about-dialog .dialog-header h2', t('aboutTitle'));
         const aboutSections = document.querySelectorAll('#about-dialog .dependency-details');
         if (aboutSections.length >= 1) {
           const title = aboutSections[0].querySelector('.dependency-title .dependency-name');
@@ -332,10 +334,10 @@
         }
   
         // Save dialog
-        document.getElementById('save-dialog-title').textContent = t('saveChanges');
-        document.getElementById('save-dialog-save').textContent = t('save');
-        document.getElementById('save-dialog-discard').textContent = t('dontSave');
-        document.getElementById('save-dialog-cancel').textContent = t('cancel');
+        setText('save-dialog-title', t('saveChanges'));
+        setText('save-dialog-save', t('save'));
+        setText('save-dialog-discard', t('dontSave'));
+        setText('save-dialog-cancel', t('cancel'));
   
         // Find panels
         setPlaceholder('find-input', t('find') + '...');
@@ -343,16 +345,16 @@
         document.querySelector('#find-panel .find-option:nth-child(2)') && (document.querySelector('#find-panel .find-option:nth-child(2)').childNodes[1] && (document.querySelector('#find-panel .find-option:nth-child(2)').childNodes[1].textContent = ' ' + t('caseSensitive')));
         document.querySelector('#find-panel .find-option:nth-child(3)') && (document.querySelector('#find-panel .find-option:nth-child(3)').childNodes[1] && (document.querySelector('#find-panel .find-option:nth-child(3)').childNodes[1].textContent = ' ' + t('regex')));
         document.querySelector('#find-panel .find-option:nth-child(4)') && (document.querySelector('#find-panel .find-option:nth-child(4)').childNodes[1] && (document.querySelector('#find-panel .find-option:nth-child(4)').childNodes[1].textContent = ' ' + t('loop')));
-        document.getElementById('find-next').textContent = t('findNext');
-        document.getElementById('find-prev').textContent = t('findPrev');
-        document.getElementById('replace-one').textContent = t('replace');
-        document.getElementById('replace-all').textContent = t('replaceAll');
+        setText('find-next', t('findNext'));
+        setText('find-prev', t('findPrev'));
+        setText('replace-one', t('replace'));
+        setText('replace-all', t('replaceAll'));
         setPlaceholder('preview-find-input', t('findInPreview') + '...');
         document.querySelector('#preview-find-panel .find-option:nth-child(2)') && (document.querySelector('#preview-find-panel .find-option:nth-child(2)').childNodes[1] && (document.querySelector('#preview-find-panel .find-option:nth-child(2)').childNodes[1].textContent = ' ' + t('caseSensitive')));
         document.querySelector('#preview-find-panel .find-option:nth-child(3)') && (document.querySelector('#preview-find-panel .find-option:nth-child(3)').childNodes[1] && (document.querySelector('#preview-find-panel .find-option:nth-child(3)').childNodes[1].textContent = ' ' + t('regex')));
         document.querySelector('#preview-find-panel .find-option:nth-child(4)') && (document.querySelector('#preview-find-panel .find-option:nth-child(4)').childNodes[1] && (document.querySelector('#preview-find-panel .find-option:nth-child(4)').childNodes[1].textContent = ' ' + t('loop')));
-        document.getElementById('preview-find-next').textContent = t('findNext');
-        document.getElementById('preview-find-prev').textContent = t('findPrev');
+        setText('preview-find-next', t('findNext'));
+        setText('preview-find-prev', t('findPrev'));
   
         // Save dialog message
         setText('save-dialog-message', t('saveDialogMessage'));
@@ -363,7 +365,7 @@
   
         // Shortcuts dialog
         setText('shortcuts-title', t('shortcuts'));
-        document.getElementById('shortcuts-reset').textContent = t('resetDefault');
+        setText('shortcuts-reset', t('resetDefault'));
         // 快捷键框「保存」按钮文案：与设置框「保存」一致；loading 中跳过（保 spinner）
         const scSaveBtn = document.getElementById('shortcuts-save-btn');
         if (scSaveBtn && !scSaveBtn.classList.contains('is-loading')) scSaveBtn.textContent = t('save');

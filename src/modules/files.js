@@ -215,6 +215,9 @@
         return true;
       },
       async openFilePath(filePath) {
+        // 打开代际号：读盘是异步的，期间用户可能又点了另一个文件。过期的那次不能再 addTab /
+        // 切换，否则「先读到的文件后落地」会让最终显示的并不是用户最后点的那个（审计发现，2026-09-24）。
+        const gen = ++this._openGen;
         this._largeFileNoticeDismissed = false;
         this._previewFocusLine = 0;
         this.previewWindow = null;
@@ -250,6 +253,7 @@
             return;
           }
           const content = await this.readFileNormalized(filePath);
+          if (gen !== this._openGen) return;   // 期间又打开了别的文件：放弃本次
           const name = filePath.split(/[/\\]/).pop();
           // text：按原始文本显示（不按 Markdown 渲染）；markdown：现有渲染管线
           await this.addTab(name, content, filePath, kind);

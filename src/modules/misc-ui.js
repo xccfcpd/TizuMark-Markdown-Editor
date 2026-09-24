@@ -206,6 +206,13 @@
             return;
           }
   
+          // 交给系统 / 浏览器打开前只放行白名单协议：渲染层的字符串级净化只挡 `javascript:`，
+          // 而 `data:` / `vbscript:` / `file:` / 任意自定义 scheme 会原样直通系统边界
+          // （属未校验输入直达 OS shell，审计发现，2026-09-24）。
+          if (!/^(https?:|mailto:|tel:)/i.test(href)) {
+            if (typeof console !== 'undefined') console.warn('[link] 已拦截非白名单协议:', String(href).slice(0, 48));
+            return;
+          }
           try {
             if (!await TauriApi.shellOpen(href)) {
               window.open(href, '_blank', 'noopener,noreferrer');

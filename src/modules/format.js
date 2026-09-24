@@ -360,11 +360,13 @@
         return { newRowLine };
       },
       // 把表格行拆分为单元格数组（去首尾 | 并按 | 切分、trim）。
+      // 注意：**必须跳过转义竖线 `\|`** —— 旧实现直接 split('|')，单元格里写 `a \| b`
+      // 会被拆成两列（表格操作一次就把数据改坏，审计发现，2026-09-24）。
       _splitCells(text) {
         let t = text.trim();
         if (t.startsWith('|')) t = t.slice(1);
-        if (t.endsWith('|')) t = t.slice(0, -1);
-        return t.split('|').map((c) => c.trim());
+        if (t.endsWith('|') && !/\\\|$/.test(t)) t = t.slice(0, -1);
+        return t.split(/(?<!\\)\|/).map((c) => c.trim());
       },
       // 把单元格数组组装为标准表格行，返回 { text, starts }；starts[k] 为第 k 列内容起始 ch。
       _buildRow(cells) {

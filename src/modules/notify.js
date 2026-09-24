@@ -278,9 +278,11 @@
             if (meta.mtime !== tab.fileMeta.mtime || meta.size !== tab.fileMeta.size) {
               let disk = null;
               try { disk = await this.readFileNormalized(tab.filePath); } catch (e) { disk = null; }
+              // 无论是否判定为「外部已修改」，都要把这个 meta 记下来：否则每 1.5s 轮询都会重新
+              // 命中 mtime 差异并整份重读文件（IPC 浪费），横幅也被反复刷新（审计发现，2026-09-24）。
+              tab.fileMeta = meta;
               // 磁盘内容换行已归一化为 LF，savedContent 同为 LF，统一比较，避免 CRLF/CR 文件每次轮询误报"外部已修改"
               if (disk !== null && disk !== tab.savedContent) this.enqueueExternalChange(tab);
-              else tab.fileMeta = meta;
             }
           }
         };
