@@ -63,6 +63,34 @@
     return s;
   }
 
+  // 名称 → Mermaid id 的**唯一**映射（每次转换新建一个）。
+  // 为什么需要：mid() 只保留 [A-Za-z0-9_]，中文 / 日文 / 含空格的名字会被清成空串，
+  // 于是所有这类名字都拿到**同一个** fallback。历史 bug（2026-09-24 由验证文档暴露）：
+  //   · 5 个中文类名全变成 `C` → 类图塌成一个类并自相连；
+  //   · `participant "认证服务" as Auth` 变成 `participant P as Auth`（图上多出一个 P）；
+  //   · D2 的中文节点全变成 `N` → 整张图变成自环。
+  // 规则：ASCII 名字沿用 mid() 的结果（既有文档 id 不变），非 ASCII 名按出现顺序分配
+  // 稳定序号（n1、n2…），并用 used 集合保证不同名字一定得到不同 id。
+  function makeIdAllocator() {
+    const byName = new Map();
+    const used = new Set();
+    let n = 0;
+    return function idOf(raw, fallback) {
+      const key = String(raw == null ? '' : raw).trim();
+      if (!key) return fallback || 'n';
+      if (byName.has(key)) return byName.get(key);
+      // 注意：不能写 mid(key, '')—— mid 的 `fallback || 'n'` 会把空串变成 'n'，
+      // 于是第一个中文名拿到 'n'、其余拿到 C1/C2…，编号风格不一致。这里显式判空。
+      let id = key.replace(/[^\w]/g, '_').replace(/^_+|_+$/g, '');
+      if (id && /^\d/.test(id)) id = 'n_' + id;
+      if (!id) id = (fallback || 'n') + (++n);
+      while (used.has(id)) id = (fallback || 'n') + (++n);
+      used.add(id);
+      byName.set(key, id);
+      return id;
+    };
+  }
+
   // 从 openIdx（指向 open 字符）找到配对的 close 下标；考虑引号与转义
   function matchBracket(text, openIdx, open, close) {
     let depth = 0;
@@ -233,13 +261,27 @@
     // 类图：显式关键字或类图专有关系符
     if (/\bclass\s+[\w"<]|\binterface\s+[\w"<]|\benum\s+[\w"<]|\babstract\s+class\b|<\|--|<\|\.\.|\*--|o--|\.\.>|\.\.\|>/.test(text)) return 'class';
 
+    // 用例图 / 组件图的**特征标记要先于时序图判定**：`actor` / `database` 这类声明在时序图里
+    // 同样合法（两者共用语法），若先判时序图，那么"含 actor 的用例图"会被整张判成时序图，
+    // 渲染出一张类型完全不同的图（2026-09-24 由渲染验证文档暴露）。
+    // 这里只挑**时序图不会出现**的标记消歧：
+    //   · usecase / component 关键字
+    //   · 行首 `[X]` 声明（时序图的外部消息 `[-> A : msg` 没有配对的 `]`，不会误命中）
+    //   · 行首 `(X)` 声明
+    if (/^\s*usecase\s+/mi.test(text) || /^\s*component\s+/mi.test(text) ||
+        /^\s*\[[^\]]+\]/m.test(text)) return 'component';
+    if (/^\s*\(\s*[^)]+\s*\)/m.test(text)) return 'usecase';
+
     // 时序图
     const seqDecl = /^\s*(participant|actor|boundary|control|entity|database|collections|queue)\s+/mi.test(text);
     // 带消息文本：A -> B : msg
-    const seqMsg = /^\s*("[^"]+"|[\w.$]+)\s*(?:<?-{1,2}(?:>>?|x|\\|\/|o)?|o-{1,2}>?)\s*("[^"]+"|[\w.$]+)\s*:/m.test(text);
+    // 名字 token 允许**非 ASCII**（中文等）：旧版只认 [\w.$]，于是 `用户 -> 系统: 登录`
+    // 这类中文时序图匹配不到，落到最后的 `--+>` 分支被误判成类图（图上出现一个叫
+    // autonumber 的类之类）。类图专有关系符已在上一行先行判定，这里放宽不会抢走类图。
+    const seqMsg = /^\s*("[^"]+"|[^\s:<>=\-\\/]+)\s*(?:<?-{1,2}(?:>>?|x|\\|\/|o)?|o-{1,2}>?)\s*("[^"]+"|[^\s:<>=\-\\/]+)\s*:/m.test(text);
     // 无消息文本：A -> B（**单短横线**才是时序箭头；类图关联用双短横线 -->，
     // 故这里刻意只认单短横线，避免把类图关联误判成时序图）
-    const seqArrow = /^\s*("[^"]+"|[\w.$]+)\s*->{1,2}\s*("[^"]+"|[\w.$]+)\s*$/m.test(text);
+    const seqArrow = /^\s*("[^"]+"|[^\s:<>=\-\\/]+)\s*->{1,2}\s*("[^"]+"|[^\s:<>=\-\\/]+)\s*$/m.test(text);
     if (seqDecl || seqMsg || seqArrow) return 'sequence';
 
     if (/^\s*\(\s*[^)]+\s*\)/m.test(text)) return 'usecase';
@@ -256,6 +298,7 @@
     const out = ['classDiagram'];
     const declared = new Set();
     const aliasOf = new Map();
+    const idOf = makeIdAllocator();   // 中文类名不再塌成同一个 id
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|title\b|note\b|namespace\b|together\b|allowmixing|allow_mixing|left to right direction|top to bottom direction|package\b|set\b|!|remove\b|delete\b)/i;
     const REL = /^(.+?)\s+([-.<>|o*]{2,}?)\s+(.+)$/;
 
@@ -270,7 +313,7 @@
       if (cm) {
         const kw = cm[1].toLowerCase().replace(/\s+/g, ' ');
         const name = stripQuotes(cm[2]);
-        const id = mid(cm[3] || name, 'C');
+        const id = idOf(cm[3] || name, 'C');
         aliasOf.set(name, id);
         const stere = kw === 'interface' ? 'interface'
           : (kw === 'enum' || kw === 'annotation' ? 'enumeration'
@@ -316,8 +359,8 @@
         const ls = parseSide(left);
         const rs = parseSide(right);
         if (!ls.name || !rs.name) continue;
-        const lid = mid(ls.name, 'C');
-        const rid = mid(rs.name, 'C');
+        const lid = idOf(ls.name, 'C');
+        const rid = idOf(rs.name, 'C');
         aliasOf.set(ls.name, lid);
         aliasOf.set(rs.name, rid);
         const cardL = ls.card ? '"' + ls.card + '" ' : '';
@@ -328,7 +371,7 @@
 
       // 裸类名声明（无关键字、无关系）
       if (/^[\w."<>]+$/.test(l)) {
-        const id = mid(stripQuotes(l), 'C');
+        const id = idOf(stripQuotes(l), 'C');
         if (!declared.has(id)) { out.push('    class ' + id); declared.add(id); }
       }
     }
@@ -349,17 +392,18 @@
     const lines = stripPlantumlDecorations(src).split('\n');
     const out = ['sequenceDiagram'];
     const declared = new Set();
-    const MSG = /^("[^"]*"|[A-Za-z_][A-Za-z0-9_.$]*)\s*([<>ox\\\/]*[-=.]+[<>ox\\\/]*)\s*("[^"]*"|[A-Za-z_][A-Za-z0-9_.$]*)\s*(?::\s*([\s\S]*))?$/;
+    const idOf = makeIdAllocator();
+    // 名字 token 允许非 ASCII（中文参与者/角色名很常见）；箭头前后不留空格也要认
+    const MSG = /^("[^"]*"|[^\s:<>=\-\\/]+)\s*([<>ox\\\/]*[-=.]+[<>ox\\\/]*)\s*("[^"]*"|[^\s:<>=\-\\/]+)\s*(?::\s*([\s\S]*))?$/;
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|newpage\b|autoactivate\b|return\b|ref\s+over\b|group\b|end\s+group\b|\.\.\.\s*$|==+.*==+\s*$|--+\s*$)/i;
 
     const declare = (raw) => {
-      let name = String(raw || '').trim();
-      let display = null;
-      if (/^".*"$/.test(name)) { display = stripQuotes(name); name = mid(display, 'P'); }
-      const id = mid(name, 'P');
+      const name = stripQuotes(String(raw || '').trim());
+      const id = idOf(name, 'P');
       if (!declared.has(id)) {
         declared.add(id);
-        if (display) out.push('    participant ' + id + ' as ' + display.replace(/\s+/g, ' '));
+        // 名字被归一化（中文等）时补一个显示名，避免图上出现 n1 / P 这种占位
+        if (id !== name) out.push('    participant ' + id + ' as ' + name.replace(/\s+/g, ' '));
       }
       return id;
     };
@@ -390,10 +434,15 @@
       const pm = l.match(/^(participant|actor|boundary|control|entity|database|collections|queue)\s+(\S+)\s*(?:as\s+("[^"]*"|\S+))?\s*$/i);
       if (pm) {
         const kind = /^actor$/i.test(pm[1]) ? 'actor' : 'participant';
-        const id = mid(pm[2], 'P');
+        const rawName = stripQuotes(pm[2]);
         const alias = pm[3] ? stripQuotes(pm[3]) : null;
+        // id 优先取显式别名（写成 ASCII 时最稳），显示名仍用原始名字 ——
+        // 这样 `participant "认证服务" as Auth` 得到 `participant Auth as 认证服务`，
+        // 而不是历史 bug 里的 `participant P as Auth`（图上会多出一个 P）。
+        const id = idOf(alias || rawName, 'P');
         declared.add(id);
-        out.push('    ' + kind + ' ' + id + (alias ? ' as ' + alias : ''));
+        const label = alias ? rawName : (id !== rawName ? rawName : null);
+        out.push('    ' + kind + ' ' + id + (label ? ' as ' + label : ''));
         continue;
       }
 
@@ -527,6 +576,10 @@
         }
         continue;
       }
+      // 并发分支（fork / split）与 repeat 循环本地无法表达：宁可**整体交回调用方**
+      // （保留原始代码块 + 提示"活动图 fork/split 并发分支"），也不要"忽略后画成顺序图"——
+      // 那会让人误信渲染成功，而并发语义已经丢了。
+      if (/^(fork|split|repeat|end\s*(fork|split|merge))\b/i.test(l)) return null;
       if (SKIP.test(l)) continue;
 
       if (/^start$/i.test(l)) {
@@ -636,6 +689,7 @@
     const lines = stripPlantumlDecorations(src).split('\n');
     const out = ['flowchart LR'];
     const declared = new Set();
+    const idOf = makeIdAllocator();   // 中文组件/包名不再塌成同一个 id
     const ARROW_AT = /(\s*)(<-{1,2}|-{1,2}\|?>|\.{2}>|-{1,2}>|o-{1,2}|<\|-{1,2}|\*--|--|\.\.)(\s*)/;
 
     const tokenOf = (raw) => {
@@ -644,7 +698,7 @@
       if (/^\(.*\)$/.test(s)) { shape = 'usecase'; s = s.slice(1, -1).trim(); }
       else if (/^\[.*\]$/.test(s)) { shape = 'component'; s = s.slice(1, -1).trim(); }
       s = stripQuotes(s);
-      return { id: mid(s, 'C'), shape: shape, label: s };
+      return { id: idOf(s, 'C'), shape: shape, label: s };
     };
     const declare = (t) => {
       if (declared.has(t.id)) return;
@@ -663,14 +717,22 @@
       if (am) {
         const t = tokenOf(am[1]);
         t.shape = 'actor';
-        if (am[2]) t.label = stripQuotes(am[2]);
+        // `actor 质量工程师 as QE`：别名当 id、中文名当显示名。
+        // 历史 bug：把别名写进 label，而箭头里的 QE 又被当成另一个节点 → 图上出现两个 QE。
+        if (am[2]) t.id = idOf(stripQuotes(am[2]), 'C');
         declare(t);
         continue;
       }
-      const pm = l.match(/^(package|node|folder|frame|cloud|database)\s+("[^"]*"|\S+)\s*\{/i);
+      // 容器声明（带 {）→ subgraph；同一关键字不带 { 时（如 `database 缓存 as Cache`）
+      // 当普通节点处理，避免"这句被忽略、中文名只能靠箭头顺手创建而丢失"
+      const pm = l.match(/^(package|node|folder|frame|cloud|database)\s+("[^"]*"|\S+)(?:\s+as\s+("[^"]*"|\S+))?\s*(\{)?/i);
       if (pm) {
         const title = stripQuotes(pm[2]);
-        out.push('    subgraph ' + mid(title, 'G') + '[' + mq(title) + ']');
+        if (pm[4]) {
+          out.push('    subgraph ' + idOf(title, 'G') + '[' + mq(title) + ']');
+          continue;
+        }
+        declare({ id: pm[3] ? idOf(stripQuotes(pm[3]), 'C') : idOf(title, 'C'), shape: 'component', label: title });
         continue;
       }
       if (/^\}/.test(l)) { out.push('    end'); continue; }
@@ -679,7 +741,20 @@
       if (dm) {
         const t = tokenOf(dm[2]);
         if (/^usecase$/i.test(dm[1])) t.shape = 'usecase';
-        if (dm[3]) t.label = stripQuotes(dm[3]);
+        // 同上：别名当 id，引号里的名字当显示名（否则箭头里的别名会变成第二个节点）
+        if (dm[3]) t.id = idOf(stripQuotes(dm[3]), 'C');
+        declare(t);
+        continue;
+      }
+
+      // 裸声明行：`[采集服务]` / `[采集服务] as Collector` / `(录入检验结果) as UC1`
+      // （历史行为：这类行被直接忽略 → 节点只能靠箭头被"顺手创建"，中文标签全丢）
+      // 括号里**不得再出现括号**，且 `[...]`/`(...)` 之后只允许空格或 `as 别名` ——
+      // 否则 `[Web] --> [API]` 这种带箭头的行会被整行吞掉（既有测试正是这么逮住的）
+      const bm = l.match(/^([\[\(][^\[\]\(\)]*[\]\)])\s*(?:as\s+("[^"]*"|\S+))?\s*$/);
+      if (bm) {
+        const t = tokenOf(bm[1]);
+        if (bm[2]) t.id = idOf(stripQuotes(bm[2]), 'C');   // 别名当 id：箭头里的引用更稳
         declare(t);
         continue;
       }
@@ -997,7 +1072,16 @@
     const nodes = new Map();
     const events = [];
     let direction = 'LR';
-    const idOf = (s) => mid(stripQuotes(String(s).trim()), 'N');
+    // 名称 → 唯一 id；labelOf 保留原始名字，供"没有显式 label"的节点当默认标签
+    // （否则中文节点在图上会显示成 n1）。
+    const allocId = makeIdAllocator();
+    const labelOf = new Map();
+    const idOf = (s) => {
+      const raw = stripQuotes(String(s).trim());
+      const id = allocId(raw, 'N');
+      if (!labelOf.has(id)) labelOf.set(id, raw);
+      return id;
+    };
 
     const parse = (lines, prefix) => {
       let i = 0;
@@ -1036,13 +1120,16 @@
         // 属性行：key.shape / key.label / key.style.*
         const pm = l.match(/^("[^"]*"|[\w.$-]+)\.([\w.]+)\s*:\s*(.+)$/);
         if (pm) {
-          const id = idOf(pm[1]);
           const prop = pm[2].toLowerCase();
           const val = stripQuotes(pm[3]);
-          const n = nodes.get(id) || {};
-          if (prop === 'shape') n.shape = val;
-          else if (prop === 'label') n.label = val;
-          nodes.set(id, n);
+          // 只认 shape / label；style.* / class / icon / markdown 等表现层属性**整行忽略** ——
+          // 否则会凭空建出一个名叫 `style` 的幽灵节点（历史 bug）。
+          if (prop === 'shape' || prop === 'label') {
+            const id = idOf(pm[1]);
+            const n = nodes.get(id) || {};
+            if (prop === 'shape') n.shape = val; else n.label = val;
+            nodes.set(id, n);
+          }
           continue;
         }
 
@@ -1089,7 +1176,8 @@
       if (emitted.has(id)) return;
       emitted.add(id);
       const n = nodes.get(id) || {};
-      out.push('    ' + id + d2ShapeWrap(id, n.label, n.shape));
+      // 显式 .label 优先；否则用原始名称（中文节点不再显示成 n1）
+      out.push('    ' + id + d2ShapeWrap(id, n.label || labelOf.get(id), n.shape));
     };
     for (const ev of events) {
       if (ev.t === 'open') out.push('    subgraph ' + ev.name + '[' + mq(ev.title) + ']');
@@ -1823,6 +1911,12 @@
         .replace(/\\end\{tikzpicture\}/g, ''),
     );
     if (!/\\/.test(text)) return null;
+
+    // 弧线 / 贝塞尔 / to[…] 目前解析不了。历史行为是"直接忽略并照常输出" —— 得到的是一张
+    // **少了几段却看起来正常**的图，比失败更危险（会被误信为渲染成功）。这里改为交回调用方：
+    // 保留原始代码块，并由渲染层给出"检测到未支持语法 弧线 / 贝塞尔曲线 / to[…]"的提示。
+    if (/\barc\s*[\(\[]/.test(raw) || /\.\.\s*controls\b/.test(raw) ||
+        /\bto\s*\[/.test(raw) || /\]\s*to\s*\[/.test(raw)) return null;
 
     let globalScale = 1;
     let globalDomain = null;

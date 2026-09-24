@@ -284,6 +284,63 @@ test('d2: 基本关系与标签', () => {
   assert.match(out, /b --> c/);
 });
 
+/* -------- 中文名称 / 路由 / 静默降级 的回归（2026-09-24 由《渲染验证-全功能与边界.md》暴露） -------- */
+
+test('plantuml 类图：中文类名各自独立成类（不再全塌成同一个 id）', () => {
+  const out = D.plantumlToMermaid('@startuml\nclass 形状\nclass 圆形\nclass 方形\n形状 <|-- 圆形\n形状 <|-- 方形\n@enduml');
+  assert.ok(out.startsWith('classDiagram'), '实际: ' + String(out).split('\n')[0]);
+  const ids = (out.match(/^ {4}class (\S+)/gm) || []).map((s) => s.trim().split(' ')[1]);
+  assert.strictEqual(new Set(ids).size, ids.length, '每个类应有不同 id，实际: ' + ids.join(','));
+  assert.ok(/\["形状"\]/.test(out), '应保留中文显示名');
+  assert.strictEqual((out.match(/<\|--/g) || []).length, 2, '两条继承关系都要在');
+});
+
+test('plantuml 时序图：`participant "X" as Y` 得到 `participant Y as X`（不再多出一个 P）', () => {
+  const out = D.plantumlToMermaid('@startuml\nparticipant "认证服务" as Auth\nAlice -> Auth: 登录\n@enduml');
+  assert.match(out, /participant Auth as 认证服务/);
+  assert.ok(!/\bparticipant P\b/.test(out), '不应出现占位参与者 P');
+});
+
+test('plantuml 时序图：autonumber 透传给 Mermaid（可用，不是降级）', () => {
+  const out = D.plantumlToMermaid('@startuml\nautonumber\nparticipant 客户 as C\nC -> C: 咨询\n@enduml');
+  assert.ok(out.startsWith('sequenceDiagram'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /^ {4}autonumber$/m);
+});
+
+test('plantuml 用例图：含 actor 时不得被判成时序图', () => {
+  const out = D.plantumlToMermaid('@startuml\nactor 质量工程师 as QE\nusecase "生成周报" as UC\nQE --> UC\n@enduml');
+  assert.ok(out.startsWith('flowchart LR'), '应判为组件/用例图，实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /QE\(\( "质量工程师" \)\)/);
+  assert.match(out, /UC\(\["生成周报"\]\)/);
+});
+
+test('plantuml 活动图：fork / split 并发分支 → null（保留原块 + 提示，不画成顺序图）', () => {
+  const src = '@startuml\nstart\nfork\n  :分支 A;\nfork again\n  :分支 B;\nend fork\nstop\n@enduml';
+  assert.strictEqual(D.plantumlToMermaid(src), null);
+  assert.ok(D.unsupportedHints('plantuml', src).some((h) => /fork/.test(h)), '提示里应指出 fork/split');
+});
+
+test('d2：中文节点各自独立且带原标签（不再全成 N 自环）', () => {
+  const out = D.d2ToMermaid('客户 -> 网关: HTTPS\n网关 -> 数据库');
+  assert.match(out, /\["客户"\]/);
+  assert.match(out, /\["网关"\]/);
+  assert.match(out, /\|HTTPS\|/, '边标签应在');
+  assert.ok(!/N\["N"\]/.test(out), '不应出现 N["N"] 这种塌陷结果');
+});
+
+test('d2：style.* 等表现层属性被忽略，不产生幽灵节点', () => {
+  const out = D.d2ToMermaid('style.fill: "#ffd27f"\n甲 -> 乙');
+  assert.ok(!/style/.test(out), '不应出现叫 style 的节点，实际:\n' + out);
+  assert.match(out, /\["甲"\]/);
+});
+
+test('tikz：弧线 / 贝塞尔 / to[…] → null（不画出一张"少了几段却看起来正常"的图）', () => {
+  assert.strictEqual(D.tikzToSvg('\\draw (0,0) arc (0:90:1);', { width: 700 }), null);
+  assert.strictEqual(D.tikzToSvg('\\draw (0,0) .. controls (1,1) .. (2,0);', { width: 700 }), null);
+  assert.strictEqual(D.tikzToSvg('\\draw (0,0) to [bend left] (1,1);', { width: 700 }), null);
+  assert.ok(D.tikzToSvg('\\draw (0,0) -- (1,1);', { width: 700 }), '普通折线仍要能画');
+});
+
 test('d2: shape 与 direction', () => {
   const out = D.d2ToMermaid('direction: down\na.shape: circle\na -> b');
   assert.ok(out.startsWith('flowchart TB'), 'down 应映射为 TB');
