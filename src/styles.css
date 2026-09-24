@@ -4928,10 +4928,6 @@ select option {
 .shortcuts-list {
   padding: 0 0 8px;
 }
-.settings-group:last-child {
-  margin-bottom: 0;
-}
-
 .shortcut-group {
   margin-bottom: 4px;
 }

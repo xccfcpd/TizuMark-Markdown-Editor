@@ -137,6 +137,14 @@ test('Graphviz：DOT 的 HTML 串 << … >> 原样透传（内部中文不能被
   assert.ok(!/"标题"/.test(out), '不应给 HTML 串内的中文加引号，实际:\n' + out);
 });
 
+test('Graphviz：注释里的孤立 < 不能让后续中文名失去自动引号（跨行 HTML 态的回归）', () => {
+  // 复核审计发现：早先的实现"见到 < 就进 HTML 串模式"，注释里一个配不平的 '<'
+  // 会把整篇后续行都吞掉 → 中文节点名不再补引号，Graphviz 报语法错误。
+  const out = DR.quoteDotIds('digraph G {\n  // 温度 < 阈值\n  来料 -> 检验\n}');
+  assert.match(out, /"来料" -> "检验"/, '注释里的 < 不应影响后续自动引号，实际:\n' + out);
+  assert.ok(/"温度"/.test(out) === false, '注释内容不应被加引号');
+});
+
 test('WaveDrom：assign 写成裸字符串时给可读中文提示（而非引擎的 read only 报错）', () => {
   const saved = global.wavedrom;
   global.wavedrom = { waveSkin: {}, renderWaveElement() {} };

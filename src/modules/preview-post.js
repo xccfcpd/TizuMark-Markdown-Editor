@@ -34,10 +34,11 @@ const EMOJI_MAP = {
 
 function processEmojiShortcodes(preview) {
   const emojiMap = EMOJI_MAP;
-  // 注意 skipTags 里的 'svg'：主题/滚动重渲染时，命中缓存的 mermaid 图在**同步阶段**就已经
-  // 是 <svg>（不是 <pre><code>），若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，
-  // 造成"同一份源码第一次正常、第二次被改坏"（审计发现，2026-09-24）。
-  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA', 'A', 'svg', 'SVG'];
+  // 主题/滚动重渲染时，命中缓存的图表在**同步阶段**就已经是 <svg>（不是 <pre><code>），
+  // 若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，造成"同一份源码第一次正常、
+  // 第二次被改坏"（审计发现，2026-09-24）。但**只跳过引擎容器里的 SVG**：正文里用户手写的
+  // 内联 <svg> 仍应正常处理（审计复核发现）。
+  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA', 'A'];
   const walker = document.createTreeWalker(
     preview,
     NodeFilter.SHOW_TEXT,
@@ -46,6 +47,9 @@ function processEmojiShortcodes(preview) {
         let p = node.parentElement;
         while (p) {
           if (skipTags.includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+          if (p.tagName === 'svg' && p.closest && p.closest('.mermaid-container, .diagram-container')) {
+            return NodeFilter.FILTER_REJECT;
+          }
           if (p.classList && p.classList.contains('katex')) return NodeFilter.FILTER_REJECT;
           p = p.parentElement;
         }
@@ -155,10 +159,10 @@ function processMath(preview) {
   try {
     // 先把不成对的 $ / $$ 包进 <span class="katex-ignore">，让 KaTeX 跳过、原样显示 $，
     // 避免孤 $ 跨段配对吞掉正文/表格。
-    // 'svg'：命中缓存的图表在**同步阶段**就已经是 <svg>（不再包在 <pre><code> 里），
-    // KaTeX 若进去插节点会破坏 SVG 结构（同一份源码第一次正常、第二次被改坏 —— 审计发现）。
-    // 注：SVG 元素的 tagName 保持小写（HTML 元素才大写），两种都列上更稳。
-    const skipTags = ['CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'svg', 'SVG'];
+    // 命中缓存的图表在**同步阶段**就已经是 <svg>（不再包在 <pre><code> 里），KaTeX 若进去插
+    // 节点会破坏 SVG 结构（同一份源码第一次正常、第二次被改坏 —— 审计发现）。只跳过
+    // **引擎容器**里的 SVG，正文手写 <svg> 不受影响（审计复核发现）。
+    const skipTags = ['CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA'];
     const walker = document.createTreeWalker(
       preview,
       NodeFilter.SHOW_TEXT,
@@ -167,6 +171,9 @@ function processMath(preview) {
           let p = node.parentElement;
           while (p) {
             if (skipTags.includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+            if (p.tagName === 'svg' && p.closest && p.closest('.mermaid-container, .diagram-container')) {
+              return NodeFilter.FILTER_REJECT;
+            }
             if (p.classList && p.classList.contains('katex')) return NodeFilter.FILTER_REJECT;
             p = p.parentElement;
           }
@@ -265,8 +272,8 @@ function processAbbreviations(preview, opts) {
 
     abbrs.sort((a, b) => b[0].length - a[0].length);
 
-    // 'svg'：同 processMath —— 不往已渲染的图表 SVG 里插 <abbr>
-    const skipTags = ['CODE', 'PRE', 'svg', 'SVG'];
+    // 同 processMath：只跳过引擎容器里的 SVG，不往已渲染的图表里插 <abbr>
+    const skipTags = ['CODE', 'PRE'];
     const walker = document.createTreeWalker(
       preview,
       NodeFilter.SHOW_TEXT,
@@ -275,6 +282,9 @@ function processAbbreviations(preview, opts) {
           let p = node.parentElement;
           while (p) {
             if (skipTags.includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+            if (p.tagName === 'svg' && p.closest && p.closest('.mermaid-container, .diagram-container')) {
+              return NodeFilter.FILTER_REJECT;
+            }
             if (p.classList && p.classList.contains('katex')) return NodeFilter.FILTER_REJECT;
             p = p.parentElement;
           }

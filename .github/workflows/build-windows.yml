@@ -20,9 +20,10 @@ name: Build Windows
 
 on:
   push:
-    # 功能分支推送即出包（想省额度可去掉 branches，只用 tag 触发）
-    branches:
-      - feat-diagram-engines
+    # 功能分支推送即出包（想省额度可去掉 branches，只用 tag 触发）。
+    # 分支列表必须与 ci.yml 对齐：漏加工作分支会导致往它上面推送时**不产出安装包**，
+    # 且没有任何提示（审计发现，2026-09-24）。
+    branches: [master, main, copied-master, feat-diagram-engines, feat-updater-off, more-function]
     tags:
       - 'v*'
       - 'build-win-*'

@@ -67,7 +67,15 @@ function uploadFile(releaseId, filePath) {
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(data); } });
+      res.on('end', () => {
+        // 校验 HTTP 状态码：Gitee 返回 4xx/5xx 时同样会走到 end，旧实现照样 resolve，
+        // 于是脚本打印 "Uploaded" 且 exit 0 —— Release 缺包却无人察觉（审计发现，2026-09-24）。
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error('HTTP ' + res.statusCode + '：' + String(data).slice(0, 200)));
+          return;
+        }
+        try { resolve(JSON.parse(data)); } catch { resolve(data); }
+      });
     });
     req.on('error', reject);
     req.write(body);
@@ -87,10 +95,18 @@ function uploadFile(releaseId, filePath) {
     path.join(releaseDir, `TizuMark_${VERSION}_x64.exe`),
     path.join(releaseDir, 'update-windows-x86_64.json'),
   ];
+  let failed = 0;
   for (const f of files) {
-    if (!fs.existsSync(f)) { console.error('MISSING FILE: ' + f); continue; }
-    await uploadFile(release.id, f);
-    console.log('Uploaded: ' + path.basename(f));
+    if (!fs.existsSync(f)) { console.error('MISSING FILE: ' + f); failed++; continue; }
+    try {
+      await uploadFile(release.id, f);
+      console.log('Uploaded: ' + path.basename(f));
+    } catch (e) {
+      console.error('UPLOAD FAILED: ' + path.basename(f) + ' —— ' + e.message);
+      failed++;
+    }
   }
+  // 任一附件缺失/失败都以非零退出：否则 CI 会认为发布成功（审计发现，2026-09-24）
+  if (failed) { console.error('有 ' + failed + ' 个附件未成功上传'); process.exitCode = 1; }
   console.log('All done!');
 })().catch(e => { console.error('FAILED:', e.message); process.exit(1); });

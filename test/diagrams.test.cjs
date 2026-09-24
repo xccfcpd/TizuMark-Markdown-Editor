@@ -375,6 +375,27 @@ test('plantuml 时序图：return 映射为反向回复箭头（不再整行丢�
   assert.match(out, /B-->>A: 结果/, '实际:\n' + out);
 });
 
+test('plantuml 状态图：带空格的引号状态名仍要给出合法 id（不能直出 `state In Progress`）', () => {
+  // 复核审计发现：sid() 为放行 CJK 而"不匹配就原样返回"，把空格也放了过去 → 非法 Mermaid。
+  const out = D.plantumlToMermaid('@startuml\nstate "In Progress" {\n  [*] --> Active\n  Active --> [*]\n}\n@enduml');
+  assert.ok(out.startsWith('stateDiagram-v2'));
+  assert.ok(!/state In Progress/.test(out), '不得输出含空格的裸 id，实际:\n' + out);
+});
+
+test('plantuml 时序图：`returns -> Alice` 不是 return 语句（词边界回归）', () => {
+  // 复核审计发现：/^return\s*/ 会把任何以 return 开头的标识符当返回语句，整条消息被吞。
+  const out = D.plantumlToMermaid('@startuml\nAlice -> Bob : hi\nreturns -> Alice : hi\n@enduml');
+  assert.ok(out.startsWith('sequenceDiagram'));
+  assert.match(out, /returns/, '以 return 开头的参与者名不应被当作 return 语句，实际:\n' + out);
+});
+
+test('tikz：标签文本里的 to[ / arc( 不应让整张图被判为不支持（复核回归）', () => {
+  const ok = D.tikzToSvg('\\begin{tikzpicture}\n\\node at (0,0) {go to [home]};\n\\draw (0,0) -- (1,1);\n\\end{tikzpicture}', { width: 700 });
+  assert.ok(ok, '标签文本里的 to [ 不应导致整体放弃，实际: ' + String(ok).slice(0, 40));
+  // 真正的弧线仍要拒绝
+  assert.strictEqual(D.tikzToSvg('\\begin{tikzpicture}\n\\draw (0,0) arc (0:90:1);\n\\end{tikzpicture}', { width: 700 }), null);
+});
+
 test('tikz：grid / \\path 与 arc 同口径 → null + 提示（不再静默少画几段）', () => {
   assert.strictEqual(D.tikzToSvg('\\draw (0,0) grid (3,3);', { width: 700 }), null);
   assert.strictEqual(D.tikzToSvg('\\path[draw] (0,0) -- (1,1);', { width: 700 }), null);

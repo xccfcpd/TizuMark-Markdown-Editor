@@ -2417,25 +2417,25 @@
           const url = URL.createObjectURL(blob);
           this._imageURLCache.set(dataUri, url);
           // 容量上限：超限 revoke 最旧 Blob URL，防止长会话多图内存持续增长（历史 bug：只增不减）
+          // 超限时向前找**第一条未被引用的**淘汰；**必须**确认该 Blob URL 不在文档中被
+          // <img> 引用 —— 撤销在用 URL 会让正在显示的图片当场裂开（image-processor 早有
+          // blobUrlInUse 护栏，这条热路径漏了同款判断）。
+          // 注意：不能"只看最旧一条，在用就挪到队尾"——那样每次插入净增 1 条，缓存永不回落
+          //（审计复核发现）。这里最多扫描 32 条，找到可淘汰的就停，避免 O(n²) 且保证有上界。
           if (this._imageURLCache.size > this._imageURLCacheMax) {
-            const oldestKey = this._imageURLCache.keys().next().value;
-            const oldestUrl = this._imageURLCache.get(oldestKey);
-            // 淘汰前必须确认该 Blob URL **已不在文档中被 <img> 引用**：撤销在用 URL 会让正在
-            // 显示的图片当场裂开（image-processor 早有 blobUrlInUse 护栏，这条热路径漏了同款判断
-            // —— 内联 base64 图片较多的大文档滚一滚就会掉图，审计发现，2026-09-24）。
-            let inUse = false;
-            try {
-              inUse = !!(typeof document !== 'undefined' && document.querySelector('img[src="' + oldestUrl + '"]'));
-            } catch (_e) { inUse = false; }
-            if (inUse) {
-              // 还在显示：放到队尾延后淘汰（宁可暂时超出上限，也不能撤销在用 URL）
-              this._imageURLCache.delete(oldestKey);
-              this._imageURLCache.set(oldestKey, oldestUrl);
-            } else {
-              this._imageURLCache.delete(oldestKey);
-              if (typeof URL !== 'undefined' && URL.revokeObjectURL) {
-                URL.revokeObjectURL(oldestUrl);
-              }
+            const keys = Array.from(this._imageURLCache.keys());
+            let scans = 0;
+            for (const k of keys) {
+              if (this._imageURLCache.size <= this._imageURLCacheMax) break;
+              if (++scans > 32) break;
+              const u = this._imageURLCache.get(k);
+              let inUse = false;
+              try {
+                inUse = !!(typeof document !== 'undefined' && document.querySelector('img[src="' + u + '"]'));
+              } catch (_e) { inUse = false; }
+              if (inUse) continue;                    // 在用：跳过，继续找下一条
+              this._imageURLCache.delete(k);
+              if (typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(u);
             }
           }
           return url;

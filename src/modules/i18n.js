@@ -183,7 +183,8 @@
         if (applyBtn && !applyBtn.classList.contains('is-loading')) applyBtn.textContent = t('apply');
         const saveBtn = document.getElementById('settings-save-btn');
         if (saveBtn && !saveBtn.classList.contains('is-loading')) saveBtn.textContent = t('save');
-        document.getElementById('settings-close-x').setAttribute('aria-label', t('cancel'));
+        const settingsCloseX = document.getElementById('settings-close-x');
+        if (settingsCloseX) settingsCloseX.setAttribute('aria-label', t('cancel'));
         setText('confirm-dialog-confirm', t('confirm'));
         setText('confirm-dialog-cancel', t('cancel'));
         // 配色方案自绘下拉：随语言刷新选项文案（optionsProvider 依赖注入 t）

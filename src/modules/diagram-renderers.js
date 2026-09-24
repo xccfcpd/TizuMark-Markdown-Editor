@@ -211,34 +211,50 @@ function extractDotEngine(code) {
 // 边操作符（-- / ->）与属性（shape=box、width=0.5）都不受影响。
 function quoteDotIds(src) {
   const TOKEN = /[A-Za-z0-9_.\u00A0-\uFFFF]/;
-  let htmlBlock = false;   // DOT 的 HTML 串 `<< … >>` 可跨行
+  let htmlDepth = 0;   // DOT 的 HTML 串 `<< … >>` / `< … >` 可跨行，用尖括号配平深度跟踪
+  let blockComment = false;   // 跨行 `/* … */` 注释
   return String(src == null ? '' : src).split('\n').map((line) => {
-    if (htmlBlock) {
-      // 处在跨行的 HTML 串里：整行原样透传，直到遇到收尾的 `>>`
-      const close = line.indexOf('>>');
-      if (close >= 0) { htmlBlock = false; return line; }
-      return line;
+    // 注释原样保留：① 注释里的中文不该被"补引号"（对 Graphviz 无意义，还会让人以为图里多了引号）；
+    // ② 注释里配不平的 `<` 绝不能让后续行进入 HTML 串模式（审计复核发现）。
+    if (htmlDepth === 0) {
+      if (blockComment) {
+        if (line.indexOf('*/') >= 0) blockComment = false;
+        return line;
+      }
+      if (/^\s*(\/\/|#)/.test(line)) return line;
+      const open = line.indexOf('/*');
+      if (open >= 0 && line.indexOf('*/', open + 2) < 0) { blockComment = true; return line; }
     }
     let out = '';
     let i = 0;
     let quoted = false;
     while (i < line.length) {
       const c = line[i];
+      // 仍处在跨行的 HTML 串里：整段原样透传，直到尖括号配平归零
+      if (htmlDepth > 0) {
+        if (c === '<') htmlDepth++;
+        else if (c === '>') htmlDepth--;
+        out += c;
+        i++;
+        continue;
+      }
       if (quoted) { out += c; if (c === '\\') { out += line[i + 1] || ''; i += 2; continue; } if (c === '"') quoted = false; i++; continue; }
       if (c === '"') { quoted = true; out += c; i++; continue; }
-      // DOT 的 HTML 串：`<< … >>` 或 `< … >`，内部可含成对标签（`<B>…</B>`、`<br/>`）。
-      // 不能"一遇到 > 就结束"：那样 `label=<<B>标题</B>>` 里的中文会被当普通 token 加引号，
-      // 图里多出一对引号（审计发现）。这里用尖括号**配平深度**判断串尾。
-      if (c === '<') {
-        let depth = 0;
-        let j = i;
-        while (j < line.length) {
+      // DOT 的 HTML 串：`<< … >>` / `< … >`，内部可含成对标签（`<B>…</B>`、`<br/>`）。
+      // 不能"一遇到 > 就结束"：那样 `label=<<B>标题</B>>` 里的大写中文会被当普通 token 加引号。
+      // 但**也不能见到 `<` 就进串**：注释里的孤立 `<`（`// 温度 < 阈值`）会把整篇后续行
+      // 都吞成"HTML 串"，中文节点名从此不再补引号（审计复核发现）。故只在**属性值位置**
+      // （`label=` / `xlabel=` 等 `=` 之后）才进串。
+      if (c === '<' && /=\s*$/.test(out)) {
+        let depth = 1;
+        let j = i + 1;
+        while (j < line.length && depth > 0) {
           if (line[j] === '<') depth++;
-          else if (line[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+          else if (line[j] === '>') depth--;
           j++;
         }
-        if (depth !== 0) { htmlBlock = true; out += line.slice(i); break; }   // 跨行 HTML 串
         out += line.slice(i, j);
+        htmlDepth = depth;    // > 0 表示该串还没结束（跨行）
         i = j;
         continue;
       }

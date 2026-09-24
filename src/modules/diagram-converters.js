@@ -445,7 +445,7 @@
       }
       // `return <msg>`：PlantUML 的"返回调用者"。本地不维护调用栈，按**上一条消息反向**
       // 处理（覆盖绝大多数写法）——比原来整行丢弃更接近原意（审计发现 return 在 SKIP 里）。
-      const retM = l.match(/^return\s*([\s\S]*)$/i);
+      const retM = l.match(/^return\b\s*([\s\S]*)$/i);
       if (retM) {
         const text = (retM[1] || '').trim();
         if (lastFrom && lastTo) {
@@ -529,7 +529,10 @@
     // 否则 mid('空闲','S') 会把所有中文状态塌成同一个 'S'（幽灵状态，审计发现，2026-09-24）。
     const sid = (raw) => {
       const s = stripQuotes(String(raw == null ? '' : raw).trim());
-      return /^[\w."\-\[\]*]+$/.test(s) ? mid(s, 'S') : s;
+      // 无空白且无非法字符（含 CJK）→ 原样保留作 id；含空白等（`state "In Progress"`）
+      // 仍交给 mid() 归一，否则会输出 `state In Progress {` 这种非法 Mermaid（审计复核发现）。
+      if (!/^[\w."\-\[\]*\u00A0-\uFFFF]+$/.test(s) || /\s/.test(s)) return mid(s, 'S');
+      return s;
     };
     let inBlock = 0;
     for (const raw of lines) {
@@ -1197,7 +1200,10 @@
         // 单节点：key: label
         // 但**已知的 D2 图级属性**要先排除，否则 `grid-columns: 2` 会凭空建出一个
         // 名叫 grid-columns 的幽灵节点（审计发现，2026-09-24）。
-        const GRAPH_ATTR = /^(grid(-\w+)?|direction|label|near|icon|class|classes|layers|scenario|vars|shape|style(-\w+)?)$/i;
+        // 只排除**确实只可能是图级配置**的两个键。收窄过一次：早先还排除了
+        // label/shape/style/class/…，但 `shape: 入口` 这种"节点名恰好叫 shape"会被误吞
+        //（审计复核发现）—— D2 里 `key: value` 绝大多数是节点声明，宁多建节点不可丢节点。
+        const GRAPH_ATTR = /^(grid(-\w+)?|direction)$/i;
         const sm = l.match(/^("[^"]*"|[\w.$-]+)\s*:\s*([\s\S]+)$/);
         if (sm && GRAPH_ATTR.test(stripQuotes(sm[1]))) continue;
         if (sm) {
@@ -1962,8 +1968,11 @@
     // 弧线 / 贝塞尔 / to[…] 目前解析不了。历史行为是"直接忽略并照常输出" —— 得到的是一张
     // **少了几段却看起来正常**的图，比失败更危险（会被误信为渲染成功）。这里改为交回调用方：
     // 保留原始代码块，并由渲染层给出"检测到未支持语法 弧线 / 贝塞尔曲线 / to[…]"的提示。
-    if (/\barc\s*[\(\[]/.test(raw) || /\.\.\s*controls\b/.test(raw) ||
-        /\bto\s*\[/.test(raw) || /\]\s*to\s*\[/.test(raw)) return null;
+    // 判定前先**剥离 {…} 文本节点**：`\node {go to [home]}` 这类标签文本会命中 `to [`，
+    // 让本可正常渲染的图被整体放弃（审计复核发现）。剥成 `{}` 即可，位置信息不影响这些判定。
+    const noText = raw.replace(/\{[^{}]*\}/g, '{}');
+    if (/\barc\s*[\(\[]/.test(noText) || /\.\.\s*controls\b/.test(noText) ||
+        /\bto\s*\[/.test(noText) || /\]\s*to\s*\[/.test(noText)) return null;
 
     let globalScale = 1;
     let globalDomain = null;

@@ -237,6 +237,9 @@ function main() {
     }
     if (!hasPuppeteer) {
       console.log(`⚠ 跳过 ${browserFiles.length} 个浏览器测试（环境缺少 puppeteer-core / 系统 Chrome；属本地范式）。\n`);
+      // 显式提示覆盖缺口（审计发现，2026-09-24）：CI（ubuntu）恒定缺该环境，于是这批用例
+      // 永远不跑且没有任何汇总痕迹 —— 涉及浏览器行为的回归只能在本地被发现。
+      if (process.env.CI) console.log('⚠ 注意：CI 环境同样缺少该依赖，这批浏览器用例不会执行（已知测试缺口）。\n');
       browserFiles.length = 0;
     }
   }

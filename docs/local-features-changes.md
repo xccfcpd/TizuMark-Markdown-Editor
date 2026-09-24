@@ -877,6 +877,58 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
 | 路径迁移（另存为 / 重命名 / 粘贴）未同步「最近文件」与标签名 | 需一处统一的路径迁移辅助函数 |
 | `layout.js` / `slash.js` 若干硬编码中文未走 `t()` | 纯文案补齐，可与其他文案一起做 |
 
+### 2.23 第四轮审计：自动化结构体检 + Rust/CI 面 + **自查上两轮新代码**（2026-09-24）
+
+这一轮换了打法，三件事并行：
+
+1. **结构化体检脚本**（一次性，查完即删）：JS 里引用的 id ↔ HTML/JS 定义的 id、`index.html` 的本地资源、
+   `t('key')` ↔ 词典键、CSS 变量使用/定义、类名使用/样式定义。结果：
+   - **i18n：用到 195 个键，词典缺 0 个** ✅（496/497 中英键对齐，唯一差异是既有的 `failedGuideEn` 孤儿）
+   - **id：6 处命中，5 处是拼接前缀误报**（`update-state-` + state 等）；**1 处真问题**：`find.js:697`
+     读 `#cs-loop` 复选框，但 `index.html` 里没有该 id → "循环查找"永远读不到用户勾选（历史遗留，
+     控件已不在，读取分支成为死代码；**未改**：属功能取舍，见下方"未改清单"）
+   - 资源：40 处"缺失"全在 `src/lib/`（vendor 由 `ensure-vendor`/`build:renderer` 生成，属正常）✅
+   - CSS 变量：13 个"使用但从未定义"，但**全部都有回退值** ✅（无回退的那处已在 §2.22 修掉）
+   - 类名：18 个"用了但样式表没有"，逐个核对后**均非问题**（`.fmt-menu`/`context-submenu-trigger` 等是
+     JS 行为标记；`.hint-text` 的父级 `.form-hint` 才有样式；`.katex-mathml` 是 KaTeX 自带）
+2. **Rust 后端 + 构建/发布脚本 + CI 审计**（此前从未覆盖）。
+3. **自查上两轮的新代码**——结果确实抓到 **10 处自己引入的问题**，全部已修：
+
+| # | 我引入的问题（复核发现） | 修法 |
+|---|---|---|
+| 1 | `quoteDotIds()` 的跨行 HTML 态被**注释里的孤立 `<`** 点亮 → 之后所有中文节点名不再补引号（正是该函数要解决的事） | 只在**属性值位置**（`=` 之后）进入 HTML 串；改用尖括号**配平深度**跨行；注释行（`//` / `#` / `/* */`）整行原样保留 |
+| 2 | `getCachedImageURL` 的"在用则不淘汰"只看最旧一条 → 每次插入净增 1 条，**缓存永不回落**（上限形同虚设） | 向前扫描（上限 32 条）找第一条未被引用的淘汰 |
+| 3 | 状态图 `sid()` 为放行 CJK 而"不匹配就原样返回"，把**空格**也放了过去 → `state In Progress {` 非法 Mermaid（旧实现反而正常） | 含空白/非法字符仍交 `mid()` 归一 |
+| 4 | `switchTab` 的 `_editorTab \|\| this.activeTab` 回退**恰好在自己声称修好的异步窗口内**把上一个文档的光标/滚动写进正在加载的标签 | 不回退：`_editorTab` 为空就跳过回写（内容由 change 处理器实时同步，不丢内容）；并校验标签仍在 `tabs` 里 |
+| 5 | `skipTags` 加 `svg` 后，**正文里用户手写的内联 SVG**（`<svg><text>:fire:</text></svg>`）不再被处理 | 收窄为只跳过**引擎容器**里的 SVG（`.mermaid-container*` / `.diagram-container*`） |
+| 6 | TikZ 的"未支持语法"启发式在**整份源码**上匹配，`\node {go to [home]}` 的标签文本会让整张图被放弃 | 判定前先剥离 `{…}` 文本节点 |
+| 7 | D2 图级属性黑名单含 `shape`/`label` 等 → `shape: 入口` 这类节点声明被吞 | 收窄到只可能是图级配置的 `grid-*` / `direction` |
+| 8 | 时序 `return` 正则缺词边界 → `returns -> Alice : hi` 被当 `return` 语句、整条消息丢失 | 改 `/^return\b/` |
+| 9 | CSS 删规则时漏了孤儿 `.settings-group:last-child` | 删除 |
+| 10 | i18n 守卫化漏了 `settings-close-x` 的 `setAttribute` | 补守卫 |
+
+**Rust / 脚本 / CI 侧（本轮修 4 项，其余报告）**
+
+| 修了 | 内容 |
+|---|---|
+| `src-tauri/src/lib.rs` | **全局搜索的大小写不敏感分支会 panic**：`to_lowercase()` 改变字节长度（`ẞ` 3 字节 → `ß` 2 字节），小写串里的字节偏移拿去切原串 → `byte index is not a char boundary`。加 char-boundary 回退（宁可列号略偏也不崩）。⚠ 本机**没有 cargo/rustc**，此改动只能由 CI 的 tag 打包编译验证 |
+| `scripts/release.js` | 附件上传**不看 HTTP 状态码** → Gitee 返回 4xx/5xx 也打印 "Uploaded" 且 exit 0（Release 缺包无人察觉）。改为校验 2xx + 失败计数 + `exitCode=1` |
+| `.github/workflows/build-windows.yml` | `branches` 只列了 `feat-diagram-engines`，与 `ci.yml` 已不同步 → 往工作分支推送**不产出安装包**且无提示。对齐为同一份分支列表 |
+| `scripts/run-tests.cjs` | CI 恒定缺 `puppeteer-core`，3 个浏览器用例永远静默跳过；在 CI 环境下额外打印一行显式提示（测试缺口可见化） |
+
+| 报告未改（Rust 侧，需在能编译的环境里做） | 原因 |
+|---|---|
+| `fetch_image_as_base64`：无超时、无大小上限、可读任意本地文件（SSRF/本地文件读取面） | 需要 `reqwest::Client` + 大小闸门 + 私网地址拒绝，改动需编译与联调 |
+| `read_file` 整文件多次入内存（1GB 文件峰值 ≈2GB） | 需要大小闸门与零拷贝解码 |
+| `write_file` 不保留 BOM/编码/换行且非原子写（无 temp+rename） | 与"CRLF/BOM 保留"同属行为约定变更，需前后端一起改 |
+| `save_image_to_assets` 的 `ext` 未白名单、`read_bundled_file` 的 `filename` 可穿越 | 需加校验 + 目录逃逸检查（改动小但同样需编译验证） |
+| 文件监视：自身写入也触发 `folder-changed`；`lock()` 中毒时静默不生效 | 需后端去抖 + 错误上抛 |
+| `safe_write_target` 黑名单按**子串**匹配 → 目录名叫 `windows` 就整目录不可写；canonicalize 回退丢一层路径 | 需按路径段匹配 + 修正回退逻辑 |
+| `updater:default` 权限与 `tauri-plugin-updater` 依赖和"已停用更新器"自相矛盾 | 需产品决策（要么彻底删、要么恢复），且契约测试锁了它 |
+
+> 另核实：`src-tauri/Cargo.lock` **已入库**（此前审计里"未提交 Cargo.lock"的结论有误），
+> 故 CI 缓存键不会因缺文件而恒定。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

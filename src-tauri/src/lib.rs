@@ -597,6 +597,15 @@ fn search_in_files_impl(
                     line.to_lowercase().find(&pattern_lower)
                 };
                 if let Some(bc) = byte_col {
+                    // `to_lowercase()` 会改变字节长度（如 'ẞ' 3 字节 → 'ß' 2 字节、'İ' → 'i̇'），
+                    // 于是小写串里的字节偏移 bc 可能**不落在原串的 char 边界**上，直接
+                    // `line[..bc]` 会 panic（byte index is not a char boundary），轻则该命令报错、
+                    // 重则进程退出（审计发现，2026-09-24）。向前退到最近的安全边界：宁可列号略偏，
+                    // 也不能崩。
+                    let mut bc = bc.min(line.len());
+                    while bc > 0 && !line.is_char_boundary(bc) {
+                        bc -= 1;
+                    }
                     let char_col = line[..bc].chars().count();
                     let line_text: String = line.chars().take(MAX_LINE_TEXT).collect();
                     file_matches.push(LineMatch {
