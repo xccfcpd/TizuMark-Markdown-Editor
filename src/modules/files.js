@@ -122,10 +122,15 @@
       async restoreSession() {
         const session = this.loadSession();
         if (!session) return false;
-        const tabs = session.tabs || [];
-        const workspaceFolder = session.workspaceFolder || null;
+        // 会话文件同样可能被手工改坏/被旧版本写成别的形状：loadSession 只校验 version，
+        // 若 tabs 是对象/字符串、或某项 filePath 不是字符串，这里会抛错 —— 而抛错发生在
+        // `this.tabs = restored` 之后、`updateTabBar()` 之前 → 内部状态与标签栏长期错位
+        // （审计发现，2026-09-24）。因此逐项做形状校验。
+        const tabs = (Array.isArray(session.tabs) ? session.tabs : [])
+          .filter((st) => st && typeof st === 'object' && typeof st.filePath === 'string' && st.filePath);
+        const workspaceFolder = typeof session.workspaceFolder === 'string' ? session.workspaceFolder : null;
         if (tabs.length === 0 && !workspaceFolder) return false;
-  
+
         const restored = [];
         for (const st of tabs) {
           if (!st.filePath) continue;
@@ -135,9 +140,12 @@
           if (window.FileTypes && window.FileTypes.classifyFile) {
             tab.kind = window.FileTypes.classifyFile(st.filePath);
           }
-          tab.cursorPos = st.cursorPos || { line: 0, ch: 0 };
-          tab.scrollPos = st.scrollPos || { top: 0, left: 0 };
-          tab.previewScrollTop = st.previewScrollTop || 0;
+          // 光标/滚动位置要逐字段校验：脏会话里 `cursorPos:"x"` 会让 cm.setCursor 抛错
+          const cp = (st.cursorPos && typeof st.cursorPos === 'object') ? st.cursorPos : {};
+          const sp = (st.scrollPos && typeof st.scrollPos === 'object') ? st.scrollPos : {};
+          tab.cursorPos = { line: Number.isFinite(cp.line) ? cp.line : 0, ch: Number.isFinite(cp.ch) ? cp.ch : 0 };
+          tab.scrollPos = { top: Number.isFinite(sp.top) ? sp.top : 0, left: Number.isFinite(sp.left) ? sp.left : 0 };
+          tab.previewScrollTop = Number.isFinite(st.previewScrollTop) ? st.previewScrollTop : 0;
           tab.fileMeta = st.fileMeta || null;
           tab._loaded = false;
           restored.push(tab);
@@ -206,7 +214,10 @@
   
         if (workspaceFolder) {
           this.workspaceFolder = workspaceFolder;
-          this.expandedFolders = new Set(session.expandedFolders || []);
+          // 形状校验：`new Set(5)` 会抛 TypeError（脏会话），字符串则会把每个字符当路径
+          this.expandedFolders = new Set(Array.isArray(session.expandedFolders)
+            ? session.expandedFolders.filter((p) => typeof p === 'string')
+            : []);
           await this.renderFolderTree();
           this.showSidebar();
           this.saveSession();

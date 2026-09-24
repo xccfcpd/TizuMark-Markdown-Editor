@@ -929,6 +929,43 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
 > 另核实：`src-tauri/Cargo.lock` **已入库**（此前审计里"未提交 Cargo.lock"的结论有误），
 > 故 CI 缓存键不会因缺文件而恒定。
 
+### 2.24 第五轮审计：风险面体检 + 持久化/启动面 + 四轮改动的交互风险（2026-09-24）
+
+三路并行的结果：① 风险面体检脚本（覆盖地图 / 调用存在性 / 危险模式）② 设置与会话持久化 + 启动
+流程审计 ③ **前四轮改动的交互风险**审计。共修 **10 组**问题，其中 4 组是前四轮改动叠加出来的。
+
+#### 交互风险（前四轮叠加）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **图表跨代际误伤**：`renderNativePlaceholders` 的"主题过期重绘"是对**实时 preview** 的全量查询，旧一代的续体（`renderDiagramPlaceholders` 是即发即忘）恢复后会拿旧 themeKey 判定并重画**新一代**的容器 → 暗色预览里图表被按浅色重画 | 给该函数与 `renderDiagramPlaceholders` 注入 `isStale()`（由控制器用 render 代际号构造），过期即放弃；stale 循环内逐项再校验 |
+| 2 | **兜底清理同样跨代际**：旧一代完成时会把**新一代**尚未渲染完的 `.diagram-pending` / `pre.diagram-src-pending` 摘掉 → mermaid 源码当场露出（正是"一会儿源码一会儿图"） | 仅在代际未过期时执行兜底清理 |
+| 3 | **`quoteDotIds` 仍有两处边界**：① 行级 `indexOf('/*')` 预判让 `label="a /* b"` 之后的**所有行**被当注释透传；② `quoted` 是每行局部变量，跨行字符串的续行会被"补引号"改坏 | ① 块注释起点改到**引号外**按字符判定；② `quoted` 提升为跨行状态 |
+| 4 | **`change` 处理器不认 `_editorTab`**：切换标签的读盘窗口内，`activeTab` 已前移而编辑器里仍是旧文档 → 打字会把**旧文档全文写进正在加载的新标签** | `editor-core` 的 change / cursorActivity / editor-scroll / preview-scroll 四处回写统一走 `editorTab()`（优先 `_editorTab`，其失效时才回落 activeTab）；`tabs.js` 不再在加载期清空 `_editorTab`（它仍指向真正承载者） |
+| 5 | **图片 LRU 在字符串构建期误淘汰**：预览是**先构建 HTML 字符串**再 `innerHTML`，此刻新 blob URL 还不在 DOM 里，`img[src]` 查不到 → >64 张内联图时被 revoke，写入后图片裂开 | 新增 `_imageURLPending` 保护集合（创建时登记，`innerHTML` 写入后由控制器清空），淘汰时跳过 |
+
+#### 设置 / 会话 / 启动
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 6 | **`customFonts` 脏数据让整个会话的设置全部失效**：`initSettings` 抛错 → 末尾的 `applySettings()` 永不执行（且 `initSettings` 未被 await → 只表现为一条红条） | `loadSettings` 对 `customFonts` 做数组+元素形状校验并过滤；`app.js` 给 `initSettings()` 挂 `.catch` 兜底并在失败时仍 `applySettings()` |
+| 7 | **slash 自定义排序/隐藏项重启即丢**：两个键不在 `defaultSettings()` 里 → 类型归一化把 `undefined` 写回，落盘成功、读取被自己清掉 | 把 `slashOrder` / `slashHidden` 纳入 defaults（同时修好"恢复默认"把它们丢掉的问题） |
+| 8 | 数值/枚举脏值**不崩但长期异常**：`uiFontSize:0` → 界面文字不可见；`defaultView:'bogus'` → 视图按钮都不高亮；`themeMode:'purple'` → 面板显示与实际行为不一致 | `loadSettings` 增加数值区间 clamp（字号/字重/行高/宽度/比例/层级）与枚举白名单（主题/默认视图/语言/底色） |
+| 9 | **脏会话让内部状态与标签栏错位**：`tabs` 非数组、`filePath` 非字符串、`cursorPos:"x"`、`expandedFolders:5` 都会抛错，而抛错点在 `this.tabs = restored` 之后、`updateTabBar()` 之前，异常又被外层静默吞掉 | 逐项形状校验（tabs / filePath / cursorPos / scrollPos / previewScrollTop / expandedFolders） |
+| 10 | **启动可能被存储异常卡死**：`initEula` 的 `setItem` 无保护，存储满/被禁用时抛错 → Promise 永不 settle → `await initEula()` 卡住 | 抽出 `persistAccepted()` 并 try/catch（失败也不阻塞启动） |
+| 11 | 保存的分屏宽度**永不生效**：`applyPreviewPaneWidth` 只在构造期调用一次，随后 `applyViewMode` 会清空行内 flex/width | 在 `applyViewMode` 末尾（分屏时）重新还原持久化宽度 |
+
+**测试**：新增 4 例——`quoteDotIds` 的"引号内 `/*`"与"跨行字符串续行"（纯函数，本地可跑）；设置脏数据清洗与 slash 排序持久化（jsdom，由 CI 跑）。本地 **91/91**（图表三件套）。
+
+#### 本轮**报告但未改**
+
+| 项 | 原因 |
+|---|---|
+| localStorage 写入失败被静默吞掉，而 UI 仍提示"保存成功"（设置/会话/最近文件三处） | 需要"保存失败"的用户可见反馈设计（toast 文案/降级策略），建议与文案一起做 |
+| `initSettings` 未 await → 首帧用默认样式渲染，IPC 回来后才修正（可见闪烁） | 需要把不依赖 IPC 的设置项提前同步应用，属启动顺序重构 |
+| 危险模式清单里的既有使用点（`eval`/`new Function` 未见、`JSON.parse` 均在 try 附近、`innerHTML=` 均为既有受控写入） | 逐一核对后属设计内用法，无需改动 |
+| Rust 侧 7 项（超时/大小上限/路径校验/原子写/BOM 保留/监视回声/黑名单按段匹配） | 见 §2.23：本机无 cargo，需在能编译验证的环境里做 |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

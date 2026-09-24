@@ -213,6 +213,7 @@ function quoteDotIds(src) {
   const TOKEN = /[A-Za-z0-9_.\u00A0-\uFFFF]/;
   let htmlDepth = 0;   // DOT 的 HTML 串 `<< … >>` / `< … >` 可跨行，用尖括号配平深度跟踪
   let blockComment = false;   // 跨行 `/* … */` 注释
+  let quoted = false;         // DOT 字符串可以跨行，引号状态也必须跨行（审计复核发现）
   return String(src == null ? '' : src).split('\n').map((line) => {
     // 注释原样保留：① 注释里的中文不该被"补引号"（对 Graphviz 无意义，还会让人以为图里多了引号）；
     // ② 注释里配不平的 `<` 绝不能让后续行进入 HTML 串模式（审计复核发现）。
@@ -221,13 +222,11 @@ function quoteDotIds(src) {
         if (line.indexOf('*/') >= 0) blockComment = false;
         return line;
       }
-      if (/^\s*(\/\/|#)/.test(line)) return line;
-      const open = line.indexOf('/*');
-      if (open >= 0 && line.indexOf('*/', open + 2) < 0) { blockComment = true; return line; }
+      // 引号内的 `//` / `#` 是字符串内容，不是注释（跨行字符串的续行尤其要注意）
+      if (!quoted && /^\s*(\/\/|#)/.test(line)) return line;
     }
     let out = '';
     let i = 0;
-    let quoted = false;
     while (i < line.length) {
       const c = line[i];
       // 仍处在跨行的 HTML 串里：整段原样透传，直到尖括号配平归零
@@ -240,6 +239,15 @@ function quoteDotIds(src) {
       }
       if (quoted) { out += c; if (c === '\\') { out += line[i + 1] || ''; i += 2; continue; } if (c === '"') quoted = false; i++; continue; }
       if (c === '"') { quoted = true; out += c; i++; continue; }
+      // 块注释起点要在**引号外**判定：`label="a /* b"` 里的 `/*` 属于字符串内容，
+      // 早先用行级 indexOf 预判会把后续行整段当注释透传（审计复核发现）。
+      if (c === '/' && line[i + 1] === '*') {
+        const close = line.indexOf('*/', i + 2);
+        if (close < 0) { blockComment = true; out += line.slice(i); break; }
+        out += line.slice(i, close + 2);
+        i = close + 2;
+        continue;
+      }
       // DOT 的 HTML 串：`<< … >>` / `< … >`，内部可含成对标签（`<B>…</B>`、`<br/>`）。
       // 不能"一遇到 > 就结束"：那样 `label=<<B>标题</B>>` 里的大写中文会被当普通 token 加引号。
       // 但**也不能见到 `<` 就进串**：注释里的孤立 `<`（`// 温度 < 阈值`）会把整篇后续行

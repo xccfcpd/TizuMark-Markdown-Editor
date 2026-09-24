@@ -415,6 +415,13 @@
           requestAnimationFrame(() => this._resumeScroll());
           this._viewModeRestoreTimer = null;
         }, 50);
+
+        // 分屏时按**持久化宽度**还原：本函数开头会清空行内 flex/width，而 applyPreviewPaneWidth
+        // 此前只在构造期调用过一次（且发生在 applyViewMode 之前）→ 用户拖拽保存的分屏宽度
+        // 永远不生效（审计发现，2026-09-24）。
+        if (this.viewMode !== 'preview' && typeof this.applyPreviewPaneWidth === 'function') {
+          this.applyPreviewPaneWidth();
+        }
       },
       toggleCollapse(pane) {
         const container = document.querySelector('.editor-container');

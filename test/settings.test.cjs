@@ -1131,6 +1131,51 @@ test('关于折叠块：3 块统一结构，默认全部展开，每次打开重
   } finally { cleanup(w); }
 });
 
+test('脏设置数据在 loadSettings 阶段被清洗（不让整会话设置失效 / UI 不可见）', async () => {
+  // 审计发现：customFonts 里混入 null 会让 initSettings 抛错 → applySettings 不再执行 →
+  // 整个会话所有设置失效；uiFontSize:0 → 界面文字不可见；defaultView:'bogus' → 视图按钮都不高亮。
+  const { w, ed } = await makeEditor();
+  try {
+    const original = w.localStorage.getItem('tizumark-settings');
+    w.localStorage.setItem('tizumark-settings', JSON.stringify({
+      uiFontSize: 0,
+      fontSize: 0,
+      defaultView: 'bogus',
+      themeMode: 'purple',
+      language: 'xx',
+      customBgColor: 'not-a-color',
+      customFonts: [null, {}, { id: 1, fileName: 'x.ttf' }],
+      slashOrder: ['format.bold', 123],
+      slashHidden: 'not-array',
+    }));
+    const s = ed.loadSettings();
+    assert.strictEqual(s.uiFontSize, 13, 'uiFontSize 0 应被 clamp 回默认 13');
+    assert.strictEqual(s.fontSize, 14, 'fontSize 0 应被 clamp 回默认 14');
+    assert.strictEqual(s.defaultView, 'preview', '非法 defaultView 应回退默认');
+    assert.strictEqual(s.themeMode, 'light', '非法 themeMode 应回退默认');
+    assert.strictEqual(s.language, 'zh', '非法 language 应回退默认');
+    assert.strictEqual(s.customBgColor, '#f8f7f4', '非法底色应回退默认');
+    assert.deepStrictEqual(s.customFonts, [], 'customFonts 非法项应被过滤');
+    assert.deepStrictEqual(s.slashOrder, ['format.bold'], 'slashOrder 非字符串项应被过滤且保留合法项');
+    assert.deepStrictEqual(s.slashHidden, [], 'slashHidden 非数组应回退空数组');
+    if (original === null) w.localStorage.removeItem('tizumark-settings');
+    else w.localStorage.setItem('tizumark-settings', original);
+  } finally { cleanup(w); }
+});
+
+test('slash 自定义排序/隐藏项能在重启后保留（必须在 defaults 里，否则被自己清掉）', async () => {
+  const { w, ed } = await makeEditor();
+  try {
+    const original = w.localStorage.getItem('tizumark-settings');
+    w.localStorage.setItem('tizumark-settings', JSON.stringify({ slashOrder: ['format.bold', 'insert.image'], slashHidden: ['format.italic'] }));
+    const s = ed.loadSettings();
+    assert.deepStrictEqual(s.slashOrder, ['format.bold', 'insert.image'], 'slashOrder 必须能读回');
+    assert.deepStrictEqual(s.slashHidden, ['format.italic'], 'slashHidden 必须能读回');
+    if (original === null) w.localStorage.removeItem('tizumark-settings');
+    else w.localStorage.setItem('tizumark-settings', original);
+  } finally { cleanup(w); }
+});
+
 test('关于 → 第三方组件：切英文后每条描述都被翻译（数量与 DOM 条目一一对应）', async () => {
   // 审计修复（2026-09-24）：depKeys 曾只有 7 个而 DOM 有 12 项 → 第 3 项起文案整体串位、
   // 第 8 项之后被静默跳过（切英文仍是中文）。这条用例钉住"数量对齐 + 全部翻译"。

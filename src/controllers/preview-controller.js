@@ -188,6 +188,10 @@
           this.app.preview.style.padding = '';
           this.app.preview.innerHTML = finalHtml;
         }
+        // 新内容已入 DOM：本批次新建的 blob URL 现在可以被 img[src] 找到，解除"淘汰保护"
+        //（保护窗口用于避免在字符串构建期就撤销尚未入 DOM 的图片 URL —— 审计发现，2026-09-24）
+        if (this.app._imageURLPending && this.app._imageURLPending.size) this.app._imageURLPending.clear();
+
         // 新内容已入 DOM：此刻上一批容器才真正脱离文档，回收它们的图表资源
         // （ECharts 实例 / ResizeObserver / 引擎内部引用）—— 否则长会话内存只增不减，
         // 表现为「用久了莫名卡顿、要重启才恢复」。只清脱离的那些，在 DOM 中的实例不动。
@@ -269,7 +273,10 @@
 
         // 图表渲染（Mermaid + 原生引擎）**立刻启动**，与下面的图片内联并行：
         // 命中缓存的图已在同步阶段复原，这里只渲染没缓存过的；await 放在图片内联之后。
-        const diagramRender = PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts);
+        // 第 4 参是「代际过期」判定：本函数是即发即忘的，旧一代在 await 之间恢复后绝不能再动
+        // 新一代的 DOM（否则会把新图按旧主题重画、或把新一代的占位摘掉 → 源码复现）
+        const diagramRender = PreviewPost.renderDiagramPlaceholders(
+          this.app.preview, diagramPrep, postOpts, () => gen !== this.app._renderGeneration);
         // 提前 return 的分支（generation 失效）不会 await 它 —— 先挂一个空 catch，
         // 避免变成 unhandled rejection（全局红条），也避免"被抛弃的渲染"在后台继续改 DOM。
         diagramRender.catch(() => {});

@@ -2416,6 +2416,11 @@
           const blob = new Blob([bytes], { type: mime });
           const url = URL.createObjectURL(blob);
           this._imageURLCache.set(dataUri, url);
+          // 记入"已创建但可能还没进 DOM"的保护集合（见 app.js 该字段的说明）
+          if (this._imageURLPending) {
+            if (this._imageURLPending.size > 1024) this._imageURLPending.clear();   // 兜底：异常路径下别无限增长
+            this._imageURLPending.add(url);
+          }
           // 容量上限：超限 revoke 最旧 Blob URL，防止长会话多图内存持续增长（历史 bug：只增不减）
           // 超限时向前找**第一条未被引用的**淘汰；**必须**确认该 Blob URL 不在文档中被
           // <img> 引用 —— 撤销在用 URL 会让正在显示的图片当场裂开（image-processor 早有
@@ -2429,6 +2434,8 @@
               if (this._imageURLCache.size <= this._imageURLCacheMax) break;
               if (++scans > 32) break;
               const u = this._imageURLCache.get(k);
+              // 本次渲染刚创建、还没写进 DOM 的 URL 一律不淘汰（否则会撤销马上要显示的图片）
+              if (this._imageURLPending && this._imageURLPending.has(u)) continue;
               let inUse = false;
               try {
                 inUse = !!(typeof document !== 'undefined' && document.querySelector('img[src="' + u + '"]'));

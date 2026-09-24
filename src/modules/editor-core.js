@@ -321,8 +321,17 @@
           this.showZoomHint('preview');
         }, true);  // capture：先于预览内部可能的滚动监听拦截
   
+        // 「编辑器当前承载的标签」优先：切换标签时 activeTabIndex 会先前移（此时编辑器里仍是上一个
+        // 文档，正在等待读盘），若按 activeTab 回写，就会把上一个文档的文本/光标写进尚未加载完的
+        // 标签（审计发现，2026-09-24）。_editorTab 在切换到完成前一直指向**真正在编辑器里的**那个。
+        const editorTab = () => {
+          const t = this._editorTab;
+          if (t && this.tabs && this.tabs.indexOf(t) >= 0) return t;
+          return this.activeTab;
+        };
         this.cm.on('change', () => {
-          this.activeTab.content = this.cm.getValue();
+          const target = editorTab();
+          if (target) target.content = this.cm.getValue();
           this.updateTabDisplay();
           // 大文档滑动窗口模式：打字时把窗口焦点同步到光标当前行（0-based），
           // 否则 updatePreview 仍按旧 _previewFocusLine 渲染切片，导致光标处新输入不显示、且预览跳到旧焦点。
@@ -342,6 +351,7 @@
         });
   
         this.cm.on('cursorActivity', () => {
+          // 同上：写回"真正承载编辑器的标签"，避免切换标签的读盘窗口内错写（见 change 处理器注释）
           const cursor = this.cm.getCursor();
           // slash 命令面板：面板开启时按光标重算/关闭（回退到 / 前或换行列即关闭）；
           // 未开启时检测光标前的 / 是否满足「行首或空格后」触发条件。
@@ -352,7 +362,8 @@
           } else {
             this._maybeTriggerSlash(this.cm, cursor);
           }
-          this.activeTab.cursorPos = cursor;
+          const ct = editorTab();
+          if (ct) ct.cursorPos = cursor;
           this.cursorPosition.textContent = this.t('cursorPos', { line: cursor.line + 1, col: cursor.ch + 1 });
           this.updateBreadcrumb();
           // 光标移动时大纲同步高亮当前标题（与面包屑一致）
@@ -372,7 +383,8 @@
           // 若写回 scrollPos 会把已保存位置清零，导致切回编辑跳顶部。仅当编辑器可见才更新快照。
           if (container.classList.contains('preview-mode') || container.classList.contains('editor-collapsed')) return;
           const info = this.cm.getScrollInfo();
-          this.activeTab.scrollPos = { top: info.top, left: info.left };
+          const st = editorTab();
+          if (st) st.scrollPos = { top: info.top, left: info.left };
   
           // 滚动时按视口顶部行更新面包屑，实现「滚动到某标题时面包屑自动切换」
           if (this._breadcrumbHeadings && this._breadcrumbHeadings.length) {
@@ -395,8 +407,9 @@
           const container = document.querySelector('.editor-container');
           // 持续记录预览滚动位置（预览可见时）。edit/preview 切换恢复以及滚动同步都依赖它；
           // 预览折叠时其 scrollTop 不可靠，跳过以免覆盖有效值。
-          if (this.activeTab && !container.classList.contains('preview-collapsed')) {
-            this.activeTab.previewScrollTop = this.preview.scrollTop;
+          const pt = editorTab();
+          if (pt && !container.classList.contains('preview-collapsed')) {
+            pt.previewScrollTop = this.preview.scrollTop;
           }
           // 纯预览模式：编辑器隐藏，其滚动同步会提前退出，大纲须直接跟随预览内容。
           // 注意：先驱动虚拟预览懒加载（若需），再统一派生当前标题，避免漏渲染。

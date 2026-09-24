@@ -661,7 +661,8 @@ function prepareNativePlaceholders(preview, opts) {
 }
 
 // ② 异步：逐个渲染占位容器，并对「主题已过期」的既有容器按 data-code 重画。
-async function renderNativePlaceholders(preview, jobs, opts) {
+async function renderNativePlaceholders(preview, jobs, opts, isStale) {
+  const stale = () => (typeof isStale === 'function' ? isStale() : false);
   const opt = opts || {};
   const DR = getDiagramRenderers();
   if (!DR) return;
@@ -723,11 +724,15 @@ async function renderNativePlaceholders(preview, jobs, opts) {
     }
   }
 
-  // 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
-  const stale = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
+  // 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画。
+  // ⚠ 这段是对**实时 preview** 的全量查询：代际过期时 preview 里已是新一代的容器，用旧 themeKey
+  // 判定会把它们按旧主题重画（暗色预览里出现浅色图）。故先做代际校验（审计发现，2026-09-24）。
+  if (stale()) return;
+  const staleContainers = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
     .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
     .filter((el) => el.getAttribute('data-theme') !== themeKey);
-  for (const container of stale) {
+  for (const container of staleContainers) {
+    if (stale()) return;
     const type = container.getAttribute('data-diagram-type');
     const code = container.getAttribute('data-code') || '';
     container.setAttribute('data-theme', themeKey);
@@ -760,19 +765,22 @@ function prepareDiagramPlaceholders(preview, opts) {
   return jobs;
 }
 
-async function renderDiagramPlaceholders(preview, jobs, opts) {
+async function renderDiagramPlaceholders(preview, jobs, opts, isStale) {
   const opt = opts || {};
   const prep = jobs || { mermaid: [], native: [] };
+  // 代际校验（isStale 由调用方注入）：本函数是"即发即忘"的，旧一代在 await 之间恢复后**绝不能**
+  // 再动新一代的 DOM —— 否则会把新图按旧主题重画、或把新一代的占位摘掉（审计发现，2026-09-24）。
+  const stale = () => (typeof isStale === 'function' ? isStale() : false);
   if (prep.mermaid && prep.mermaid.length) {
     try {
-      await renderMermaidPlaceholders(prep.mermaid, opt);
+      if (!stale()) await renderMermaidPlaceholders(prep.mermaid, opt);
     } catch (e) {
       console.warn('[diagrams] mermaid 渲染异常（已隔离）：', e);
     }
   }
   if (preview) {
     try {
-      await renderNativePlaceholders(preview, prep.native, opt);
+      if (!stale()) await renderNativePlaceholders(preview, prep.native, opt, stale);
     } catch (e) {
       console.warn('[diagrams] 原生引擎渲染异常（已隔离）：', e);
     }
@@ -781,8 +789,12 @@ async function renderDiagramPlaceholders(preview, jobs, opts) {
     //   · pre.diagram-src-pending：mermaid 系未走到容器替换
     //   · .diagram-container.diagram-pending：某引擎的 await 不 settle 时 finally 不会执行，
     //     容器会带着 pending 常驻，而 `color: transparent` 会把内容永久藏住（只剩「渲染中…」）
-    preview.querySelectorAll('pre.diagram-src-pending').forEach((pre) => pre.classList.remove('diagram-src-pending'));
-    preview.querySelectorAll('.diagram-container.diagram-pending').forEach((el) => el.classList.remove('diagram-pending'));
+    // ⚠ 但**只有当前代**才允许清理：旧一代的续体跑这里时，preview 里已是新一代尚未渲染完的
+    // 占位，摘掉它们会让源码（mermaid 文本）当场露出 —— 正是用户报障的"一会儿源码一会儿图"。
+    if (!stale()) {
+      preview.querySelectorAll('pre.diagram-src-pending').forEach((pre) => pre.classList.remove('diagram-src-pending'));
+      preview.querySelectorAll('.diagram-container.diagram-pending').forEach((el) => el.classList.remove('diagram-pending'));
+    }
   }
 }
 

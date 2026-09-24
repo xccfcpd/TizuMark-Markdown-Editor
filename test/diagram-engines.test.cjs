@@ -137,6 +137,19 @@ test('Graphviz：DOT 的 HTML 串 << … >> 原样透传（内部中文不能被
   assert.ok(!/"标题"/.test(out), '不应给 HTML 串内的中文加引号，实际:\n' + out);
 });
 
+test('Graphviz：引号内的 /* 不是注释起点（不得让后续行被当注释透传）', () => {
+  // 复核审计发现：早先用行级 indexOf('/*') 预判块注释，`label="a /* b"` 会让后续所有行
+  // 走"注释透传"，中文节点名不再补引号。
+  const out = DR.quoteDotIds('digraph {\n  A [label="a /* b"];\n  B [label="中文"];\n  来料 -> 检验\n}');
+  assert.match(out, /label="中文"/, '后续行仍要正常处理，实际:\n' + out);
+  assert.match(out, /"来料" -> "检验"/, '中文节点名仍要自动补引号，实际:\n' + out);
+});
+
+test('Graphviz：跨行字符串的续行不该被"补引号"改坏（引号状态跨行）', () => {
+  const out = DR.quoteDotIds('digraph {\n  A [label="line1\n中文续行"];\n}');
+  assert.ok(!/"中文续行"/.test(out), '引号内的续行不得再被加引号，实际:\n' + out);
+});
+
 test('Graphviz：注释里的孤立 < 不能让后续中文名失去自动引号（跨行 HTML 态的回归）', () => {
   // 复核审计发现：早先的实现"见到 < 就进 HTML 串模式"，注释里一个配不平的 '<'
   // 会把整篇后续行都吞掉 → 中文节点名不再补引号，Graphviz 报语法错误。

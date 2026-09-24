@@ -44,6 +44,11 @@
           filesCollapsed: false,
           outlineCollapsed: false,
           customFonts: [],
+          // slash 命令面板的自定义排序/隐藏项：**必须在 defaults 里**，否则 loadSettings 的
+          // 类型归一化会因 defaults[k] === undefined 把它们整条清掉（落盘成功、重启全丢；
+          // 审计发现，2026-09-24）
+          slashOrder: [],
+          slashHidden: [],
           editorFont: '',
           previewFont: '',
           fileSortKey: 'name',
@@ -72,6 +77,37 @@
             if (typeof merged[k] !== typeof defaults[k]) {
               merged[k] = defaults[k];
             }
+          }
+          // 类型相同 ≠ 值合法。脏值（手工改过 localStorage / 旧版本残留）会造成**长期不可用**：
+          // customFonts 里混入 null 会让 initSettings 抛错 → 末尾的 applySettings 不再执行 →
+          // 整个会话所有设置失效；字号 0 → 界面文字不可见；defaultView:'bogus' → 视图按钮都不高亮。
+          // 这里对「数组形状 + 数值区间 + 枚举白名单」做一次清洗（审计发现，2026-09-24）。
+          merged.customFonts = Array.isArray(merged.customFonts)
+            ? merged.customFonts.filter((f) => f && typeof f === 'object' &&
+                typeof f.fileName === 'string' && f.fileName && typeof f.id === 'string' && f.id)
+            : [];
+          merged.slashOrder = Array.isArray(merged.slashOrder) ? merged.slashOrder.filter((s) => typeof s === 'string') : [];
+          merged.slashHidden = Array.isArray(merged.slashHidden) ? merged.slashHidden.filter((s) => typeof s === 'string') : [];
+          const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
+          const int = (v, lo, hi, dflt) => Math.round(num(v, lo, hi, dflt));
+          merged.fontSize = num(merged.fontSize, 8, 40, defaults.fontSize);
+          merged.previewFontSize = num(merged.previewFontSize, 8, 40, defaults.previewFontSize);
+          merged.uiFontSize = num(merged.uiFontSize, 11, 18, defaults.uiFontSize);
+          merged.lineHeight = num(merged.lineHeight, 1, 3, defaults.lineHeight);
+          merged.tabSize = int(merged.tabSize, 1, 16, defaults.tabSize);
+          merged.maxWidth = int(merged.maxWidth, 0, 4000, defaults.maxWidth);
+          merged.outlineWidth = int(merged.outlineWidth, 120, 600, defaults.outlineWidth);
+          merged.previewPaneWidth = int(merged.previewPaneWidth, 200, 2000, defaults.previewPaneWidth);
+          merged.filesPanelRatio = num(merged.filesPanelRatio, 0.1, 0.9, defaults.filesPanelRatio);
+          merged.outlineFilterLevel = int(merged.outlineFilterLevel, 0, 6, defaults.outlineFilterLevel);
+          merged.previewFontWeight = num(merged.previewFontWeight, 300, 600, defaults.previewFontWeight);
+          merged.editorFontWeight = num(merged.editorFontWeight, 300, 600, defaults.editorFontWeight);
+          // 枚举白名单：非法值一律回退默认（否则设置面板显示某值、实际行为是另一样）
+          if (['light', 'dark', 'system'].indexOf(merged.themeMode) < 0) merged.themeMode = defaults.themeMode;
+          if (['preview', 'edit'].indexOf(merged.defaultView) < 0) merged.defaultView = defaults.defaultView;
+          if (['zh', 'en'].indexOf(merged.language) < 0) merged.language = defaults.language;
+          if (typeof merged.customBgColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(merged.customBgColor)) {
+            merged.customBgColor = defaults.customBgColor;
           }
           return merged;
         } catch {

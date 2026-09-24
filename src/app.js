@@ -41,6 +41,10 @@ class MarkdownEditor {
     this.debounceTimer = null;
     this._imageURLCache = new Map(); // dataUri → Blob URL（LRU，上限 _imageURLCacheMax，超限 revoke）
     this._imageURLCacheMax = 64;
+    // 「已创建但还没进 DOM」的 blob URL：预览是在**字符串构建期**逐个调 getCachedImageURL 的，
+    // 此刻 document.querySelector('img[src]') 看不到它们，若无保护就会被淘汰并 revoke →
+    // innerHTML 写入后图片当场裂开（审计发现，2026-09-24）。写入 DOM 后由控制器清空。
+    this._imageURLPending = new Set();
     this._imageBase64Cache = new Map(); // key: 绝对路径 → value: base64 data URI，省去每次打字跨 IPC 读磁盘
     this._hljsCache = new Map();
     this._mermaidCache = new Map(); // key: themeKey+'::'+code → 渲染后的 SVG innerHTML，避免打字时全量重渲染 mermaid
@@ -99,7 +103,13 @@ class MarkdownEditor {
     this.initScrollTopBtn();
     this.initExternalLinks();
     this.initDragDrop();
-    this.initSettings();
+    // initSettings 是 async（内部 await 系统字体 IPC + 自定义字体注册）。它若抛错且无人捕获，
+    // 除了 unhandledrejection 之外还有个更隐蔽的后果：末尾的 applySettings() 不会执行 →
+    // 整个会话所有设置（字号/行高/换行/底色…）全部失效（审计发现，2026-09-24）。这里兜底。
+    this.initSettings().catch((e) => {
+      console.warn('[settings] 初始化失败（降级为默认设置）:', e);
+      try { this.applySettings(); } catch (_e) { /* 忽略 */ }
+    });
     this.applyWindowBehavior();
     this.initShortcutsDialog();
     this.bindCollapseToggle();
@@ -426,8 +436,14 @@ function initEula() {
 
     overlay.classList.remove('hidden');
 
+    // 存储不可用（被禁用/已满）时 setItem 会抛异常：写在这里会让 autoAccept 抛出 →
+    // Promise 永不 settle → `await initEula()` 卡死、整个应用启动不了（审计发现，2026-09-24）。
+    const persistAccepted = () => {
+      try { localStorage.setItem('tizumark-eula-accepted', 'true'); } catch (_e) { /* 本次会话内仍视为已接受 */ }
+    };
+
     const autoAccept = () => {
-      localStorage.setItem('tizumark-eula-accepted', 'true');
+      persistAccepted();
       overlay.classList.add('hidden');
       console.warn('EULA auto-accepted after timeout');
       resolve(true);
@@ -445,7 +461,7 @@ function initEula() {
 
     acceptBtn.addEventListener('click', () => {
       clearTimeout(autoTimer);
-      localStorage.setItem('tizumark-eula-accepted', 'true');
+      persistAccepted();
       overlay.classList.add('hidden');
       resolve(true);
     });

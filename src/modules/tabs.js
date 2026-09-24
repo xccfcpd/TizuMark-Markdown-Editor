@@ -63,6 +63,8 @@
           // activeTab —— 但**绝不回退到"正在加载中"的标签**（`_loaded === false`）：那正是审计
           // 复核发现的错写场景（把上一个文档的光标/滚动写进还没加载完的标签）。
           // 注：取消回退曾把"切走前保存当前滚动位置"整条打断（CI 的 tab-scroll 用例变红）。
+          // 注 2：**不清空 _editorTab** —— 加载期间编辑器里仍是旧标签的内容，只有它还是
+          // "真正承载者"，editor-core 的 change/cursor 处理器也据此回写。
           let oldTab = this._editorTab;
           if (!oldTab && this.activeTab && this.activeTab._loaded !== false) oldTab = this.activeTab;
           if (oldTab && this.tabs.indexOf(oldTab) >= 0 && this.cm) {
@@ -71,8 +73,6 @@
             oldTab.scrollPos = { top: this.cm.getScrollInfo().top, left: this.cm.getScrollInfo().left };
             oldTab.previewScrollTop = this.preview.scrollTop;
           }
-          // 加载期间编辑器内容不属于任何标签：期间再切一次时不会把当前文本错写到别人身上
-          this._editorTab = null;
 
           this.activeTabIndex = index;
           const newTab = this.activeTab;
