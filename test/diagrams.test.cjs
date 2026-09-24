@@ -355,6 +355,38 @@ test('plantuml 状态图：中文状态名不再塌成幽灵状态 S，且 state
   assert.ok(!/ --> S\b/.test(out2), '不应出现幽灵状态 S，实际:\n' + out2);
 });
 
+test('plantuml 用例图：rectangle 分组 → subgraph，且 subgraph/end 必须配平（孤立 end 会让 Mermaid 报错）', () => {
+  // 用户报障：15.2 用例图整张渲染失败（Mermaid 报错）。
+  // 根因：`rectangle 系统 {` 被当普通节点，结尾的 `}` 又无条件输出 `end` → 孤立 end → 语法错误。
+  const out = D.plantumlToMermaid('@startuml\nleft to right direction\nactor 普通用户 as U\nrectangle 系统 {\n  U --> (浏览商品)\n  U --> (下单)\n  (下单) --> (支付) : include\n}\n@enduml');
+  assert.ok(out.startsWith('flowchart LR'), '实际: ' + String(out).split('\n')[0]);
+  assert.match(out, /subgraph G\d+\["系统"\]/, '矩形分组应变成 subgraph，实际:\n' + out);
+  const subs = (out.match(/^\s*subgraph\b/gm) || []).length;
+  const ends = (out.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(subs, 1, '应只有一个 subgraph');
+  assert.strictEqual(subs, ends, 'subgraph 与 end 必须配平，实际:\n' + out);
+});
+
+test('plantuml 用例图：孤立 `}` 不得产生孤立 end（源码不配平也要自愈）', () => {
+  const out = D.plantumlToMermaid('@startuml\nactor U\nU --> (下单)\n}\n}\n@enduml');
+  const ends = (out.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(ends, 0, '没有开启分组就不该输出 end，实际:\n' + out);
+  // 少写 `}` 时也要补齐（开启的 subgraph 必须有 end）
+  const out2 = D.plantumlToMermaid('@startuml\nrectangle 系统 {\n  actor U\n  U --> (下单)\n@enduml');
+  const subs2 = (out2.match(/^\s*subgraph\b/gm) || []).length;
+  const ends2 = (out2.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(subs2, ends2, '缺 `}` 时应自动补齐 end，实际:\n' + out2);
+});
+
+test('plantuml 类图：左侧基数（`用户 "1"`）不再丢失/污染类名', () => {
+  // 用户报障（15.3 类图）：`用户 "1" --> "*" 订单 : 下单` 被转成 `n_1 --> "*" C2` ——
+  // 左侧「类名在基数前」的写法没被解析，类名与基数一起丢失。
+  const out = D.plantumlToMermaid('@startuml\nclass 用户 {\n  +用户名: string\n}\nclass 订单 {\n  +订单号: string\n}\n用户 "1" --> "*" 订单 : 下单\n@enduml');
+  assert.ok(out.startsWith('classDiagram'));
+  assert.match(out, /"1" --> "\*"/, '两侧基数都要保留，实际:\n' + out);
+  assert.ok(!/n_\d/.test(out), '不应出现无意义 id，实际:\n' + out);
+});
+
 test('plantuml 组件图：边标签不再被丢弃（`[A] --> [B] : 数据流`）', () => {
   const out = D.plantumlToMermaid('@startuml\n[采集] --> [存储] : 数据流\n@enduml');
   assert.ok(out.startsWith('flowchart LR'), '实际: ' + String(out).split('\n')[0]);

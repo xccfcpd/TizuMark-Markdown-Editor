@@ -367,10 +367,14 @@
         let label = '';
         const colon = right.match(/^(.*?)\s*:\s*(.+)$/);
         if (colon) { right = colon[1].trim(); label = colon[2].trim(); }
-        // 拆基数 "1" / "many"
+        // 拆基数：PlantUML 两侧写法不同 —— 左侧是「类名在前」(`用户 "1"`)，右侧是「基数在前」
+        // (`"*" 订单`)。历史实现只认后者 → 左侧的 `用户 "1"` 被整串当成类名（生成一个无意义 id，
+        // 类名与基数一起丢失）：用户文档 15.3 类图的 `用户 "1" --> "*" 订单 : 下单` 就是这么坏掉的。
         const parseSide = (s) => {
-          const m2 = s.match(/^"([^"]*)"\s*(.*)$/);
+          const m2 = s.match(/^"([^"]*)"\s*(.+)$/);
           if (m2) return { card: m2[1], name: m2[2].trim() };
+          const m3 = s.match(/^(.+?)\s+"([^"]*)"$/);
+          if (m3) return { card: m3[2], name: m3[1].trim() };
           return { card: '', name: s };
         };
         const ls = parseSide(left);
@@ -732,6 +736,8 @@
     const declared = new Set();
     const idOf = makeIdAllocator();   // 中文组件/包名不再塌成同一个 id
     const ARROW_AT = /(\s*)(<-{1,2}|-{1,2}\|?>|\.{2}>|-{1,2}>|o-{1,2}|<\|-{1,2}|\*--|--|\.\.)(\s*)/;
+    // 已开启的分组栈：'sub' = 输出了 subgraph（收尾时要 end）；'plain' = 无名分组（`together {`，只配对不输出）
+    const groups = [];
 
     const tokenOf = (raw) => {
       let s = String(raw || '').trim();
@@ -748,7 +754,9 @@
       else if (t.shape === 'actor') out.push('    ' + t.id + '(( ' + mq(t.label) + ' ))');
       else out.push('    ' + t.id + '[' + mq(t.label) + ']');
     };
-    const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|title\b|header\b|footer\b|legend\b|caption\b|note\b|together\b|left to right direction|top to bottom direction)/i;
+    // 注：`together\b` **不在** SKIP 里 —— `together { … }` 是分组，必须参与 `}` 配对，
+    // 否则它的 `}` 会变成孤立 end（见下面 groups 的处理）
+    const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|title\b|header\b|footer\b|legend\b|caption\b|note\b|left to right direction|top to bottom direction)/i;
 
     for (const raw of lines) {
       const l = raw.trim();
@@ -766,17 +774,27 @@
       }
       // 容器声明（带 {）→ subgraph；同一关键字不带 { 时（如 `database 缓存 as Cache`）
       // 当普通节点处理，避免"这句被忽略、中文名只能靠箭头顺手创建而丢失"
-      const pm = l.match(/^(package|node|folder|frame|cloud|database)\s+("[^"]*"|\S+)(?:\s+as\s+("[^"]*"|\S+))?\s*(\{)?/i);
+      // 注：`rectangle` 是 PlantUML 用例图里最常见的分组（`rectangle 系统 { … }`）。历史上它落到
+      // 下面的 dm 分支被当成**普通节点**，而结尾的 `}` 又无条件输出 `end` → **孤立 end** →
+      // Mermaid 直接语法报错（用户报障的 15.2 用例图，2026-09-24）。
+      const pm = l.match(/^(package|node|folder|frame|cloud|database|rectangle|storage|artifact|card)\s+("[^"]*"|\S+)(?:\s+as\s+("[^"]*"|\S+))?\s*(\{)?/i);
       if (pm) {
         const title = stripQuotes(pm[2]);
         if (pm[4]) {
           out.push('    subgraph ' + idOf(title, 'G') + '[' + mq(title) + ']');
+          groups.push('sub');
           continue;
         }
         declare({ id: pm[3] ? idOf(stripQuotes(pm[3]), 'C') : idOf(title, 'C'), shape: 'component', label: title });
         continue;
       }
-      if (/^\}/.test(l)) { out.push('    end'); continue; }
+      // `together {`：无名透明分组，只参与配对（绝不能输出 end）
+      if (/^together\s*\{/i.test(l)) { groups.push('plain'); continue; }
+      // `}`：只与已开启的分组配对收尾；**孤立的 `}` 一律忽略**
+      if (/^\}/.test(l)) {
+        if (groups.pop() === 'sub') out.push('    end');
+        continue;
+      }
 
       const dm = l.match(/^(component|usecase|rectangle|interface)\s+("[^"]*"|\S+)(?:\s+as\s+("[^"]*"|\S+))?/i);
       if (dm) {
@@ -826,6 +844,10 @@
         const t = tokenOf(l);
         if (t.label) declare(t);
       }
+    }
+    // 源码里少写 `}` 时补齐收尾：保证 subgraph / end 一定配平（Mermaid 对不配平直接报错）
+    while (groups.length) {
+      if (groups.pop() === 'sub') out.push('    end');
     }
     if (out.length <= 1) return null;
     return out.join('\n');
