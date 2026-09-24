@@ -45,6 +45,7 @@ class MarkdownEditor {
     // 此刻 document.querySelector('img[src]') 看不到它们，若无保护就会被淘汰并 revoke →
     // innerHTML 写入后图片当场裂开（审计发现，2026-09-24）。写入 DOM 后由控制器清空。
     this._imageURLPending = new Set();
+    this._imageURLBuilding = false;   // 仅在"构建预览 HTML 字符串"期间为 true（保护窗口的开关）
     this._imageBase64Cache = new Map(); // key: 绝对路径 → value: base64 data URI，省去每次打字跨 IPC 读磁盘
     this._hljsCache = new Map();
     this._mermaidCache = new Map(); // key: themeKey+'::'+code → 渲染后的 SVG innerHTML，避免打字时全量重渲染 mermaid

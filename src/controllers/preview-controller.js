@@ -170,6 +170,8 @@
         }
 
         // 内嵌 base64 图片改为按内容缓存的 Blob URL，避免每次重渲染重复解码（大文档多图时是关键性能点）
+        // 打开"保护窗口"：这段期间新建的 blob URL 还没进 DOM，不能被 LRU 淘汰/撤销（否则图片会裂）
+        this.app._imageURLBuilding = true;
         finalHtml = finalHtml.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, (m) => this.app.getCachedImageURL(m));
 
         // 滑动窗口：渲染的是切片后的源码，需把 data-source-line 还原为绝对行号（与编辑区一致），
@@ -188,8 +190,9 @@
           this.app.preview.style.padding = '';
           this.app.preview.innerHTML = finalHtml;
         }
-        // 新内容已入 DOM：本批次新建的 blob URL 现在可以被 img[src] 找到，解除"淘汰保护"
+        // 新内容已入 DOM：本批次新建的 blob URL 现在可以被 img[src] 找到，关闭保护窗口
         //（保护窗口用于避免在字符串构建期就撤销尚未入 DOM 的图片 URL —— 审计发现，2026-09-24）
+        this.app._imageURLBuilding = false;
         if (this.app._imageURLPending && this.app._imageURLPending.size) this.app._imageURLPending.clear();
 
         // 新内容已入 DOM：此刻上一批容器才真正脱离文档，回收它们的图表资源

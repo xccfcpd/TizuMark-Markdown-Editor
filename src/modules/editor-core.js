@@ -321,16 +321,16 @@
           this.showZoomHint('preview');
         }, true);  // capture：先于预览内部可能的滚动监听拦截
   
-        // 「编辑器当前承载的标签」优先：切换标签时 activeTabIndex 会先前移（此时编辑器里仍是上一个
-        // 文档，正在等待读盘），若按 activeTab 回写，就会把上一个文档的文本/光标写进尚未加载完的
-        // 标签（审计发现，2026-09-24）。_editorTab 在切换到完成前一直指向**真正在编辑器里的**那个。
-        const editorTab = () => {
-          const t = this._editorTab;
-          if (t && this.tabs && this.tabs.indexOf(t) >= 0) return t;
-          return this.activeTab;
-        };
+        // 回写目标 =「编辑器当前承载的标签」：优先 `_editorTab`（切换标签时 activeTabIndex 会先
+        // 前移，而编辑器里仍是上一个文档，按 activeTab 回写会把旧文档写进尚未加载完的标签），
+        // 它不在 tabs 里时回落到 activeTab。
+        // ⚠ 这段判断必须**内联**、不能抽成局部辅助函数：本仓有测试会把处理器源码整段抽出来
+        // eval（test/view-mode-scroll.test.cjs 的 D1/D2 用例），自由标识符会让它们
+        // `ReferenceError: xxx is not defined`（CI 实测过，2026-09-24）。
         this.cm.on('change', () => {
-          const target = editorTab();
+          const target = (this._editorTab && this.tabs && this.tabs.indexOf(this._editorTab) >= 0)
+            ? this._editorTab
+            : this.activeTab;
           if (target) target.content = this.cm.getValue();
           this.updateTabDisplay();
           // 大文档滑动窗口模式：打字时把窗口焦点同步到光标当前行（0-based），
@@ -362,7 +362,9 @@
           } else {
             this._maybeTriggerSlash(this.cm, cursor);
           }
-          const ct = editorTab();
+          const ct = (this._editorTab && this.tabs && this.tabs.indexOf(this._editorTab) >= 0)
+            ? this._editorTab
+            : this.activeTab;
           if (ct) ct.cursorPos = cursor;
           this.cursorPosition.textContent = this.t('cursorPos', { line: cursor.line + 1, col: cursor.ch + 1 });
           this.updateBreadcrumb();
@@ -383,7 +385,9 @@
           // 若写回 scrollPos 会把已保存位置清零，导致切回编辑跳顶部。仅当编辑器可见才更新快照。
           if (container.classList.contains('preview-mode') || container.classList.contains('editor-collapsed')) return;
           const info = this.cm.getScrollInfo();
-          const st = editorTab();
+          const st = (this._editorTab && this.tabs && this.tabs.indexOf(this._editorTab) >= 0)
+            ? this._editorTab
+            : this.activeTab;
           if (st) st.scrollPos = { top: info.top, left: info.left };
   
           // 滚动时按视口顶部行更新面包屑，实现「滚动到某标题时面包屑自动切换」
@@ -407,7 +411,9 @@
           const container = document.querySelector('.editor-container');
           // 持续记录预览滚动位置（预览可见时）。edit/preview 切换恢复以及滚动同步都依赖它；
           // 预览折叠时其 scrollTop 不可靠，跳过以免覆盖有效值。
-          const pt = editorTab();
+          const pt = (this._editorTab && this.tabs && this.tabs.indexOf(this._editorTab) >= 0)
+            ? this._editorTab
+            : this.activeTab;
           if (pt && !container.classList.contains('preview-collapsed')) {
             pt.previewScrollTop = this.preview.scrollTop;
           }

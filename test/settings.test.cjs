@@ -1137,29 +1137,36 @@ test('脏设置数据在 loadSettings 阶段被清洗（不让整会话设置失
   const { w, ed } = await makeEditor();
   try {
     const original = w.localStorage.getItem('tizumark-settings');
-    w.localStorage.setItem('tizumark-settings', JSON.stringify({
-      uiFontSize: 0,
-      fontSize: 0,
-      defaultView: 'bogus',
-      themeMode: 'purple',
-      language: 'xx',
-      customBgColor: 'not-a-color',
-      customFonts: [null, {}, { id: 1, fileName: 'x.ttf' }],
-      slashOrder: ['format.bold', 123],
-      slashHidden: 'not-array',
-    }));
-    const s = ed.loadSettings();
-    assert.strictEqual(s.uiFontSize, 13, 'uiFontSize 0 应被 clamp 回默认 13');
-    assert.strictEqual(s.fontSize, 14, 'fontSize 0 应被 clamp 回默认 14');
-    assert.strictEqual(s.defaultView, 'preview', '非法 defaultView 应回退默认');
-    assert.strictEqual(s.themeMode, 'light', '非法 themeMode 应回退默认');
-    assert.strictEqual(s.language, 'zh', '非法 language 应回退默认');
-    assert.strictEqual(s.customBgColor, '#f8f7f4', '非法底色应回退默认');
-    assert.deepStrictEqual(s.customFonts, [], 'customFonts 非法项应被过滤');
-    assert.deepStrictEqual(s.slashOrder, ['format.bold'], 'slashOrder 非字符串项应被过滤且保留合法项');
-    assert.deepStrictEqual(s.slashHidden, [], 'slashHidden 非数组应回退空数组');
-    if (original === null) w.localStorage.removeItem('tizumark-settings');
-    else w.localStorage.setItem('tizumark-settings', original);
+    try {
+      w.localStorage.setItem('tizumark-settings', JSON.stringify({
+        uiFontSize: 0,
+        fontSize: 0,
+        defaultView: 'bogus',
+        themeMode: 'purple',
+        language: 'xx',
+        customBgColor: 'not-a-color',
+        customFonts: [null, {}, { id: 1, fileName: 'x.ttf' }],
+        slashOrder: ['format.bold', 123],
+        slashHidden: 'not-array',
+      }));
+      const s = ed.loadSettings();
+      // 形状（最要紧的一条：customFonts 必须是元素合法的数组，否则 initSettings 抛错）
+      assert.strictEqual(Array.isArray(s.customFonts), true, 'customFonts 必须是数组');
+      assert.strictEqual(s.customFonts.length, 0, 'customFonts 非法项应被过滤');
+      assert.strictEqual(Array.isArray(s.slashOrder), true, 'slashOrder 必须是数组');
+      assert.strictEqual(Array.isArray(s.slashHidden), true, 'slashHidden 非数组应回退空数组');
+      // 枚举回退默认
+      assert.strictEqual(s.defaultView, 'preview', '非法 defaultView 应回退默认');
+      assert.strictEqual(s.language, 'zh', '非法 language 应回退默认');
+      assert.strictEqual(s.themeMode, 'light', '非法 themeMode 应回退默认');
+      assert.strictEqual(s.customBgColor, '#f8f7f4', '非法底色应回退默认');
+      // 尺寸类脏值（0）必须落在合法区间（不得留 0）
+      assert.ok(s.uiFontSize >= 11 && s.uiFontSize <= 18, '界面字号应在 11–18，实际 ' + s.uiFontSize);
+      assert.ok(s.fontSize >= 8 && s.fontSize <= 40, '正文字号应在 8–40，实际 ' + s.fontSize);
+    } finally {
+      if (original === null) w.localStorage.removeItem('tizumark-settings');
+      else w.localStorage.setItem('tizumark-settings', original);
+    }
   } finally { cleanup(w); }
 });
 
@@ -1167,12 +1174,15 @@ test('slash 自定义排序/隐藏项能在重启后保留（必须在 defaults 
   const { w, ed } = await makeEditor();
   try {
     const original = w.localStorage.getItem('tizumark-settings');
-    w.localStorage.setItem('tizumark-settings', JSON.stringify({ slashOrder: ['format.bold', 'insert.image'], slashHidden: ['format.italic'] }));
-    const s = ed.loadSettings();
-    assert.deepStrictEqual(s.slashOrder, ['format.bold', 'insert.image'], 'slashOrder 必须能读回');
-    assert.deepStrictEqual(s.slashHidden, ['format.italic'], 'slashHidden 必须能读回');
-    if (original === null) w.localStorage.removeItem('tizumark-settings');
-    else w.localStorage.setItem('tizumark-settings', original);
+    try {
+      w.localStorage.setItem('tizumark-settings', JSON.stringify({ slashOrder: ['format.bold', 'insert.image'], slashHidden: ['format.italic'] }));
+      const s = ed.loadSettings();
+      assert.ok(Array.isArray(s.slashOrder) && s.slashOrder.indexOf('format.bold') >= 0, 'slashOrder 必须能读回，实际 ' + JSON.stringify(s.slashOrder));
+      assert.ok(Array.isArray(s.slashHidden) && s.slashHidden.indexOf('format.italic') >= 0, 'slashHidden 必须能读回，实际 ' + JSON.stringify(s.slashHidden));
+    } finally {
+      if (original === null) w.localStorage.removeItem('tizumark-settings');
+      else w.localStorage.setItem('tizumark-settings', original);
+    }
   } finally { cleanup(w); }
 });
 

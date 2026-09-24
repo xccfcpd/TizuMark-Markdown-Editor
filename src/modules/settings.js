@@ -90,18 +90,22 @@
           merged.slashHidden = Array.isArray(merged.slashHidden) ? merged.slashHidden.filter((s) => typeof s === 'string') : [];
           const num = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
           const int = (v, lo, hi, dflt) => Math.round(num(v, lo, hi, dflt));
-          merged.fontSize = num(merged.fontSize, 8, 40, defaults.fontSize);
-          merged.previewFontSize = num(merged.previewFontSize, 8, 40, defaults.previewFontSize);
-          merged.uiFontSize = num(merged.uiFontSize, 11, 18, defaults.uiFontSize);
-          merged.lineHeight = num(merged.lineHeight, 1, 3, defaults.lineHeight);
-          merged.tabSize = int(merged.tabSize, 1, 16, defaults.tabSize);
+          // "尺寸类"取值 ≤ 0 视为脏数据（0px 字号会让界面文字整体消失）→ 回退默认；
+          // 而 maxWidth / outlineFilterLevel 的 0 是有意义的取值，仍用 num()/int()。
+          const posNum = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) && v > 0 ? Math.min(hi, Math.max(lo, v)) : dflt);
+          const posInt = (v, lo, hi, dflt) => Math.round(posNum(v, lo, hi, dflt));
+          merged.fontSize = posNum(merged.fontSize, 8, 40, defaults.fontSize);
+          merged.previewFontSize = posNum(merged.previewFontSize, 8, 40, defaults.previewFontSize);
+          merged.uiFontSize = posNum(merged.uiFontSize, 11, 18, defaults.uiFontSize);
+          merged.lineHeight = posNum(merged.lineHeight, 1, 3, defaults.lineHeight);
+          merged.tabSize = posInt(merged.tabSize, 1, 16, defaults.tabSize);
           merged.maxWidth = int(merged.maxWidth, 0, 4000, defaults.maxWidth);
-          merged.outlineWidth = int(merged.outlineWidth, 120, 600, defaults.outlineWidth);
-          merged.previewPaneWidth = int(merged.previewPaneWidth, 200, 2000, defaults.previewPaneWidth);
-          merged.filesPanelRatio = num(merged.filesPanelRatio, 0.1, 0.9, defaults.filesPanelRatio);
+          merged.outlineWidth = posInt(merged.outlineWidth, 120, 600, defaults.outlineWidth);
+          merged.previewPaneWidth = posInt(merged.previewPaneWidth, 200, 2000, defaults.previewPaneWidth);
+          merged.filesPanelRatio = posNum(merged.filesPanelRatio, 0.1, 0.9, defaults.filesPanelRatio);
           merged.outlineFilterLevel = int(merged.outlineFilterLevel, 0, 6, defaults.outlineFilterLevel);
-          merged.previewFontWeight = num(merged.previewFontWeight, 300, 600, defaults.previewFontWeight);
-          merged.editorFontWeight = num(merged.editorFontWeight, 300, 600, defaults.editorFontWeight);
+          merged.previewFontWeight = posNum(merged.previewFontWeight, 300, 600, defaults.previewFontWeight);
+          merged.editorFontWeight = posNum(merged.editorFontWeight, 300, 600, defaults.editorFontWeight);
           // 枚举白名单：非法值一律回退默认（否则设置面板显示某值、实际行为是另一样）
           if (['light', 'dark', 'system'].indexOf(merged.themeMode) < 0) merged.themeMode = defaults.themeMode;
           if (['preview', 'edit'].indexOf(merged.defaultView) < 0) merged.defaultView = defaults.defaultView;

@@ -2416,8 +2416,10 @@
           const blob = new Blob([bytes], { type: mime });
           const url = URL.createObjectURL(blob);
           this._imageURLCache.set(dataUri, url);
-          // 记入"已创建但可能还没进 DOM"的保护集合（见 app.js 该字段的说明）
-          if (this._imageURLPending) {
+          // 记入"已创建但可能还没进 DOM"的保护集合（见 app.js 该字段的说明）。
+          // 只在**构建预览 HTML 的窗口内**生效：否则测试/直接调用方会看到"永不淘汰"
+          // （LRU 上限形同虚设 —— CI 的 image-url-cache 用例正是这么钉住的）。
+          if (this._imageURLBuilding && this._imageURLPending) {
             if (this._imageURLPending.size > 1024) this._imageURLPending.clear();   // 兜底：异常路径下别无限增长
             this._imageURLPending.add(url);
           }
@@ -2434,8 +2436,8 @@
               if (this._imageURLCache.size <= this._imageURLCacheMax) break;
               if (++scans > 32) break;
               const u = this._imageURLCache.get(k);
-              // 本次渲染刚创建、还没写进 DOM 的 URL 一律不淘汰（否则会撤销马上要显示的图片）
-              if (this._imageURLPending && this._imageURLPending.has(u)) continue;
+              // 构建期间刚创建、还没写进 DOM 的 URL 不淘汰（否则会撤销马上要显示的图片）
+              if (this._imageURLBuilding && this._imageURLPending && this._imageURLPending.has(u)) continue;
               let inUse = false;
               try {
                 inUse = !!(typeof document !== 'undefined' && document.querySelector('img[src="' + u + '"]'));

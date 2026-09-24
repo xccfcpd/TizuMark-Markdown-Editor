@@ -978,6 +978,16 @@ theme.js 的源码级守卫）、`test/code-block.test.cjs` 与 `test/settings.t
 > 教训记录：**本地无 `npm`/`node_modules` → 这两个文件（jsdom / 需 `unified` 的用例）本地跑不了**，
 > 只能靠 CI 验证；对这类改动必须把"CI 失败清单拉全"（不要只看第一条注解），否则会漏修。
 
+### 2.26 CI 红修复（第三轮）：抽取式测试 / LRU 保护窗口 / 设置脏值语义（2026-09-24）
+
+| 用例 | 真因 | 修法 |
+|---|---|---|
+| `view-mode-scroll.test.cjs` 的 A1–A5、H1–H3 全红，错误 `editorTab is not defined` | 我在 `editor-core.js` 的处理器里引入了局部辅助函数 `editorTab()`，而本仓有一类**"抽取源码再 eval"**的测试（该文件的 D0 用例会把真实的编辑器 scroll 处理器源码切出来执行）→ 自由标识符直接 ReferenceError，并让同一 harness 的 promise 全部 reject | 四处回写点**内联**判断（只用 `this._editorTab` / `this.tabs` / `this.activeTab` 属性访问），不引入任何自由标识符。⚠ 写进教训：被抽取执行的方法体内不要新增自由标识符 |
+| `image-url-cache.test.cjs:33`「超限 revoke 最久未用的 URL」 | 我加的保护集合 `_imageURLPending` 是"永久粘住"的：直接在测试里连续调用 `getCachedImageURL` 时所有 URL 都在保护集里 → 永不淘汰、**LRU 上限形同虚设** | 用显式开关 `_imageURLBuilding` 把保护窗口限定在"构建预览 HTML 字符串"期间（控制器开/关），窗口外完全按原 LRU 语义 |
+| 我上一轮新写的两条 jsdom 设置用例（脏数据清洗 / slash 持久化） | 期望值与实现不符：我断言 `fontSize: 0 → 默认 14`，而当时的 clamp 给出的是**区间下界 8**；且 localStorage 还原写在断言之后，一旦断言失败就残留脏数据 | ① 语义定为"尺寸类 ≤0 视为脏值 → 回退默认"（`posNum/posInt`；`maxWidth`/`outlineFilterLevel` 的 0 仍有效）；② 用例改为**区间/包含式断言**（不依赖具体 clamp 值），并把 localStorage 还原放进嵌套 `finally` |
+
+> 本轮仍无法本地验证这 3 个文件（jsdom / 需要 `unified`），只能靠 CI；结论可见下一次 CI 运行。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
