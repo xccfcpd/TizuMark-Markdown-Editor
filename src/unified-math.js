@@ -176,8 +176,25 @@ function expandSiUnit(raw) {
     }
     // siunitx 的 `//` 表示"每"（`kJ//mol` → `kJ/mol`）；`*` 表示乘（→ `\cdot`）
     if (c === '/' && s[i + 1] === '/') { flush(); out += '/'; lastWasUnit = false; i += 2; continue; }
+    // 单个 `/`（如 `m/s`）：同样清掉"上一个原子是单位"的标记，否则后面的 `s` 会被补上 `\,`
+    //（`m/\,s` ✗ —— 既有用例 `expandSiUnit('m/s') === 'm/s'` 正是钉这条）
+    if (c === '/') { flush(); out += '/'; lastWasUnit = false; i++; continue; }
     if (c === '*') { flush(); out += '\\cdot '; lastWasUnit = false; i++; continue; }
     if (c === '^' || c === '_') { flush(); out += c; i++; continue; }
+    // 连续字母是**一个单位原子**（`kg` 不能被拆成 k + g）。旧实现把字母逐字符当普通字符，
+    // 于是 `lastWasUnit` 永远为 false → 上一步补的分隔逻辑形同虚设，`kg m` 仍会粘成 `kgm`
+    //（= 毫秒，语义完全变了；审计复核发现，2026-09-24）。
+    if (/[A-Za-z]/.test(c)) {
+      let j = i;
+      while (j < s.length && /[A-Za-z]/.test(s[j])) j++;
+      if (lastWasUnit) out += '\\,';
+      out += pending + s.slice(i, j) + pendingExp;
+      pending = '';
+      pendingExp = '';
+      lastWasUnit = true;
+      i = j;
+      continue;
+    }
     flush();
     if (c === '%') out += '\\%';
     else if (c === '&') out += '\\&';

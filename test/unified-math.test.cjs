@@ -68,6 +68,27 @@ test('siunitx: 无 siunitx 命令时保持原样', () => {
   assert.strictEqual(M.expandSiunitx(tex), tex);
 });
 
+test('siunitx: 空格 / `.` / `//` / `*` 是单位分隔（不得粘成 kgm＝毫秒）', () => {
+  // 审计发现：字母被逐字符处理 → lastWasUnit 永远 false → 分隔逻辑形同虚设，
+  // `kg m` 粘成 `kgm`（= 毫秒，语义完全变了），`\SI{1.2e-3}{m s^-1}` → `ms^-1`。
+  assert.strictEqual(M.expandSiUnit('kg m'), 'kg\\,m');
+  assert.strictEqual(M.expandSiUnit('N.m'), 'N\\,m');
+  assert.strictEqual(M.expandSiUnit('kJ//mol'), 'kJ/mol');
+  assert.strictEqual(M.expandSiUnit('kg*m'), 'kg\\cdot m');
+  assert.strictEqual(M.expandSiUnit('m/s'), 'm/s', '单个 / 后面不补细空格');
+  assert.strictEqual(M.expandSiunitx('\\SI{1.2e-3}{m s^-1}'), '1.2\\times 10^{-3}\\,\\mathrm{m\\,s^-1}');
+  assert.strictEqual(M.expandSiunitx('\\si{\\kilogram\\metre}'), '\\,\\mathrm{kg\\,m}', '宏写法仍然正确');
+});
+
+test('公式编号: 用户 \\tag{1} 占用流水号，后续自动编号不与其撞号', () => {
+  // 审计发现：只写 \tag 没写 \label 的公式不占号 → 紧随其后的自动编号也得到 1（同页两个 (1)）
+  const list = [ph('$$a\\tag{1}$$'), ph('$$b\\label{eq:b}$$'), ph('$$c\\label{eq:c}$$')];
+  const labels = M.assignEquationNumbers(list);
+  assert.strictEqual(list[1].eqNumber, 2, 'tag{1} 之后应为 2');
+  assert.strictEqual(list[2].eqNumber, 3);
+  assert.strictEqual(labels.get('eq:b'), 2, '\\eqref 也应指向 2');
+});
+
 test('siunitx: 普通字符与转义', () => {
   assert.strictEqual(M.expandSiUnit('m/s'), 'm/s');
   assert.strictEqual(M.expandSiUnit('\\meter\\tothe{3}'), 'm^{3}');
