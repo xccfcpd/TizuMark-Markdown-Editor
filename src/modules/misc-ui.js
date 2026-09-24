@@ -38,7 +38,27 @@
             // 容器内边距（两侧灰色区，target 是 div 本身）匹配不到，lightbox 打不开。
             // 改为容器锚点 + 内部取 svg：中央与空白区点击都能打开图表查看器。
             const svg = mermaidContainer.querySelector('svg');
-            if (svg) this.showLightbox(svg, 'svg');
+            if (svg) { this.showLightbox(svg, 'svg'); return; }
+            // canvas 类图表（ECharts）：容器里没有 <svg>，旧实现**静默吞掉点击**（既没放大、
+            // 也没提示）——而文档声明"点击可放大"（审计发现，2026-09-24）。
+            // 这里用实例的 getDataURL 生成 PNG，走图片灯箱（与导出快照同一套 API）。
+            const dType = mermaidContainer.getAttribute('data-diagram-type');
+            const ec = (typeof window !== 'undefined' && window.echarts)
+              ? window.echarts
+              : (typeof echarts !== 'undefined' ? echarts : null);
+            if (dType === 'echarts' && ec && ec.getInstanceByDom) {
+              try {
+                const inst = ec.getInstanceByDom(mermaidContainer);
+                if (inst && !inst.isDisposed()) {
+                  const url = inst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: this.isDark ? '#1e1e1e' : '#ffffff' });
+                  if (url) { this.showImageLightbox(url); return; }
+                }
+              } catch (err) {
+                if (typeof console !== 'undefined') console.warn('[lightbox] ECharts 快照失败:', err);
+              }
+            }
+            // 其它"无 SVG 且无法快照"的情形：明确告知，不要再静默吞掉
+            if (typeof this.showToast === 'function') this.showToast(this.t('lightboxUnsupported'), 'info');
             return;
           }
   

@@ -89,7 +89,20 @@ function renderEcharts(container, code, opts) {
     throw new Error('ECharts 需要 JSON 对象形式的 option');
   }
   let height = DEFAULT_ECHARTS_HEIGHT;
-  if (Number(option.tizuHeight) > 0) height = Number(option.tizuHeight);
+  // tizuHeight 夹取到合理区间：超大值会创建巨型 canvas（超出浏览器上限后表现为空白/异常），
+  // 而 0/负值以前会静默回落（审计发现，2026-09-24）
+  if (option.tizuHeight !== undefined && option.tizuHeight !== null && option.tizuHeight !== '') {
+    const h = Number(option.tizuHeight);
+    if (!isFinite(h) || h <= 0) throw new Error('ECharts 的 tizuHeight 必须是正数（单位 px），当前：' + option.tizuHeight);
+    height = Math.max(120, Math.min(2000, Math.round(h)));
+  }
+  // 声明"仅 2D"（未打包 echarts-gl）：3D/GL 系列在缺插件时只会画出一片空白 → 提前给可读错误
+  if (Array.isArray(option.series)) {
+    const bad3d = option.series.find((s) => s && typeof s.type === 'string' && /3D$|^surface$|^lines3D$|^scatter3D$/i.test(s.type));
+    if (bad3d) {
+      throw new Error('ECharts 仅支持 2D 图表（未打包 echarts-gl），不支持 series.type = "' + bad3d.type + '"');
+    }
+  }
   delete option.tizuHeight;
 
   // 同容器重复渲染（主题切换）先销毁旧实例
@@ -307,6 +320,13 @@ async function renderGraphviz(container, code, opts) {
   const mod = hpccGraphvizModule();
   if (!mod || typeof mod.Graphviz !== 'function') throw new Error('Graphviz 未加载（lib/graphviz.min.js）');
   const { source, engine } = extractDotEngine(code);
+  // 规模守卫：`gv.layout` 是**同步阻塞**的 wasm 调用（无超时/取消），超大 DOT 会把整篇预览卡死。
+  // 这里给一个保守上限，超出即给可读错误而不是让界面假死（审计发现，2026-09-24）。
+  const edgeCount = (source.match(/->|--/g) || []).length;
+  const nodeLines = (source.match(/^\s*[^\s{}]+[^;{}]*;/gm) || []).length;
+  if (edgeCount + nodeLines > 4000) {
+    throw new Error('DOT 规模过大（约 ' + (edgeCount + nodeLines) + ' 条语句），可能长时间卡住界面；请拆分后再渲染');
+  }
   const gv = await mod.Graphviz.load();
   let svg = null;
   try {

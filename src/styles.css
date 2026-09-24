@@ -2851,10 +2851,16 @@ details.admonition[open] > summary.admonition-summary::after {
   margin: 0;
 }
 
-/* KaTeX error fallback */
+/* KaTeX 渲染失败（未知命令/语法错）时的兜底：必须**一眼可见** ——
+   以前用"次要灰 + 斜体"，与普通正文几乎无差别，用户会以为公式本来就长这样（审计发现，2026-09-24）。 */
 .preview-content .katex-error {
-  color: var(--text-secondary);
+  color: #d9480f;
   font-style: italic;
+  text-decoration: underline wavy rgba(217, 72, 15, 0.55);
+  text-underline-offset: 3px;
+}
+[data-theme="dark"] .preview-content .katex-error {
+  color: #ffa94d;
 }
 
 

@@ -89,7 +89,10 @@ function dedentLine(line, n) {
 }
 
 function parseAdmonitionHeader(line) {
-  const m = line.match(/^([ \t]*)(!!!|\?\?\?\+?)\s+([A-Za-z][\w-]*)(?:\s+"([^"]*)")?\s*$/);
+  // 标题同时接受双引号与单引号（`::: ` 容器两种都支持，这里曾只认双引号 → `!!! note '标题'`
+  // 整块退化成纯文本）；`???-` 与 `???` 同义（默认收起），`???+` 默认展开。
+  // （审计发现，2026-09-24）
+  const m = line.match(/^([ \t]*)(!!!|\?\?\?[-+]?)\s+([A-Za-z][\w-]*)(?:\s+(?:"([^"]*)"|'([^']*)'))?\s*$/);
   if (!m) return null;
   const type = ADMONITION_ALIASES[m[3].toLowerCase()];
   if (!type) return null;
@@ -97,7 +100,7 @@ function parseAdmonitionHeader(line) {
     indent: indentWidth(m[1]),
     marker: m[2],
     type: type,
-    title: m[4] || null,
+    title: m[4] || m[5] || null,
     collapsible: m[2].charAt(0) === '?',
     open: m[2] === '???+',
   };
@@ -197,7 +200,9 @@ function convertAdmonitionsInto(content, blocks) {
           depth--;
           if (depth === 0) { j++; break; }
           body.push(l);
-        } else if (parseContainerHeader(l)) {
+        } else if (parseContainerHeader(l) || CONTAINER_OPEN_RE.test(l)) {
+          // **未知名字**的 `:::` 也必须计入深度：否则它会被当成普通正文行，而其后本该属于
+          // 内层的 `:::` 会被当成外层闭合 → 提前收口、末尾留下游离标记（审计发现，2026-09-24）
           depth++;
           body.push(l);
         } else {

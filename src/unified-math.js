@@ -166,7 +166,17 @@ function expandSiUnit(raw) {
       i = e > i ? e + 1 : i + 1;
       continue;
     }
-    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    // 空白与 `.` 是 siunitx 的"单位连接符"：相邻单位之间要补细空格（`kg m` → `kg\,m`）。
+    // 旧实现直接把空格丢掉 → `kg m` 变成 `kgm`（= 毫秒，语义完全变了；审计发现，2026-09-24）。
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '.') {
+      if (lastWasUnit) out += '\\,';
+      lastWasUnit = false;
+      i++;
+      continue;
+    }
+    // siunitx 的 `//` 表示"每"（`kJ//mol` → `kJ/mol`）；`*` 表示乘（→ `\cdot`）
+    if (c === '/' && s[i + 1] === '/') { flush(); out += '/'; lastWasUnit = false; i += 2; continue; }
+    if (c === '*') { flush(); out += '\\cdot '; lastWasUnit = false; i++; continue; }
     if (c === '^' || c === '_') { flush(); out += c; i++; continue; }
     flush();
     if (c === '%') out += '\\%';
@@ -388,6 +398,19 @@ function assignEquationNumbers(placeholders, options) {
       if (key) found.push(key);
       return '';
     });
+    // 用户自带 `\tag`：即使没有 `\label` 也必须**占用编号**。否则紧随其后的自动编号会与它撞号
+    // （同页出现两个 (1)，且 \eqref 指向的号与视觉不符 —— 审计发现，2026-09-24）。
+    // 数字型 tag 直接抬高流水号；非数字（如 \tag{$\ast$}）无法参与流水，保持原样。
+    if (!sectionAt) {
+      const tagOnly = /\\tag\*?\s*\{([^{}]*)\}/.exec(ph.text);
+      if (tagOnly) {
+        const shown = String(tagOnly[1]).trim();
+        if (/^\d+$/.test(shown)) {
+          const n = parseInt(shown, 10);
+          if (n > counter) counter = n;
+        }
+      }
+    }
     const noNumber = /\\notag\b|\\nonumber\b/.test(ph.text);
     if (noNumber) ph.text = ph.text.replace(/\\notag\b|\\nonumber\b/g, '');
     if (found.length === 0) continue;

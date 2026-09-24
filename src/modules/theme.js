@@ -209,6 +209,10 @@
           }
   
           await this.rerenderMermaid();
+          // 主题按钮走的是 toggleTheme（**不是** applyThemeMode）：这里同样要重绘原生引擎，
+          // 否则 Graphviz 的黑线会画在暗底上（几乎看不见）、ECharts/WaveDrom/Markmap 停在旧主题
+          //（审计发现主入口漏了这条接线，2026-09-24）。
+          await this.rethemeNativeDiagrams();
         } finally {
           // 最小显示时长：图表少/切换很快时遮罩也不一闪而过，保证用户能看清 loading 界面
           const MIN_SHOW_MS = 300;

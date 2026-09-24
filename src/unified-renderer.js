@@ -438,6 +438,24 @@ function convertMathFences(content) {
         i++;
         continue;
       }
+      // 【非数学围栏】整块跳过：否则**代码块内部**的 ```math 行会被误认成数学围栏开始，
+      // 而普通围栏的闭合行被数学分支消费 → 其后整篇文档被 remark 吞进代码块（数据级破坏：
+      // 公式/图表/正文全失效；审计发现，2026-09-24）。
+      const other = trimmed.match(/^(`{3,}|~{3,})/);
+      if (other) {
+        const ch = other[1][0];
+        const len = other[1].length;
+        out.push(line);
+        i++;
+        while (i < lines.length) {
+          const l2 = lines[i];
+          const close2 = l2.trim().match(/^(`{3,}|~{3,})\s*$/);
+          out.push(l2);
+          i++;
+          if (close2 && close2[1][0] === ch && close2[1].length >= len) break;
+        }
+        continue;
+      }
       out.push(line);
       i++;
       continue;
@@ -532,9 +550,13 @@ function convertAlerts(content) {
       }
       const idx = alertBlocks.length;
       alertBlocks.push({ type: alertType, title: customTitle, content: contentLines.join('\n') });
-      // 将 END 标记附着到最后一行内容末尾，避免增加额外行
+      // 将 END 标记附着到最后一行内容末尾，避免增加额外行。
+      // **必须总是存在**：内容为空（只写 `> [!NOTE]`、后面没有正文行）时，旧实现不插标记 →
+      // restoreAlerts 找不到闭合 → 整块静默消失，用户以为"没写对"（审计发现，2026-09-24）。
       if (contentLines.length > 0) {
         contentLines[contentLines.length - 1] += '<!--ALERTBLOCK_' + idx + '_END-->';
+      } else {
+        contentLines.push('<!--ALERTBLOCK_' + idx + '_END-->');
       }
       result.push('<!--ALERTBLOCK_' + idx + '-->');
       result.push(contentLines.join('\n'));

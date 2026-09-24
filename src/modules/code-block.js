@@ -21,7 +21,9 @@ function escapeHTML(s) {
 
 function detectLanguage(hljs, block) {
   const cls = block.className || '';
-  const m = cls.match(/language-([a-zA-Z0-9_-]+)/);
+  // 语言名允许 `+` / `#` / `.`（`language-c++`、`language-c#`、`language-objective-c++`）：
+  // 旧字符集不含这些 → `c++` 被截成 `c`，整块按 C 高亮（审计发现，2026-09-24）
+  const m = cls.match(/language-([A-Za-z0-9_+#.\-]+)/);
   if (m) return m[1];
   try {
     const auto = hljs.highlightAuto(block.textContent);
@@ -72,6 +74,9 @@ function processCodeBlocks(preview, opts) {
     try {
       preview.querySelectorAll('pre code').forEach((block) => {
         const cls = block.className || '';
+        // 注意：这套"跳过"清单必须在**有/无 hljs 两条分支**里都生效（无 hljs 时代码块不会被
+        // 高亮，但同样不能给它套行号 —— 否则 mermaid/图表源码的 textContent 会被行号污染，
+        // 渲染直接失败；审计发现，2026-09-24）
         if (/language-(math|mermaid|katex)/.test(cls)) return;
         // 图表块一律不碰：mermaid 系（含 PlantUML / D2 转换结果）的源码要在渲染阶段被引擎
         // 原样读取（.code-line 包裹会把 textContent 弄脏）；原生引擎块此刻已是占位容器，
@@ -120,6 +125,11 @@ function processCodeBlocks(preview, opts) {
     // 代码块行号（拆分代码行，CSS 控制行号显隐和换行）
     try {
       preview.querySelectorAll('pre code').forEach((block) => {
+        // 与 hljs 分支**同一套跳过规则**：mermaid / 图表源码绝不能被套上行号（否则
+        // renderMermaidPlaceholders 读到的 textContent 带数字，渲染直接失败；审计发现，2026-09-24）
+        const cls = block.className || '';
+        if (/language-(math|mermaid|katex)/.test(cls)) return;
+        if (block.closest && block.closest('pre.diagram-src-pending, .diagram-container')) return;
         if (block.querySelector('.code-scroll')) return;
         const lines = block.textContent.split('\n');
         block.innerHTML = buildCodeScrollNoHljs(lines);

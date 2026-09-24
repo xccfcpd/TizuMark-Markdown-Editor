@@ -29,7 +29,17 @@ const EMOJI_MAP = {
   ':bear:': '🐻', ':bird:': '🐦', ':fish:': '🐟', ':turtle:': '🐢',
   ':octopus:': '🐙', ':penguin:': '🐧', ':butterfly:': '🦋', ':bee:': '🐝',
   ':art:': '🎨', ':music:': '🎵', ':film:': '🎬', ':camera:': '📷',
-  ':unlock:': '🔓', ':link:': '🔗', ':scissors:': '✂️', ':pushpin:': '📌'
+  ':unlock:': '🔓', ':link:': '🔗', ':scissors:': '✂️', ':pushpin:': '📌',
+  // GitHub 常用别名/补充（用户验收文档里用到的 :snowflake: / :white_check_mark: 之前**缺失**，
+  // 写进正文不生效；审计发现，2026-09-24）
+  ':snowflake:': '❄️', ':white_check_mark:': '✅', ':heavy_check_mark:': '✔️',
+  ':bangbang:': '‼️', ':grey_exclamation:': '❕', ':grey_question:': '❔',
+  ':sob:': '😭', ':sweat_smile:': '😅', ':rofl:': '🤣', ':sunglasses:': '😎',
+  ':heart_eyes:': '😍', ':star_struck:': '🤩', ':facepalm:': '🤦', ':shrug:': '🤷',
+  ':raised_hands:': '🙌', ':point_right:': '👉', ':heavy_plus_sign:': '➕',
+  ':red_circle:': '🔴', ':green_circle:': '🟢', ':large_blue_circle:': '🔵',
+  ':white_circle:': '⚪', ':black_circle:': '⚫', ':arrow_right:': '➡️',
+  ':hourglass:': '⌛', ':alarm_clock:': '⏰', ':stopwatch:': '⏱️', ':coffee_cup:': '☕'
 };
 
 function processEmojiShortcodes(preview) {
@@ -38,7 +48,9 @@ function processEmojiShortcodes(preview) {
   // 若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，造成"同一份源码第一次正常、
   // 第二次被改坏"（审计发现，2026-09-24）。但**只跳过引擎容器里的 SVG**：正文里用户手写的
   // 内联 <svg> 仍应正常处理（审计复核发现）。
-  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA', 'A'];
+  // 注：**不含 'A'** —— 链接文字里的短码应当照常转换（跳过 `<a>` 并不带来额外安全收益：href 是
+  // 属性而不是文本节点；GitHub 也会替换链接文字里的短码。审计发现，2026-09-24）。
+  const skipTags = ['CODE', 'PRE', 'ABBR', 'SCRIPT', 'STYLE', 'TEXTAREA'];
   const walker = document.createTreeWalker(
     preview,
     NodeFilter.SHOW_TEXT,
@@ -216,8 +228,9 @@ function processMath(preview) {
       delimiters: [
         { left: '$$', right: '$$', display: true },
         { left: '$', right: '$', display: false },
-        { left: '\\(', right: '\\)', display: false },
-        { left: '\\[', right: '\\]', display: true }
+        // 注：`\(…\)` / `\[…\]` **不再列出** —— guardMathBlocks 有意不拦截它们（remark 会按转义
+        // 处理，渲染出来本就是字面括号），列在这里只是"看起来支持"的死配置（审计发现，2026-09-24）。
+        // 支持的定界符：`$…$`、`$$…$$` 与 ```math 围栏（见 guide）。
       ],
       throwOnError: false,
       ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],

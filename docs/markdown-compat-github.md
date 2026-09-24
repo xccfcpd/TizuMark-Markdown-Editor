@@ -72,7 +72,7 @@ GitHub 官方文档（Writing mathematical expressions）确认：
 | 项 | GitHub | TizuMark | 一致性 |
 |----|---------|-----------|--------|
 | 标题 `h1~h6` | ✅ | ✅ | ✅ |
-| 标题自动生成 `id` 锚点 | ✅ | ✅（本次新增 `rehypeHeadingIds`，规则对齐 `headingToId`） | ✅ |
+| 标题自动生成 `id` 锚点 | ✅ | ✅（新增 `rehypeHeadingIds`，规则对齐 `headingToId`） | ⚠️ 本仓库自定义 slug：`_` 也转成 `-`、并合并连续 `-`；GitHub 保留 `_`、不合并。跨平台锚点不通用（审计更正，原表误标 ✅） |
 | 中文标题锚点 | ✅（slug 保留中文） | ✅（保留中文） | ✅ |
 | 重复标题去重 `-2/-3` | ✅ | ✅ | ✅ |
 | 目录内点击跳转 | ✅ | ✅（点击滚动到对应标题） | ✅ |
@@ -83,7 +83,7 @@ GitHub 官方文档（Writing mathematical expressions）确认：
 |------|---------|-----------|--------|
 | NOTE / TIP / IMPORTANT / WARNING / CAUTION | ✅（5 种，`> [!NOTE]` 语法） | ✅（同 5 种） | ✅ 语法一致 |
 | INFO 类型 | ❌（GitHub 无，NOTE 含其语义） | ✅（额外支持） | ⚠️ TizuMark 多一种 INFO |
-| 标题语言 | 英文固定（"Note" 等） | 中文（"提示"/"注意" 等） | ⚠️ 显示文案不同 |
+| 标题语言 | 英文固定（"Note" 等） | 英文固定（"Note" 等） | ✅ 一致（审计更正：本仓库实现即英文固定，原表误写为中文） |
 
 > 注：GitHub 的 alert 语法 `> [!TYPE]` 与 TizuMark 的 callout 语法**完全一致**，文档可跨平台通用。
 
