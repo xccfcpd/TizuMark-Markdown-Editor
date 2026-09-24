@@ -275,6 +275,35 @@ test('功能矩阵 · 标题锚点：渲染后每个标题都有 id（供大纲/
   assert.ok(h2 && h2.id, 'h2 应有 id');
 });
 
+test('功能矩阵 · 标题锚点交叉核对：大纲算出的 id 必须等于渲染出的 heading id', () => {
+  // 这是第 3 轮修过的"大纲 id 与渲染 id 不一致 → 点击静默失效"，第 15 轮又补了含公式/HTML 的标题。
+  // 这里做**端到端交叉核对**：同一篇文档，一边走渲染管线取 DOM id，一边走 Outline.extractHeadings 取大纲 id。
+  const Outline = require('../src/modules/outline.js');
+  const MD = [
+    '# 纯标题', '# 粗体 **粗** 与 `代码`', '# 链接 [文字](https://x) 尾',
+    '# 公式 $E = mc^2$ 说明', '# 单字符公式 $x$ 后', '# 货币 $ 100 $ 不是公式',
+    '# 行内 HTML <b>标签</b> 后', '# :fire: 短码标题', '# 重复', '# 重复',
+  ].join('\n\n');
+  const { env } = renderPipeline(MD);
+  // 与 layout.js 的 headingToId 同规则（layout.js 是浏览器 IIFE，测试里复刻等价实现）
+  const headingToId = (text) => {
+    let id = '';
+    for (const ch of text) {
+      if (/[\p{L}\p{N}]/u.test(ch)) id += ch.toLowerCase();
+      else if (ch === ' ' || ch === '-' || ch === '_') id += '-';
+    }
+    return id.replace(/-+/g, '-').replace(/^-|-$/g, '');
+  };
+  const heads = Outline.extractHeadings(MD, { headingToId });
+  const domIds = [...env.preview.querySelectorAll('h1')].map((h) => h.id);
+  assert.strictEqual(heads.length, domIds.length,
+    '大纲标题数应与渲染出的 h1 数一致（' + heads.length + ' vs ' + domIds.length + '）');
+  heads.forEach((h, i) => {
+    assert.strictEqual(h.id, domIds[i],
+      '第 ' + (i + 1) + ' 个标题（' + h.text + '）id 不一致：大纲=' + h.id + ' / DOM=' + domIds[i]);
+  });
+});
+
 test('功能矩阵 · 缩写：*[HTML]: … 定义被隐藏，正文出现带 title 的 abbr', () => {
   const { env } = renderPipeline(DOC);
   const abbr = env.preview.querySelector('abbr');

@@ -9,13 +9,72 @@
 // 与生成 id 的轻量清理（仅去 [*`~[]）不同：这里进一步剥离链接括号、行内代码
 // 反引号、强调/删除线标记、尾随 # 等，使显示文字更干净。
 // 注意：HTML 标签（<...>）不在此删除，交由渲染层转义为文字，避免误删正常尖括号内容。
+// 行内数学的判定：**必须与 unified-renderer.js 的 looksLikeMath 完全一致**。
+// 为什么大纲需要它：渲染侧会把「像数学」的 $...$ 换成 <!--MATHBLOCK_n--> 注释节点，
+// 而注释**不参与** heading slug → 含公式的标题 DOM id 里没有公式；若大纲把 $...$ 的字符算进去，
+// 两边 id 就对不上（大纲/锚点/面包屑点击静默失效 —— 审计发现，2026-09-25）。
+function looksLikeMath(inner) {
+  const t = inner.trim();
+  if (!t) return false;
+  if (/[\\{}_^&#@=+\-*/|<>°±×÷≤≥≠≈∞∈∪∩⊂⊃∑∏∫√′″']/.test(t)) return true;
+  if (/^[A-Za-z\u0370-\u03FF\u1F00-\u1FFF]$/.test(t)) return true;
+  return false;
+}
+
+// 丢弃「会被渲染侧当成公式」的 $...$（其余按字面量保留）。规则复刻 guardMathBlocks 的行内分支：
+//   · 开 $ 之后紧跟 \n / \r / $ / ` / < 的不算公式；
+//   · 扫描中遇到 HTML 标签起始（< 后跟 / 或字母）即放弃（不成对）；
+//   · 闭合 $ 前是空白且内容不像数学 → 拒绝（保护 "$ 100 $" 这类货币文本）；
+//   · inner 含换行，或含「两侧被空白包围的 |」（表格列分隔符）→ 拒绝；
+//   · 行内代码 `...` 内的 $ 不参与（与渲染侧 inBacktick 一致）。
+function stripInlineMath(raw) {
+  const s = String(raw);
+  let out = '';
+  let i = 0;
+  let inBacktick = false;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '`') { inBacktick = !inBacktick; out += ch; i++; continue; }
+    if (ch !== '$' || inBacktick) { out += ch; i++; continue; }
+    const next = s[i + 1];
+    if (next === undefined || next === '\n' || next === '\r' || next === '$' || next === '`' || next === '<') {
+      out += ch; i++; continue;
+    }
+    let j = i + 1;
+    let closed = false;
+    while (j < s.length) {
+      const c = s[j];
+      if (c === '<' && (s[j + 1] === '/' || /[A-Za-z]/.test(s[j + 1] || ''))) break;   // 遇标签：不成对
+      if (c === '$') {
+        const inner = s.slice(i + 1, j);
+        const closePrevIsSpace = /\s$/.test(inner);
+        if (/[\n\r]/.test(inner)) break;
+        if (inner.includes('|') && /(?:^|\s)\|(?:\s|$)/.test(inner)) break;
+        if (closePrevIsSpace && !looksLikeMath(inner)) break;
+        out += ' ';            // 公式整段丢弃（渲染侧同样不参与 slug）
+        i = j + 1;
+        closed = true;
+        break;
+      }
+      j++;
+    }
+    if (closed) continue;
+    out += ch;                 // 未配对 / 被拒绝：按字面量保留，继续往后找
+    i++;
+  }
+  return out;
+}
+
 function stripInlineMarkdown(raw) {
-  let s = String(raw);
+  // 数学要先处理：此时行内代码的反引号还在，$ 在代码里不会被误当公式
+  let s = stripInlineMath(raw);
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');     // 图片 ![alt](url)
   s = s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');  // 链接 [text](url) -> text
   s = s.replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1'); // 引用式链接 [text][ref] -> text
   s = s.replace(/<(https?:\/\/[^>]+)>/g, '$1');   // 自动链接 <http://x> -> http://x
   s = s.replace(/`([^`]+)`/g, '$1');              // 行内代码 `code` -> code
+  // 真形态的行内 HTML 标签（渲染侧只保留其文本内容；`a < b` 这种不是标签，不受影响）
+  s = s.replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^>]*)?>/g, '');
   s = s.replace(/\*\*([^*]+)\*\*/g, '$1');        // 粗体 **x**
   s = s.replace(/__([^_]+)__/g, '$1');            // 粗体 __x__
   s = s.replace(/\*([^*]+)\*/g, '$1');            // 斜体 *x*

@@ -21,6 +21,33 @@ test('无标题返回空数组', async () => {
   assert.deepStrictEqual(extractHeadings('正文没有标题\n第二段', opts), []);
 });
 
+test('标题文本清洗：公式丢弃 / 真 HTML 标签剥掉 / 货币与代码内 $ 保留（与渲染侧 slug 对齐）', async () => {
+  // 背景（审计发现 2026-09-25）：渲染侧把「像数学」的 $...$ 换成 <!--MATHBLOCK_n--> 注释节点，
+  // 注释不参与 heading slug → 含公式的标题 DOM id 里没有公式。大纲若把 $...$ 的字符算进去，
+  // 两边 id 不一致 → 大纲/锚点点击静默失效。这里钉住清洗规则必须与渲染侧一致。
+  const cases = [
+    ['纯标题', '纯标题', '纯标题'],
+    ['粗体 **粗** 与 `代码`', '粗体 粗 与 代码', '粗体-粗-与-代码'],
+    ['链接 [文字](https://x) 尾', '链接 文字 尾', '链接-文字-尾'],
+    ['公式 $E = mc^2$ 说明', '公式 说明', '公式-说明'],                       // 公式整段丢弃
+    ['单字符公式 $x$ 后', '单字符公式 后', '单字符公式-后'],
+    ['货币 $ 100 $ 不是公式', '货币 $ 100 $ 不是公式', '货币-100-不是公式'],   // 不像数学 → 保留字面量
+    ['行内 HTML <b>标签</b> 后', '行内 HTML 标签 后', '行内-html-标签-后'],     // 真标签剥掉、文本保留
+    ['当 a < b > c 时', '当 a < b > c 时', '当-a-b-c-时'],                    // 不是标签 → 原样
+    [':fire: 短码标题', ':fire: 短码标题', 'fire-短码标题'],
+    ['`$x$` 代码里的公式', '$x$ 代码里的公式', 'x-代码里的公式'],               // 代码内的 $ 不当公式
+    ['图片 ![图](x.png) 说明', '图片 说明', '图片-说明'],
+  ];
+  for (const [src, expText, expId] of cases) {
+    const hs = extractHeadings('# ' + src, opts);
+    assert.strictEqual(hs[0].text, expText, '标题文本清洗不符：' + src);
+    assert.strictEqual(hs[0].id, expId, '标题 id 不符（会与渲染侧不一致）：' + src);
+  }
+  // 重名标题的编号必须与渲染侧同一套（首个不带后缀，其后 -2 / -3）
+  const dup = extractHeadings('# 重复\n\n# 重复\n\n# 重复', opts);
+  assert.deepStrictEqual(dup.map((h) => h.id), ['重复', '重复-2', '重复-3']);
+});
+
 test('提取 # ~ ###### 各级标题与行号', async () => {
   const md = '# 一级\n正文\n## 二级\n### 三级\n```\n# 这是代码块里的假标题\n```\n#### 四级';
   const hs = extractHeadings(md, opts);
@@ -76,16 +103,23 @@ test('buildOutlineTree 按层级组织', async () => {
 });
 
 test('renderOutlineHtml 输出层级/锚点/id/data-line 且转义', async () => {
+  // `<x>` 是**原始 HTML 标签**：渲染侧会被 sanitize 掉、只保留其文本内容（这里为空），
+  // 因此渲染出的 id 是 `标题`。大纲侧必须剥掉标签才能与之一致
+  //（旧断言锁的是"把 <x> 也算进 slug"的错配行为 —— 第 15 轮审计发现并修正）。
   const hs = extractHeadings('# 标题 <x>\n## 子', opts);
   const tree = buildOutlineTree(hs);
   const html = renderOutlineHtml(tree, opts);
   assert.ok(html.includes('class="outline-item level-1"'));
-  assert.ok(html.includes('data-id="标题-x"'));
+  assert.ok(html.includes('data-id="标题"'), 'id 应与渲染一致（标签不参与）: ' + html);
   assert.ok(html.includes('data-line="0"'));
   // 含子节点应有 toggle
   assert.ok(html.includes('outline-toggle'));
-  // 转义校验
-  assert.ok(html.includes('&lt;x&gt;'), '标题文本应被转义: ' + html);
+
+  // 转义校验用**字面量 `<`**（不是标签）：这类内容要保留并转义
+  const hs2 = extractHeadings('# 比较 a < b 的写法', opts);
+  const html2 = renderOutlineHtml(buildOutlineTree(hs2), opts);
+  assert.ok(html2.includes('&lt;'), '字面量 < 应被转义: ' + html2);
+  assert.ok(html2.includes('data-id="比较-a-b-的写法"'), '字面量 < 的 slug 应与渲染一致: ' + html2);
 });
 
 test('renderOutlineHtml: 无子节点项也渲染隐藏占位 toggle 以保证标签对齐', async () => {

@@ -1328,6 +1328,35 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 | `renderError` 的 HTML 安全 | 用 `textContent` 写消息与源码 ✓ 无注入面 |
 | Mermaid 失败 | `<pre>` 仅在成功时被容器替换；失败时源码保持可见 + 摘掉 `diagram-src-pending` ✓ |
 
+### 2.36 第十五轮：**标题锚点一致性（含公式/HTML 的标题）** + 设置项三方核对（2026-09-25）
+
+这轮从"设置项 ↔ 功能 ↔ UI"三方一致性起手，结果在**标题锚点**上查出一个真缺陷。
+
+#### 真问题：含行内公式（或原始 HTML 标签）的标题，大纲/锚点 id 与渲染出的 id 不一致
+
+| 项 | 内容 |
+|---|---|
+| 现象 | `## 公式 $E = mc^2$ 说明` 这类标题：**大纲 / 面包屑 / 目录点击、以及任何按 GitHub 规则生成的锚点链接** 都对不上，静默失效（点了没反应） |
+| 根因 | 渲染侧 `guardMathBlocks` 把"像数学"的 `$…$` 换成 **`<!--MATHBLOCK_n-->` 注释节点**，而 `getTextContent()` 只取 `text` 节点 → **公式完全不参与 heading slug**（DOM id = `公式-说明`）；大纲侧的 `stripInlineMarkdown` 却把 `$…$` 的字面字符算进 slug（= `公式-emc2`）✗ |
+| 修法 | `outline.js` 新增 `stripInlineMath()`，**复刻 `guardMathBlocks` 行内分支的判定**（开 `$` 后的非法后继、代码内 `$` 跳过、遇 `<标签` 中断、闭合 `$` 前空白 + 内容不像数学则拒绝、含换行或"两侧空白的 `\|`"拒绝），命中即把整段公式丢弃；并剥掉**真形态**的行内 HTML 标签（`</?[A-Za-z][\w-]*…>`；`a < b` 这种字面量不受影响） |
+| 为什么必须复刻判定 | 否则会反向出问题：把用户写的货币 `$ 100 $` 当公式丢弃 → 大纲 id 少了 `100`，同样不一致 |
+
+#### 用例
+
+| 文件 | 内容 |
+|---|---|
+| `test/outline.test.cjs`（+1，本地可跑） | 11 组标题清洗边界：粗体/链接/图片/公式（整段丢弃）/单字符公式/货币（保留字面量）/真 HTML 标签（剥标签留文本）/字面量 `<`/emoji 短码/代码内 `$`/重名去重 |
+| `test/feature-matrix.test.cjs`（+1，CI） | **端到端交叉核对**：同一篇含 10 个"刁钻标题"的文档，`Outline.extractHeadings()` 算出的 id 必须**逐个等于**渲染出的 `h1..h6` 的 id（数量与顺序都断言） |
+
+> 同时**更新了一条锁住旧行为的用例**：`# 标题 <x>` 的期望 id 从 `标题-x` 改为 `标题`（`<x>` 是原始 HTML，渲染侧被 sanitize、不参与 slug —— 旧断言锁的正是这个错配）；"转义"检查改为字面量 `<`（`# 比较 a < b 的写法` → 保留并被转义）。
+
+#### 顺带核对（澄清两处我自己的假阴性）
+
+| 项 | 结论 |
+|---|---|
+| `codeLineNumbers` / `previewFontWeight` "无人消费" | 假阴性：消费点用局部别名（`settings.js` 内 `s.codeLineNumbers` / `s.previewFontWeight`）——前者 `classList.toggle('code-line-numbers', …)`、后者 `root.style.setProperty('--preview-weight', …)`，都已接线 ✓ |
+| `mermaidTheme` / `showOutline` "未见默认值" | 只是我猜的设置名，仓库里并非真实设置项 ✓（真实是 `themeMode` / `outlineFilterLevel` 等） |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
