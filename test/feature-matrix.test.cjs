@@ -243,6 +243,62 @@ test('功能矩阵 · 渲染阶段结束必须摘掉所有占位（内容不得�
     '不应残留 .diagram-pending（CSS 会把内容设成 transparent → 永久看不见）');
 });
 
+test('功能矩阵 · vendor 缺失降级：数学 / 高亮 / Mermaid 都不得抛错，且内容仍可读', () => {
+  // 场景：node_modules / src/lib 没生成好（本地首跑、发布包缺文件）时，预览**不能白屏或抛错**，
+  // 更不能把内容藏起来 —— 用户至少要看得到原始 Markdown/源码。审计核对 2026-09-25（第 16 轮）。
+  const F = B + B + B;
+  const MD = [
+    '# 降级',
+    '',
+    '行内公式 $E = mc^2$ 与块级：',
+    '',
+    '$$',
+    'a^2 + b^2 = c^2',
+    '$$',
+    '',
+    F + 'javascript',
+    'const x = 1;',
+    F,
+    '',
+    F + 'mermaid',
+    'flowchart LR',
+    '  A --> B',
+    F,
+  ].join('\n');
+
+  const env = setup();
+  const html = renderMarkdown(MD, { softBreaks: false, extendedSyntax: true });
+  env.preview.innerHTML = html;
+
+  // ① 数学：删掉 KaTeX 全局后 processMath 必须安全早退，公式以源码形式保留
+  delete global.renderMathInElement;
+  delete global.katex;
+  delete env.window.renderMathInElement;
+  delete env.window.katex;
+  assert.doesNotThrow(() => PP.processMath(env.preview), 'processMath 在缺 KaTeX 时不得抛错');
+  assert.ok(env.preview.textContent.indexOf('$E = mc^2$') >= 0 ||
+    env.preview.innerHTML.indexOf('E = mc^2') >= 0, '公式应以源码形式保留，而不是消失');
+
+  // ② 高亮：不传 hljs 也必须安全处理，代码文本不得被破坏
+  assert.doesNotThrow(() => CodeBlock.processCodeBlocks(env.preview, { hljs: undefined, cache: new Map(), lineNumbers: true }),
+    'processCodeBlocks 在缺 hljs 时不得抛错');
+  const codeEl = env.preview.querySelector('pre code');
+  assert.ok(codeEl && codeEl.textContent.indexOf('const x = 1;') >= 0, '代码文本应完整保留');
+
+  // ③ Mermaid：缺 mermaid 时源码必须保持可见、且**不能被标记为 pending**（否则被 CSS 藏住）
+  const opts = {
+    isDark: false, mermaidCache: new Map(), t: (k) => k,
+    escapeHtml: (s) => String(s), escapeAttr: (s) => String(s),
+    headingToId: (s) => String(s).trim().toLowerCase().replace(/\s+/g, '-'),
+  };
+  assert.doesNotThrow(() => PP.prepareDiagramPlaceholders(env.preview, opts), '缺 mermaid 时准备阶段不得抛错');
+  const mermaidCode = [...env.preview.querySelectorAll('pre code')].find((c) => /language-mermaid/.test(c.className));
+  assert.ok(mermaidCode, 'Mermaid 源码块应保留在预览里');
+  assert.ok(!mermaidCode.parentElement.classList.contains('diagram-src-pending'),
+    '缺引擎时不得把 Mermaid 源码标记为 pending（那会让内容被藏住）');
+  assert.ok(env.preview.textContent.indexOf('A --> B') >= 0, 'Mermaid 源码文本应仍然可见');
+});
+
 test('功能矩阵 · 引擎不可用时必须"有说明 + 有源码"，纯函数引擎仍应出图', async () => {
   const { env, prep, opts } = renderPipeline(DOC);
   await PP.renderDiagramPlaceholders(env.preview, prep, opts, () => false);

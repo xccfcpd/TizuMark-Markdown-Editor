@@ -1357,6 +1357,37 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 | `codeLineNumbers` / `previewFontWeight` "无人消费" | 假阴性：消费点用局部别名（`settings.js` 内 `s.codeLineNumbers` / `s.previewFontWeight`）——前者 `classList.toggle('code-line-numbers', …)`、后者 `root.style.setProperty('--preview-weight', …)`，都已接线 ✓ |
 | `mermaidTheme` / `showOutline` "未见默认值" | 只是我猜的设置名，仓库里并非真实设置项 ✓（真实是 `themeMode` / `outlineFilterLevel` 等） |
 
+### 2.37 第十六轮：**vendor 缺失降级矩阵** + 导出 HTML 的 CSS 覆盖核对（2026-09-25）
+
+新角度：把"依赖没装好"当成一维正经检查 —— 本地首跑、`npm install` 未跑 `ensure-vendor`、发布包缺
+`src/lib` 文件时，预览**不能抛错、不能白屏、更不能把内容藏起来**。
+
+#### 新增用例（`test/feature-matrix.test.cjs` → 现 13 用例 / 76 断言）
+
+| 用例 | 断言要点 |
+|---|---|
+| vendor 缺失降级 | ① 删掉 KaTeX 全局后 `processMath` 必须安全早退、公式以**源码**形式保留；② 不传 `hljs` 时 `processCodeBlocks` 不得抛错且代码文本完整；③ 缺 `mermaid` 时 `prepareDiagramPlaceholders` 不得抛错、Mermaid 源码块**必须保持可见**且**不得**被打上 `diagram-src-pending`（那会让内容被 CSS 藏住） |
+
+#### 核对为**已正确降级**（无需改动）
+
+| 依赖 | 缺失时的行为 |
+|---|---|
+| KaTeX | `processMath` 检测 `renderMathInElement` 未定义 → 警告 + 直接返回，公式原样可读 ✓ |
+| highlight.js | `processCodeBlocks` 分「有/无 hljs」两条分支，**两条都跳过受保护块**（mermaid/图表/公式源码不会被套行号污染）✓ |
+| Mermaid | `prepareMermaidPlaceholders` 早退（不打 pending）→ 源码块原样可见 ✓；容器替换只发生在成功渲染之后 ✓ |
+| 各原生引擎 | `throw` 明确原因（`ECharts 未加载（lib/echarts.min.js）` 等）→ 走错误框，**说明 + 原始源码**都给出 ✓ |
+| Markmap | 懒加载失败/超时 → 抛明确原因 ✓（第 14 轮补了 6s 超时）✓ |
+
+#### 导出 HTML 的 CSS 覆盖核对
+
+导出模板是**分层**的：`styles.css`（作用域选择器决定视觉）+ `_documentExportCSS()`（标签级兜底，jsdom/离线也能看）+ 各格式覆写（Word/打印）。逐项核对结论：
+
+- **KaTeX CSS 已内联**：`lib/katex/katex.min.css` + `@font-face` 字体 base64 内联（`_inlineKatexFonts`，带字体缓存）→ 导出的独立 HTML 里公式样式与预览一致 ✓
+- 代码块行结构、admonition（`.alert-*`）、图表容器、任务列表复选框在兜底 CSS 里都有对应规则 ✓
+- Word 回退路径会把 `.katex` 降级为**可复制的 LaTeX 源码文本**（`_katexElsToLatexText`）并省略 300KB KaTeX CSS ✓
+
+> 说明：`scripts/check-export-html.cjs` 是**需要传入导出文件**的自动验收工具（`node scripts/check-export-html.cjs <导出.html>`），不是可自跑的守卫 —— 不传参数退出 1 属预期。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
