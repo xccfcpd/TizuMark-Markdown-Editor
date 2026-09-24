@@ -1214,6 +1214,42 @@ jsdom 或 wasm，只能由 CI 复核。）
 - `run-tests.cjs` 用 glob 自动收集 → 137 → 138 个测试文件全部被收集 ✓（无"写了不跑"的测试）
 - `.gitignore` 关键项（node_modules / dist / target / src/lib vendor）齐备 ✓
 
+### 2.33 第十二轮：内存与资源生命周期（2026-09-25）
+
+针对声明功能（Markdown / 高亮 / 公式 / mhchem / 单位 / Mermaid / Graphviz / ECharts / WaveDrom /
+Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition）逐条排查
+"错误 + 不释放内存"：先脚本统计（`addEventListener`↔`removeEventListener`、`setInterval`↔`clearInterval`、
+观察者↔`disconnect`、`createObjectURL`↔`revokeObjectURL`、缓存读写点、模块级可变状态），再逐个读代码核实。
+
+#### 真问题（1 处，已修）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **高亮缓存 `_hljsCache` 无上限**：键含**整段代码文本** → 在代码块里连续打字时每次输入都产生新键，每个值是整块高亮 HTML（几十 KB 量级）；此前**只在改字体时** `clear()` → 长会话持续增长 | 写入后调用 `capCache(cache)`，上限 `CODE_CACHE_MAX_ENTRIES = 300`（与 `preview-post.js` 的 `capCache` 同策略同上限：Map 保插入序，超限删最旧一条）。补**行为化**用例（350 个不同代码块 → `size ≤ 300` 且不被清空、结构仍正确）+ 护栏（两个缓存的淘汰逻辑不得被删） |
+
+> 注：图表侧的同款问题（`_mermaidCache` 无上限）**第二轮已修**（`CACHE_MAX_ENTRIES = 300`，
+> 覆盖 mermaid 与原生引擎的 SVG 缓存），本轮只是核对——代码块缓存漏了同款上限。
+
+#### 核实为**干净**（"不释放内存"方面）
+
+| 类别 | 结论 |
+|---|---|
+| 导出临时 DOM（5 处） | **都有回收**：PNG 克隆（`finally` → `removeChild`）、Word 的离屏 `holder`（`holder.remove()`）、进度 overlay（`hideOverlay()` → `remove`）、PDF `iframe`（`afterprint`/watchdog → `iframe.remove`）、objectURL（第三轮的 `try/finally`） |
+| 复制降级用的临时 `<textarea>` | 两处（公式右键、代码块复制）都在用后 `removeChild` ✓ |
+| 图片相关缓存 | `_imageURLCache`（在用检测 + 上限，第三轮）✓、`inlineBlobUrls`（`INLINE_BLOB_URL_MAX` + 在用跳过）✓ |
+| 图表注册表 | `chartRegistry`（Map，显式 `delete`）/ `diagramContainers`（Set，`disposeDetachedDiagrams` 内 `delete`）；`alive`/`doomed` 是**函数内局部变量**；每次预览整体替换后都会回收脱离容器 ✓ |
+| 主题切换 | `loadTheme()` 只在 `app.js:131` 调用一次 → `matchMedia` 的 `change` 监听器**不会累积** ✓；原生引擎由 `rethemeNativeDiagrams()` 跟随主题 ✓ |
+| Markmap | vendor promise 单例（失败置 null 可重试）+ 容器回收时清空内容以断开引擎内部引用 ✓ |
+| 纯函数类功能 | PlantUML / D2 / TikZ / plot / Unicode 短码 / Admonition / 公式编号 / siunitx / mhchem 无跨渲染状态（渲染期临时数组均为局部变量）✓ |
+
+#### 记录但**未改**（应用生命周期内常量，非泄漏）
+
+| 项 | 说明 |
+|---|---|
+| `toolbar.js` 的两个 `ResizeObserver` 从不 `disconnect` | 观察对象（滚动容器 / 标签栏）与工具栏同生命周期；仅当将来重复初始化工具栏才会变成泄漏 |
+| `notify.js` 的 30s 心跳 `setInterval` 与 1.5s 外部变更轮询 `setInterval` 从不 `clear` | 应用级常驻是有意为之；轮询有 `_watching` 重入锁 + `finally` 复位（异常也不会卡死）✓ |
+| 缓存淘汰是 FIFO 而非 LRU（`Map.set` 刷新已存在键不会移到队尾） | 只影响命中率、不影响正确性与内存上界 |
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

@@ -38,6 +38,26 @@ test('代码块基础结构合法（行号关闭）', async () => {
   assert.deepStrictEqual(structureOf(preview), { ok: true });
 });
 
+test('高亮缓存有上限：连续编辑产生的新键不会无限堆积（长会话内存）', async () => {
+  // 缓存键含整段代码文本 → 在代码块里连续打字每次都会产生新键（每个值 = 整块高亮 HTML）。
+  // 没有上限时 app 级 Map 会随会话持续增长（此前只在改字体时才 clear）。审计发现 2026-09-25。
+  const { preview } = createPreviewDom();
+  const hljs = loadHljs(preview.ownerDocument.defaultView);
+  const n = 350;   // > 上限 300
+  let html = '';
+  for (let i = 0; i < n; i++) {
+    html += '<pre><code class="language-javascript">const v' + i + ' = ' + i + ';</code></pre>';
+  }
+  preview.innerHTML = html;
+  const cache = new Map();
+  processCodeBlocks(preview, { hljs, cache, lineNumbers: false });
+  assert.ok(cache.size <= 300, '缓存条目应被限制在 300 以内，实际 ' + cache.size);
+  assert.ok(cache.size >= 250, '不应被清空（缓存仍需有效），实际 ' + cache.size);
+  const codes = preview.querySelectorAll('pre code');
+  assert.ok(codes[0].querySelector('.code-scroll'), '第一块结构应正常');
+  assert.ok(codes[n - 1].querySelector('.code-scroll'), '最后一块结构应正常');
+});
+
 test('高亮缓存键含语言：同文本不同语言不得互相命中（审计修复 2026-09-24）', async () => {
   const { preview } = createPreviewDom();
   const hljs = loadHljs(preview.ownerDocument.defaultView);

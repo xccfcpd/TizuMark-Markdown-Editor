@@ -33,6 +33,17 @@ function detectLanguage(hljs, block) {
   }
 }
 
+// 高亮缓存的上限：缓存键含**整段代码文本** → 在代码块里连续打字时，每个键对应一次完整高亮
+// 结果（几十 KB 量级的 HTML 字符串），没有上限时 app 级 Map 会随会话持续增长（只会在改字体时
+// clear —— settings.js）。这里与 preview-post.js 的 capCache 保持同一策略与同一上限：
+// Map 保持插入序，超限删最旧一条（审计发现，2026-09-25）。
+const CODE_CACHE_MAX_ENTRIES = 300;
+function capCache(cache) {
+  if (!cache || typeof cache.size !== 'number' || cache.size <= CODE_CACHE_MAX_ENTRIES) return;
+  const oldest = cache.keys().next().value;
+  if (oldest !== undefined) cache.delete(oldest);
+}
+
 function highlightLine(hljs, lang, line) {
   if (!lang || !hljs.getLanguage(lang)) return escapeHTML(line);
   try {
@@ -117,6 +128,7 @@ function processCodeBlocks(preview, opts) {
         }
         block.dataset.highlighted = 'yes';
         cache.set(key, finalHtml);
+        capCache(cache);
       });
     } catch (e) {
       if (typeof console !== 'undefined') console.warn('[preview] HLJS error:', e);

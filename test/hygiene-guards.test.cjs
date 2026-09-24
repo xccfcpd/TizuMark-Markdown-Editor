@@ -61,6 +61,18 @@ test('每个 test/*.test.cjs 都必须有失败机制（断言 / node:test / 非
   assert.deepStrictEqual(bad, [], '这些测试失败时不会报错（假绿）：' + bad.join(', '));
 });
 
+test('预览热路径的两个缓存都必须有上限（防长会话内存增长）', () => {
+  // 缓存键含整段代码/图表文本 → 连续输入会产生大量新键（值为整块 HTML / 整张 SVG）。
+  // 两个缓存都必须保留淘汰逻辑：code-block.js 的 capCache、preview-post.js 的 capCache/CACHE_MAX_ENTRIES。
+  const cb = read('src/modules/code-block.js');
+  const pp = read('src/modules/preview-post.js');
+  assert.match(cb, /capCache\(cache\)/, 'code-block.js 必须在写入后调用 capCache（高亮缓存上限）');
+  assert.match(cb, /CODE_CACHE_MAX_ENTRIES\s*=\s*\d+/, 'code-block.js 必须声明缓存上限常量');
+  assert.match(pp, /cache\.set\(key,\s*container\.innerHTML\);\s*\n\s*capCache\(cache\)/, 'preview-post.js 的原生图表缓存必须调用 capCache');
+  assert.match(pp, /mermaidCache\.set\(cacheKey,\s*container\.innerHTML\);\s*\n\s*capCache\(mermaidCache\)/, 'mermaid 缓存必须调用 capCache');
+  assert.match(pp, /CACHE_MAX_ENTRIES\s*=\s*\d+/, 'preview-post.js 必须声明缓存上限常量');
+});
+
 test('含中文标题的对话框必须有 i18n 接线（否则英文界面残留中文）', () => {
   const lines = HTML.split('\n');
   const dialogs = [];
