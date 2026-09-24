@@ -823,21 +823,6 @@
       });
       document.getElementById('update-action').addEventListener('click', () => this.handleUpdateAction());
       document.getElementById('update-skip').addEventListener('click', () => this.hideUpdateDialog());
-      document.getElementById('gitee-badge').addEventListener('click', () => {
-        const url = document.getElementById('gitee-badge').dataset.url;
-        if (url) this.openExternal(url);
-      });
-      document.getElementById('qq-group-badge').addEventListener('click', () => {
-        const badge = document.getElementById('qq-group-badge');
-        const url = badge.dataset.joinUrl;
-        if (url && !url.includes('YOUR_JOIN_KEY')) {
-          this.openExternal(url);
-        }
-      });
-      document.getElementById('github-badge').addEventListener('click', () => {
-        const url = document.getElementById('github-badge').dataset.url;
-        if (url) this.openExternal(url);
-      });
     },
   };
 

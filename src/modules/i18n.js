@@ -304,38 +304,19 @@
           const buildEl = sec.querySelector('#about-build');
           if (buildEl) buildEl.textContent = t('buildInfo');
         }
+        // 注：「联系我们」板块已于 2026-09-24 整体移除，此后许可协议 / 第三方组件各前进一位
         if (aboutSections.length >= 2) {
           const title = aboutSections[1].querySelector('.dependency-title .dependency-name');
-          if (title) title.textContent = t('contact');
-          const contactDesc = aboutSections[1].querySelector('.contact-desc');
-          const qqLabel = aboutSections[1].querySelector('.qq-label');
-          const qqJoinText = aboutSections[1].querySelector('.qq-join-text');
-          const qqBadge = document.getElementById('qq-group-badge');
-          if (contactDesc) contactDesc.textContent = t('contactDesc');
-          if (qqLabel) qqLabel.textContent = t('qqGroupName');
-          if (qqJoinText) qqJoinText.textContent = t('joinGroup');
-          if (qqBadge) qqBadge.title = t('qqTitle');
-          const giteeAction = aboutSections[1].querySelector('.gitee-action');
-          const giteeBadge = document.getElementById('gitee-badge');
-          if (giteeAction) giteeAction.textContent = t('giteeAction');
-          if (giteeBadge) giteeBadge.title = t('giteeTitle');
-          const githubAction = aboutSections[1].querySelector('.github-action');
-          const githubBadge = document.getElementById('github-badge');
-          if (githubAction) githubAction.textContent = t('githubAction');
-          if (githubBadge) githubBadge.title = t('githubTitle');
-        }
-        if (aboutSections.length >= 3) {
-          const title = aboutSections[2].querySelector('.dependency-title .dependency-name');
           if (title) title.textContent = t('license');
-          const lps = aboutSections[2].querySelectorAll('.dependency-body p');
+          const lps = aboutSections[1].querySelectorAll('.dependency-body p');
           if (lps[0]) lps[0].textContent = t('copyrightLine');
           if (lps[1]) lps[1].textContent = t('proprietary');
           if (lps[2]) lps[2].textContent = t('noUnauthorized');
         }
-        if (aboutSections.length >= 4) {
-          const title = aboutSections[3].querySelector('.dependency-title .dependency-name');
+        if (aboutSections.length >= 3) {
+          const title = aboutSections[2].querySelector('.dependency-title .dependency-name');
           if (title) title.textContent = t('thirdParty');
-          const depDescs = aboutSections[3].querySelectorAll('.dependency-item p');
+          const depDescs = aboutSections[2].querySelectorAll('.dependency-item p');
           const depKeys = ['depCodeMirror', 'depHighlight', 'depCmark', 'depKatex', 'depMermaid', 'depHtml2canvas', 'depTauri'];
           depDescs.forEach((p, i) => {
             if (i < depKeys.length) p.textContent = t(depKeys[i]);

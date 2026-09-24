@@ -222,3 +222,88 @@ test('集成：原始 HTML 表格中带空格的行内公式被 KaTeX 渲染', a
     delete global.Node; delete global.Element; delete global.HTMLElement; delete global.Text; delete global.DocumentFragment;
   }
 });
+
+// ===== 图表两阶段：源码占位（修「预览里一会儿代码、一会儿图」的闪动）=====
+// 背景：预览流程是「innerHTML 写入 → 后处理」，其中 processImages 等步骤含 await；
+// 只要图表块在这段时间里还是**源码**形态留在 DOM 里，浏览器就会把它画出来，
+// 等渲染完成再被图替换 —— 肉眼看到的就是交替闪动（用户 2026-09-23 / 09-24 两次报障）。
+// 修法：占位必须**同步**打好（prepareDiagramPlaceholders），渲染放到后面异步做。
+
+// mermaid 桩：prepare 阶段只判断「mermaid 是否加载」，render 阶段才真正调用
+function stubMermaid(behavior) {
+  const prev = global.mermaid;
+  global.mermaid = {
+    initialize() {},
+    run: async ({ nodes }) => {
+      if (behavior === 'fail') throw new Error('stub: mermaid 渲染失败');
+      nodes.forEach((n) => { n.innerHTML = '<svg></svg>'; });
+    },
+  };
+  return () => { global.mermaid = prev; };
+}
+
+test('两阶段①：prepare 同步把源码换成/标记为占位（此时尚未渲染）', () => {
+  const { preview } = createPreviewDom();
+  preview.innerHTML =
+    '<pre><code class="language-plantuml">@startuml\nAlice -> Bob: hi\n@enduml</code></pre>' +
+    '<pre><code class="language-echarts">{"series":[]}</code></pre>';
+  const restore = stubMermaid('ok');
+  try {
+    const jobs = PP.prepareDiagramPlaceholders(preview, { isDark: false, mermaidCache: new Map() });
+    // ① PlantUML / D2：就地改写为 mermaid 并打占位标记。源码**留在 <pre> 内**（mermaid 要读它），
+    //    由 CSS 隐藏 —— 各后处理器都按 PRE/CODE 跳过，不会被误改。
+    const mPre = preview.querySelector('pre.diagram-src-pending');
+    assert.ok(mPre, 'PlantUML 代码块应被标记 .diagram-src-pending');
+    const mCode = mPre.querySelector('code');
+    assert.ok(/language-mermaid/.test(mCode.className), 'PlantUML 应已就地改写为 mermaid');
+    assert.ok((mCode.textContent || '').trim().length > 0, '源码应保留在 <pre><code> 内');
+    // ② 原生引擎：源码块直接换成占位容器（容器里没有源码）
+    const native = preview.querySelector('.diagram-container[data-diagram-type="echarts"]');
+    assert.ok(native, 'ECharts 代码块应换成图表容器');
+    assert.ok(native.classList.contains('diagram-pending'), '替换后应为占位态');
+    assert.strictEqual(preview.querySelectorAll('pre code.language-echarts').length, 0, '源码块不应残留');
+    assert.strictEqual(jobs.mermaid.length, 1, '作业表应记录 1 个 mermaid 块');
+    assert.strictEqual(jobs.native.length, 1, '作业表应记录 1 个原生引擎块');
+  } finally { restore(); }
+});
+
+test('两阶段②：渲染后摘掉占位并写缓存；命中缓存时不再出现占位态', async () => {
+  const { preview } = createPreviewDom();
+  const cache = new Map();
+  const src = '<pre><code class="language-mermaid">graph TD; A-->B;</code></pre>';
+  preview.innerHTML = src;
+  const restore = stubMermaid('ok');
+  try {
+    const jobs = PP.prepareDiagramPlaceholders(preview, { isDark: false, mermaidCache: cache });
+    assert.strictEqual(preview.querySelectorAll('pre.diagram-src-pending').length, 1, '渲染前应是占位态');
+    await PP.renderDiagramPlaceholders(preview, jobs, { isDark: false, mermaidCache: cache });
+    const c = preview.querySelector('.diagram-container[data-diagram-type="mermaid"]');
+    assert.ok(c, '应换成 mermaid 容器');
+    assert.ok(!c.classList.contains('diagram-pending'), '渲染后必须摘掉占位');
+    assert.ok(c.querySelector('svg'), '容器里应是渲染结果');
+    assert.strictEqual(preview.querySelectorAll('pre.diagram-src-pending').length, 0, '不得残留占位标记');
+    assert.strictEqual(cache.size, 1, '成功结果应写入缓存（下次同步复用 → 不再闪）');
+
+    // 同样的源码再来一次：命中缓存 → 直接就是图，不经过占位态
+    preview.innerHTML = src;
+    const jobs2 = PP.prepareDiagramPlaceholders(preview, { isDark: false, mermaidCache: cache });
+    await PP.renderDiagramPlaceholders(preview, jobs2, { isDark: false, mermaidCache: cache });
+    const c2 = preview.querySelector('.diagram-container[data-diagram-type="mermaid"]');
+    assert.ok(c2 && c2.querySelector('svg'), '缓存命中应直接复用 SVG');
+    assert.ok(!c2.classList.contains('diagram-pending'), '缓存命中不应出现占位态');
+  } finally { restore(); }
+});
+
+test('两阶段③：mermaid 渲染失败也必须摘掉占位（不再压着「图表渲染中…」）', async () => {
+  const { preview } = createPreviewDom();
+  preview.innerHTML = '<pre><code class="language-mermaid">graph TD; A-->B;</code></pre>';
+  const restore = stubMermaid('fail');
+  try {
+    const jobs = PP.prepareDiagramPlaceholders(preview, { isDark: false, mermaidCache: new Map() });
+    await PP.renderDiagramPlaceholders(preview, jobs, { isDark: false, mermaidCache: new Map() });
+    const c = preview.querySelector('.diagram-container[data-diagram-type="mermaid"]');
+    assert.ok(c, '失败时容器仍在（用户要能看到源码/错误，而不是永久占位）');
+    assert.ok(!c.classList.contains('diagram-pending'), '失败也必须摘掉占位');
+    assert.strictEqual(preview.querySelectorAll('pre.diagram-src-pending').length, 0, '不得残留占位标记');
+  } finally { restore(); }
+});

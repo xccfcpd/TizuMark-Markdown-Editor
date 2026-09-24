@@ -328,23 +328,48 @@ function processHeadings(preview, opts) {
   });
 }
 
-async function processMermaid(preview, opts) {
-  const { isDark, mermaidCache } = opts;
-  if (typeof mermaid === 'undefined') return;
+// ---- 图表两阶段：① 同步占位（必须早于任何 await）② 异步渲染 ----
+// 为什么要拆成两阶段（用户 2026-09-23、09-24 两次报障「预览里一会儿源码一会儿图」）：
+// 预览流程是「innerHTML 写入 → 后处理」，其中 processImages 等步骤含 await；
+// 只要图表块在这段时间里仍以**源码**形态留在 DOM 中，浏览器就会把它画出来。
+// 因此：占位必须**同步**做完（紧跟 innerHTML），真正渲染可以异步慢慢来。
 
-  const blocks = Array.from(preview.querySelectorAll('code.language-mermaid'));
-  if (blocks.length === 0) return;
+// ① 同步：给 mermaid 系代码块（含 PlantUML / D2 转换结果）打占位标记。
+// 刻意**不搬动 DOM** —— 源码留在 <pre><code> 内，各后处理器都会按 PRE/CODE 跳过、不会误改；
+// 真正的容器替换放到渲染阶段（那时后处理已结束）。
+function prepareMermaidPlaceholders(preview) {
+  const pres = [];
+  if (typeof mermaid === 'undefined' || !preview) return pres;
+  preview.querySelectorAll('pre > code.language-mermaid').forEach((code) => {
+    const pre = code.parentElement;
+    if (!pre) return;
+    pre.classList.add('diagram-src-pending');
+    pres.push(pre);
+  });
+  return pres;
+}
 
+// ② 异步：把打了标记的 <pre> 换成图表容器并渲染（命中缓存则直接复用上次的 SVG）。
+async function renderMermaidPlaceholders(pres, opts) {
+  const opt = opts || {};
+  const isDark = !!opt.isDark;
+  const mermaidCache = opt.mermaidCache || null;
+  const list = pres || [];
   const themeKey = isDark ? 'dark' : 'light';
   const toRender = []; // cache miss：需调 mermaid.run 的容器
 
-  blocks.forEach((block, index) => {
-    const pre = block.parentElement;
-    const sourceLine = block.dataset.sourceLine;
-    const code = block.textContent;
+  // 先**同步**把所有 <pre> 换成容器：等待期间看到的是占位，而不是源码、也不是空白
+  list.forEach((pre, index) => {
+    if (!pre || !pre.parentElement) return;   // 已被别的渲染替换掉（期间发生新一轮渲染）
+    const codeEl = pre.querySelector('code.language-mermaid');
+    if (!codeEl) { pre.classList.remove('diagram-src-pending'); return; }
+    const code = codeEl.textContent;
+    const sourceLine = codeEl.dataset ? codeEl.dataset.sourceLine : null;
     const cacheKey = themeKey + '::' + code;
+    const doc = pre.ownerDocument || (typeof document !== 'undefined' ? document : null);
+    if (!doc) return;
 
-    const container = document.createElement('div');
+    const container = doc.createElement('div');
     // 双类名：mermaid-container 沿用既有样式/导出/灯箱链路，diagram-container 标记「图表容器」
     container.className = 'mermaid-container diagram-container';
     container.id = 'mermaid-' + Date.now() + '-' + index;
@@ -358,9 +383,8 @@ async function processMermaid(preview, opts) {
       // 命中缓存：直接复用上次的 SVG，不进 mermaid.run
       container.innerHTML = cached;
     } else {
-      // 未命中：放入待渲染队列（textContent 必须是原始 code，mermaid.run 才能解析）。
-      // 但**不能让它显示出来** —— 直接显示会"一会儿源码一会儿图"地闪（用户报障）。
-      // 用 .diagram-pending 把文本透明化并显示"渲染中"占位，渲染完成即摘掉。
+      // 未命中：textContent 必须是原始 code（mermaid.run 才能解析），
+      // 用 .diagram-pending 把文本透明化 + 显示「渲染中」占位，渲染结束即摘掉。
       container.classList.add('diagram-pending');
       container.textContent = code;
       toRender.push({ container, cacheKey });
@@ -380,19 +404,23 @@ async function processMermaid(preview, opts) {
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-preview').trim() || '-apple-system, sans-serif',
     });
     await mermaid.run({ nodes: toRender.map(x => x.container) });
-    // 渲染结束（无论成败）都要摘掉 pending：失败时源码重新可见，便于用户排查语法。
-    for (const { container } of toRender) container.classList.remove('diagram-pending');
-    // 渲染成功后存入缓存（仅缓存含 SVG 的成功结果，错误信息不缓存）
-    if (mermaidCache) {
-      for (const { container, cacheKey } of toRender) {
-        if (container.querySelector('svg')) {
-          mermaidCache.set(cacheKey, container.innerHTML);
-        }
-      }
-    }
   } catch (e) {
     if (typeof console !== 'undefined') console.error('Mermaid rendering error:', e);
+  } finally {
+    // 渲染结束（**无论成败**）都要摘掉 pending：失败时源码重新可见，便于用户排查语法。
+    // 历史 bug：摘 pending 原本只在 try 内、紧跟 await 之后 —— 一旦 initialize / run 抛错，
+    // 占位就一直挂着，已经渲染出来的图上会压着一行「图表渲染中…」（用户截图报障）。
+    for (const { container, cacheKey } of toRender) {
+      container.classList.remove('diagram-pending');
+      // 仅缓存含 SVG 的成功结果（错误信息不缓存）
+      if (mermaidCache && container.querySelector('svg')) mermaidCache.set(cacheKey, container.innerHTML);
+    }
   }
+}
+
+// 兼容入口（既有调用方 / 测试）：等价于「先占位、再渲染」两步
+async function processMermaid(preview, opts) {
+  await renderMermaidPlaceholders(prepareMermaidPlaceholders(preview), opts);
 }
 
 // 取代码块原始文本（不含行号、保留缩进与换行）。
@@ -567,19 +595,38 @@ function buildDiagramContainer(document, type, code, sourceLine, themeKey, idSuf
   return container;
 }
 
-async function processDiagrams(preview, opts) {
+// ① 同步：原生引擎（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）源码块 → 占位容器。
+// 容器里**不含源码**，因此不会误导后续任何处理器；真正渲染见 renderNativePlaceholders。
+function prepareNativePlaceholders(preview, opts) {
+  const opt = opts || {};
+  const DR = getDiagramRenderers();
+  const jobs = [];
+  if (!DR || !preview) return jobs;
+  const themeKey = opt.isDark ? 'dark' : 'light';
+  const blocks = collectDiagramBlocks(preview, (lang) => DR.diagramTypeFromLanguage(lang));
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, i);
+    container.classList.add('diagram-pending');   // 占位文案：既不显示源码，也不是白块
+    b.pre.replaceWith(container);
+    jobs.push({ container: container, type: b.type, code: b.code });
+  }
+  return jobs;
+}
+
+// ② 异步：逐个渲染占位容器，并对「主题已过期」的既有容器按 data-code 重画。
+async function renderNativePlaceholders(preview, jobs, opts) {
   const opt = opts || {};
   const DR = getDiagramRenderers();
   if (!DR) return;
   const themeKey = opt.isDark ? 'dark' : 'light';
   const cache = opt.mermaidCache || null;
-  const typeOf = (lang) => DR.diagramTypeFromLanguage(lang);
 
   // 折叠型 admonition（???）内的容器处于 display:none 时量不到宽高，ECharts / Markmap
   // 会据此得到 0 尺寸（画布空白、脑图不可见）。TikZ / plot 是纯函数生成的 SVG 字符串，
   // 不依赖布局，不受影响。故仅在渲染期间临时展开祖先 <details>，渲染后立即恢复原状态，
   // 兼顾 ??? 的「默认收起」语义与图表尺寸正确性。
-  // 定义为 processDiagrams 内部闭包（而非模块顶层函数）：本文件未包 IIFE，
+  // 定义为函数内部闭包（而非模块顶层函数）：本文件未包 IIFE，
   // 顶层声明会进入全局词法环境并与其它经典 <script> 共享，能不加就不加。
   const withVisibleLayout = async (el, fn) => {
     const opened = [];
@@ -608,38 +655,29 @@ async function processDiagrams(preview, opts) {
     return ok;
   };
 
-  // 1) 首次渲染：围栏代码块 → 图表容器。
-  //    **两阶段**：先把所有源码块换成占位容器，再逐个渲染。
-  //    历史 bug：原来是"替换一个、await 渲染一个"，于是还没轮到的图仍以**源码**形式显示，
-  //    表现为"代码与渲染图交替闪现"（用户 2026-09-23、09-24 两次报障）。
-  const blocks = collectDiagramBlocks(preview, typeOf);
-  const jobs = [];
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i];
-    const container = buildDiagramContainer(preview.ownerDocument || document, b.type, b.code, b.sourceLine, themeKey, i);
-    container.classList.add('diagram-pending');   // 占位文案：既不显示源码，也不是白块
-    b.pre.replaceWith(container);
-    jobs.push({ container: container, type: b.type, code: b.code });
-  }
-  // 2) 逐个渲染（顺序 await：同一篇里的多个图只触发一次 wasm 初始化）
-  for (let i = 0; i < jobs.length; i++) {
-    const job = jobs[i];
+  // 逐个渲染（顺序 await：同一篇里的多个图只触发一次 wasm 初始化）
+  const list = jobs || [];
+  for (let i = 0; i < list.length; i++) {
+    const job = list[i];
+    const container = job.container;
+    // 容器已脱离文档（例如期间发起了新一轮预览渲染）→ 画了也看不见，跳过更省时
+    if (!container || !container.parentElement) continue;
     // 单个图出错绝不能影响后续图：这里再兜一层。
     // renderInto 内部已有 try/catch，但它只覆盖**同步**异常；引擎若在 await 期间以
     // 别的方式抛出（或 renderInto 被替换/扩展），整篇文档里靠前的一个图就会让后面
     // 所有图都渲染不出来 —— 这个代价远大于"多一层 try"。
     try {
-      await paint(job.container, job.type, job.code);
+      await paint(container, job.type, job.code);
     } catch (e) {
       console.warn('[diagrams] ' + job.type + ' 渲染异常（已隔离，不影响其它图）：', e);
-      if (job.container && job.container.classList) job.container.classList.add('diagram-error');
+      if (container.classList) container.classList.add('diagram-error');
     } finally {
       // 无论成败都摘掉占位：失败时错误框/源码要可见
-      job.container.classList.remove('diagram-pending');
+      container.classList.remove('diagram-pending');
     }
   }
 
-  // 2) 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
+  // 主题切换后的重渲染：容器里的图属于旧主题时按 data-code 重画
   const stale = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
     .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
     .filter((el) => el.getAttribute('data-theme') !== themeKey);
@@ -658,11 +696,51 @@ async function processDiagrams(preview, opts) {
   }
 }
 
+// 兼容入口（既有调用方 / 测试）：等价于「先占位、再渲染」两步
+async function processDiagrams(preview, opts) {
+  await renderNativePlaceholders(preview, prepareNativePlaceholders(preview, opts), opts);
+}
+
+// ---- 组合入口（控制器用这两个）----
+// 顺序不可颠倒：prepare 必须**同步**跑完（紧跟 innerHTML），否则 await 期间会露出源码。
+function prepareDiagramPlaceholders(preview, opts) {
+  const opt = opts || {};
+  const jobs = { mermaid: [], native: [], themeKey: opt.isDark ? 'dark' : 'light' };
+  if (!preview) return jobs;
+  // PlantUML / D2 → Mermaid 源码改写（同步）：必须在占位之前，改写后它们才归入 mermaid 系
+  try { convertMermaidSources(preview); } catch (e) { console.warn('[diagrams] PlantUML/D2 转换失败：', e); }
+  jobs.mermaid = prepareMermaidPlaceholders(preview);
+  jobs.native = prepareNativePlaceholders(preview, opt);
+  return jobs;
+}
+
+async function renderDiagramPlaceholders(preview, jobs, opts) {
+  const opt = opts || {};
+  const prep = jobs || { mermaid: [], native: [] };
+  if (prep.mermaid && prep.mermaid.length) {
+    try {
+      await renderMermaidPlaceholders(prep.mermaid, opt);
+    } catch (e) {
+      console.warn('[diagrams] mermaid 渲染异常（已隔离）：', e);
+    }
+  }
+  if (preview) {
+    try {
+      await renderNativePlaceholders(preview, prep.native, opt);
+    } catch (e) {
+      console.warn('[diagrams] 原生引擎渲染异常（已隔离）：', e);
+    }
+    // 兜底：任何没被替换掉的占位标记都要摘掉 —— 宁可看见源码，也不能把内容藏起来。
+    preview.querySelectorAll('pre.diagram-src-pending').forEach((pre) => pre.classList.remove('diagram-src-pending'));
+  }
+}
+
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.PreviewPost = {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
     convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
+    prepareDiagramPlaceholders, renderDiagramPlaceholders,
     addCopyButtons, getRawCodeText,
   };
 }
@@ -671,6 +749,7 @@ if (typeof module !== 'undefined' && module.exports) {
     processEmojiShortcodes, processMath, processAbbreviations,
     processHeadings, processMermaid, processDiagrams, collectDiagramBlocks,
     convertMermaidSources, buildDiagramContainer, DIAGRAM_HTML_CACHEABLE,
+    prepareDiagramPlaceholders, renderDiagramPlaceholders,
     addCopyButtons, EMOJI_MAP,
     protectUnpairedDollar, getRawCodeText,
   };

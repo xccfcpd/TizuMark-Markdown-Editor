@@ -634,6 +634,66 @@ vendor 体积、内部监听泄漏）。
 `index.html`、`ensure-vendor.mjs` 不得含 abcjs；`package.json` 与 `package-lock.json`
 **同时**清干净（lock 残留会让 CI 的 `npm ci` 直接红）。
 
+### 2.18 图表源码不再闪动（两阶段重构）+ 移除「联系我们」板块（2026-09-24）
+
+用户报的两件事：① About 对话框里的「联系我们」板块要去掉；② 预览里图表**仍然**
+「一会儿源码、一会儿图」地闪（PlantUML 等）。
+
+#### ② 闪动的真实根因：占位做得太晚
+
+预览主流程（`preview-controller.js`）是：
+
+```
+preview.innerHTML = finalHtml      ← 此刻图表块是**源码**形态
+… disposeDetachedDiagrams / 展开 details …
+await this.app.processImages()     ← 第一个 await：浏览器就在这里把源码画出来了
+… emoji / math / abbr / footnotes / headings …
+convertMermaidSources()
+await processMermaid()             ← 到这一步才换成容器（此前一直是源码）
+await processDiagrams()
+```
+
+- `processDiagrams`（原生引擎）此前已经做了「先把所有源码块换成占位容器」的两阶段处理，
+  **但它自己就排在 `await processImages()` 之后** —— 等待期间源码早已可见；
+- `processMermaid`（含 PlantUML / D2 转换结果）虽然也在替换后立刻加 `.diagram-pending`，
+  但同样排在那些 await 之后。
+
+于是「先源码、后被图替换」在每一轮重渲染（输入防抖 / 窗口切片 / 主题切换）都会重演一遍。
+
+**修法：把「占位」拆成独立的同步阶段，紧跟 innerHTML 之后、任何 await 之前执行。**
+
+| 位置 | 改动 |
+|---|---|
+| `preview-post.js` | `processMermaid` / `processDiagrams` 各自拆成 **prepare（同步占位）+ render（异步渲染）**；新增组合入口 `prepareDiagramPlaceholders()` / `renderDiagramPlaceholders()`；两个旧函数保留为「先占位再渲染」的兼容包装 |
+| `preview-controller.js` | 紧跟 innerHTML 之后**同步**调用 `prepareDiagramPlaceholders()`；原 `processMermaid` / `processDiagrams` 两行合并为一次 `renderDiagramPlaceholders()`（PlantUML/D2 的源码改写也随之提前到 prepare 内） |
+| `styles.css` | 新增 `pre.diagram-src-pending`：mermaid 系源码必须留在 `<pre>` 内到渲染为止（各后处理器都按 `PRE`/`CODE` 跳过，搬进容器反而有被误改的风险），所以「隐藏源码」改成给 `<pre>` 打标记 —— 用 `visibility: hidden` 隐藏 `<code>`（`color: transparent` 压不住高亮/主题给子元素设的色），并 `::after` 居中显示占位；保留原有高度，避免渲染完成瞬间跳动 |
+
+#### 顺带修掉「占位摘不掉」：图已出来、中间还压着一行「图表渲染中…」
+
+`processMermaid` 原先把「摘 `.diagram-pending`」写在 `try` 内、紧跟 `await mermaid.run(...)` 之后。
+只要 `mermaid.initialize` / `run` 抛错（例如同批里某一个图语法错），**整批容器都会留着 pending 类** ——
+`color: transparent` 只影响文字、不影响 SVG，于是渲染成功的图上照样压着那行占位文字（用户截图里正是如此）。
+现在改为在 `finally` 中统一摘除，并只把「含 `<svg>` 的成功结果」写入缓存。
+
+#### ① 移除「联系我们」板块
+
+| 位置 | 改动 |
+|---|---|
+| `src/index.html` | 删除整个「联系我们」折叠面板（QQ 群 / Gitee / GitHub 三个卡片 + 底部一行说明） |
+| `src/modules/misc-ui.js` | `initDialogDismiss` 里三处点击跳转监听（`qq-group-badge` / `gitee-badge` / `github-badge`）一并删除 |
+| `src/modules/i18n.js` | 删除该板块的文案接线；**后续板块索引前移**（许可协议 `[2]`→`[1]`、第三方组件 `[3]`→`[2]`），否则中英切换会串位 |
+| `src/modules/i18n-data.js` | 删除 9 个键 × 中英两份：`contact` / `contactDesc` / `qqGroupName` / `joinGroup` / `qqTitle` / `giteeAction` / `giteeTitle` / `githubAction` / `githubTitle` |
+| `src/styles.css` | 删除对应样式块（31 条规则，约 215 行） |
+| `src/qq-icon.png`、`src/gitee-icon.png`、`src/github-icon.png` | 仅被该板块引用，一并删除 |
+
+> 指南 FAQ 里那句「QQ 群：1035294939」（`src/guide.md` / `src/guide.en.md`）**未动** ——
+> 本次只按用户所指的界面板块移除；若也要清掉指南里的这一条，说一声即可。
+> About 对话框的**第三方组件**清单不受影响（abcjs 条目已在 §2.17 移除）。
+
+**测试**：`test/preview-post.test.cjs` 新增 3 例（jsdom，CI 跑）：
+prepare 阶段源码即被占位/标记、渲染后摘占位并写缓存且**缓存命中不再出现占位态**、
+以及 **渲染失败也必须摘掉占位**（锁死上面那个「占位摘不掉」的回归）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

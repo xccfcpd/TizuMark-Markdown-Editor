@@ -196,6 +196,17 @@
           }
         }
 
+        // 图表「源码 → 占位」：**同步**执行，必须早于下面任何 await（processImages 等）。
+        // 否则那段等待期间预览里是**源码**，随后才被图替换 —— 用户看到的
+        // 「一会儿代码、一会儿图」正是这么来的（见 preview-post.js 的两阶段说明）。
+        let diagramPrep = null;
+        try {
+          diagramPrep = PreviewPost.prepareDiagramPlaceholders(this.app.preview, {
+            isDark: this.app.isDark,
+            mermaidCache: this.app._mermaidCache,
+          });
+        } catch (e) { console.warn('[preview] Diagram prepare error:', e); }
+
         // 超大文档：顶部全局横幅提示（不塞进预览内容，避免随滚动/重渲染消失）
         if (this.app._previewTruncated) {
           const totalLines = content.split('\n').length;
@@ -231,13 +242,10 @@
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
         try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
         try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
-        // PlantUML / D2 → Mermaid 源码改写：必须在 processMermaid **之前**，
-        // 改写后由 processMermaid 统一渲染 / 缓存 / 主题重绘（不重复实现一套渲染）。
-        try { PreviewPost.convertMermaidSources(this.app.preview); } catch (e) { console.warn('[preview] Diagram convert error:', e); }
-        try { await PreviewPost.processMermaid(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Mermaid error:', e); }
-        // 图表引擎（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap）：
-        // 与 Mermaid 共用容器与样式链路
-        try { await PreviewPost.processDiagrams(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Diagram error:', e); }
+        // 图表渲染（Mermaid + 原生引擎）：PlantUML / D2 的源码改写与「源码块 → 占位」
+        // 已在上面的**同步**阶段（prepareDiagramPlaceholders）完成，这里只负责真正渲染、
+        // 复用缓存、以及主题切换后的重绘。
+        try { await PreviewPost.renderDiagramPlaceholders(this.app.preview, diagramPrep, postOpts); } catch (e) { console.warn('[preview] Diagram render error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
         try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
 

@@ -2519,6 +2519,26 @@ body.is-resizing .side-btn {
   color: var(--text-tertiary, #999);
   font-size: calc(var(--ui-font-size) * 0.9231);
 }
+/* 同一占位逻辑的 <pre> 形态：mermaid 系（含 PlantUML / D2）源码必须留在 <pre> 内直到渲染
+   （各后处理器都按 PRE/CODE 跳过，搬出去反而有被误改的风险），于是"隐藏源码"改成给 <pre>
+   打标记。用 visibility（而不是 color）隐藏 <code>：高亮/主题可能给子元素单独设色，
+   color 未必压得住；visibility 还能保住原有高度，避免渲染完成瞬间的跳动。 */
+pre.diagram-src-pending {
+  position: relative;
+}
+pre.diagram-src-pending > code {
+  visibility: hidden;
+}
+pre.diagram-src-pending::after {
+  content: '图表渲染中…';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary, #999);
+  font-size: calc(var(--ui-font-size) * 0.9231);
+}
 /* Graphviz 的 SVG 由它自己配色（默认黑线黑字，不宜强行改色）；深色主题下改用浅色底
    保证线条与文字可读——与 GitHub 渲染图表的处理方式一致。 */
 .diagram-container[data-diagram-type="graphviz"][data-theme="dark"] {
@@ -4317,220 +4337,6 @@ body.is-resizing-row .sidebar-h-resizer {
   color: var(--text-secondary);
   margin: 4px 0;
   line-height: 1.5;
-}
-
-.gitee-badge {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(135deg, #c62828, #b71c1c);
-  color: #fff;
-  padding: 12px 16px;
-  border-radius: 10px;
-  margin: 8px 0;
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.gitee-badge:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.4);
-}
-
-.gitee-badge:active {
-  transform: translateY(0);
-}
-
-.gitee-icon {
-  flex-shrink: 0;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.92);
-  padding: 2px;
-  box-sizing: content-box;
-}
-
-.gitee-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.gitee-label {
-  font-size: calc(var(--ui-font-size) * 0.8462);
-  opacity: 0.85;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.gitee-repo {
-  font-size: calc(var(--ui-font-size) * 1.5385);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  color: #fff;
-}
-
-.gitee-action {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  font-weight: 600;
-  opacity: 0.95;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.gitee-arrow {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  opacity: 0.7;
-  transition: transform 0.15s ease;
-  flex-shrink: 0;
-}
-
-.gitee-badge:hover .gitee-arrow {
-  transform: translateX(3px);
-}
-
-.qq-group-badge {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(135deg, #12b7f5, #0d8ed4);
-  color: #fff;
-  padding: 12px 16px;
-  border-radius: 10px;
-  margin: 8px 0 10px;
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.qq-group-badge:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(18, 183, 245, 0.4);
-}
-
-.qq-group-badge:active {
-  transform: translateY(0);
-}
-
-.qq-join-text {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  font-weight: 600;
-  opacity: 0.95;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.qq-arrow {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  opacity: 0.7;
-  transition: transform 0.15s ease;
-  flex-shrink: 0;
-}
-
-.qq-group-badge:hover .qq-arrow {
-  transform: translateX(3px);
-}
-
-.qq-icon {
-  flex-shrink: 0;
-  border-radius: 4px;
-}
-
-.qq-group-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.qq-label {
-  font-size: calc(var(--ui-font-size) * 0.8462);
-  opacity: 0.85;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.qq-number {
-  font-size: calc(var(--ui-font-size) * 1.5385);
-  font-weight: 700;
-  letter-spacing: 1px;
-  font-family: var(--font-mono);
-}
-
-.github-badge {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(135deg, #24292e, #1b1f23);
-  color: #fff;
-  padding: 12px 16px;
-  border-radius: 10px;
-  margin: 8px 0;
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.github-badge:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(36, 41, 46, 0.4);
-}
-
-.github-badge:active {
-  transform: translateY(0);
-}
-
-.github-icon {
-  flex-shrink: 0;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.92);
-  padding: 2px;
-  box-sizing: content-box;
-}
-
-.github-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.github-label {
-  font-size: calc(var(--ui-font-size) * 0.8462);
-  opacity: 0.85;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.github-repo {
-  font-size: calc(var(--ui-font-size) * 1.5385);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  color: #fff;
-}
-
-.github-action {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  font-weight: 600;
-  opacity: 0.95;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.github-arrow {
-  font-size: calc(var(--ui-font-size) * 1.0769);
-  opacity: 0.7;
-  transition: transform 0.15s ease;
-  flex-shrink: 0;
-}
-
-.github-badge:hover .github-arrow {
-  transform: translateX(3px);
-}
-
-.contact-desc {
-  font-size: calc(var(--ui-font-size) * 0.9231);
-  color: var(--text-secondary);
-  margin: 0;
-  text-align: center;
 }
 
 .dependency-item {
