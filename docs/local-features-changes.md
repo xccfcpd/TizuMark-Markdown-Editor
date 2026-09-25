@@ -1411,6 +1411,42 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 > 只有"完全没有消息、只有一条 note"的退化图会返回 null（保留源码 + 明确提示，可接受）。
 > `group … end group` 仍按既有约定忽略（Mermaid 无等价语义块，忽略比错画安全）。
 
+### 2.39 第十八轮：17 项功能的**本地可跑**全量覆盖核对（2026-09-25）
+
+教训驱动的补课：第 13 轮起我把功能验证放进 jsdom 端到端用例，但本机没有 jsdom/unified → **只能靠 CI 才能跑**，
+于是"断言写错"这类问题要等 15 分钟一轮的 CI 才暴露（第 13 轮的 3 条红就是如此）。这轮补上**本地即可执行**的一层。
+
+#### 新增 `test/feature-coverage.test.cjs`（16 条用例，覆盖全部 17 项，**本地与 CI 都跑**）
+
+| 用例 | 检查要点 |
+|---|---|
+| 基础 Markdown | 渲染管线必备步骤（GFM/定义列表/高亮/缩写/标题 id/数学与提示块还原）+ sanitize 白名单 |
+| 代码高亮 | 语言类名解析（`c++`/`c#`）、缓存上限 + `capCache`、无 hljs 分支、行号开关接线 |
+| 数学公式 | `$…$`/`$$…$$` 保护与还原、KaTeX 阶段、缺库安全早退 |
+| mhchem | `\ce` / `\pu` **原样透传**（不被我们的层改写）+ 扩展已引入 |
+| 物理单位 / siunitx | v2+v3 **全部命令名**（`\si \SI \unit \qty \num \ang \SIrange \qtyrange`）+ 分隔符语义 + `\sisetup` 丢弃 |
+| 公式自动编号 | 连续编号、**前向** `\eqref`、重复 `\label` 首个胜出、`aligned` 内 label、章节编号设置接线 |
+| Mermaid | PlantUML/D2 归入 mermaid 系、容器双类名 + `data-diagram-type/theme/code`、缓存上限、缺库早退 |
+| PlantUML | 四类图路由、控制块（**par 必须 and**）、`create → create participant`、note 四种写法、不支持语法给提示 |
+| Graphviz | 中文节点名自动补引号、注释里的 `<` 不影响、HTML 串不被改、`dot/graphviz/gv` 别名 |
+| ECharts 2D | 映射 + `tizuHeight` + JSON 校验 |
+| WaveDrom | 映射（含 `wave` 别名）+ 皮肤 + 缺库明确报错 |
+| TikZ | 子集可画 + `arc`/`grid`/`\path` **明确拒绝**（不画"少几段却看似正常"的图） |
+| plot | 函数绘图 + 非函数式拒绝 + `set` 配置 |
+| Markmap | 映射 + 懒加载 vendor + **加载超时兜底** |
+| Unicode 符号 | 短码表规模/无空值、`demo.md` 用到的短码**全覆盖**、替换跳过 code/pre |
+| Admonition | `:::`/`!!!`/`???` 解析（含折叠）+ `> [!TYPE]` 接线 + 13 类样式齐 |
+
+#### 本轮澄清
+
+`sanitize` 白名单里 `details` / `summary` / `dl` / `dd` / `table` / `input` **来自 GitHub 基础白名单**
+（本仓只在其上追加 `u/center/progress/mark/figure/figcaption`）；我第一版检查脚本把它当成"缺 details"误报 ✓ 已修正。
+
+#### 验证
+
+- `test/feature-coverage.test.cjs`：**16/16 通过（本地实跑）**
+- 全量：语法 211 文件 0 错误 · 测试文件 32 通过 / 1 需构建产物 / 107 环境跳过
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
