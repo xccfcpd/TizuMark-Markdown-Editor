@@ -499,6 +499,31 @@ test('plantuml 甘特图：缺起始日期时给出**可操作**的提示（而�
   assert.deepStrictEqual(seq, [], '普通时序图不应被误判');
 });
 
+test('plantuml 时序图：par 的分支分隔符必须是 and（else 会让整图语法报错）', () => {
+  // Mermaid 的 par 块用 and 分隔分支；PlantUML 用 else。原样透传 → sequenceDiagram 语法错误、整图报废。
+  const out = D.plantumlToMermaid('@startuml\npar\n  A -> B : x\nelse\n  A -> C : y\nend\n@enduml');
+  assert.ok(out.startsWith('sequenceDiagram'));
+  assert.match(out, /^\s*par\s*$/m, '应保留 par');
+  assert.match(out, /^\s*and\s*$/m, 'par 的分支应写成 and');
+  assert.ok(!/^\s*else\s*$/m.test(out), 'par 块里不应出现 else（Mermaid 会报错）');
+  // alt 仍必须用 else（别把 alt 也改成 and）
+  const alt = D.plantumlToMermaid('@startuml\nalt 成功\n  A -> B : x\nelse 失败\n  A -> B : y\nend\n@enduml');
+  assert.match(alt, /else 失败/, 'alt 块应保留 else');
+  // 嵌套：alt 里包 par 时，两种关键字各归其主
+  const nested = D.plantumlToMermaid('@startuml\nalt a\npar\n  A -> B : x\nelse\n  A -> C : y\nend\nelse b\n  A -> D : z\nend\n@enduml');
+  assert.match(nested, /^\s*and\s*$/m, '内层 par 用 and');
+  assert.match(nested, /else b/, '外层 alt 的第二分支仍是 else');
+});
+
+test('plantuml 时序图：create 会改写成 Mermaid 的 create participant（不再整行丢弃）', () => {
+  const out = D.plantumlToMermaid('@startuml\nA -> B : hi\ncreate C\nB -> C : new\ndestroy C\n@enduml');
+  assert.match(out, /create participant C/, 'create 应改写为 create participant');
+  assert.match(out, /destroy C/, 'destroy 应保留');
+  assert.match(D.plantumlToMermaid('@startuml\ncreate actor E\nA -> E : x\n@enduml'), /create actor E/, 'create actor 应保留');
+  // 已支持的语法不应再被报成"超出子集"
+  assert.deepStrictEqual(D.unsupportedHints('plantuml', '@startuml\ncreate C\nA -> C : x\ndestroy C\n@enduml'), []);
+});
+
 test('tikz：grid / \\path 与 arc 同口径 → null + 提示（不再静默少画几段）', () => {
   assert.strictEqual(D.tikzToSvg('\\draw (0,0) grid (3,3);', { width: 700 }), null);
   assert.strictEqual(D.tikzToSvg('\\path[draw] (0,0) -- (1,1);', { width: 700 }), null);

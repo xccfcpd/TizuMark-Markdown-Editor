@@ -426,6 +426,7 @@
     const declared = new Set();
     const idOf = makeIdAllocator();
     let blockDepth = 0;   // alt/opt/loop/par/… 未闭合的层数（`end` 必须与它配对输出）
+    const blockStack = []; // 各层块的类型：par 的分支分隔符在 Mermaid 里是 and 而不是 else
     // 名字 token 允许非 ASCII（中文参与者/角色名很常见）；箭头前后不留空格也要认
     const MSG = /^("[^"]*"|[^\s:<>=\-\\/]+)\s*([<>ox\\\/]*[-=.]+[<>ox\\\/]*)\s*("[^"]*"|[^\s:<>=\-\\/]+)\s*(?::\s*([\s\S]*))?$/;
     const SKIP = /^(@(start|end)|skinparam\b|hide\b|show\b|scale\b|header\b|footer\b|legend\b|caption\b|newpage\b|autoactivate\b|ref\s+over\b|group\b|end\s+group\b|\.\.\.\s*$|==+.*==+\s*$|--+\s*$)/i;
@@ -502,6 +503,16 @@
       const am = l.match(/^(activate|deactivate|destroy)\s+(\S+)/i);
       if (am) { out.push('    ' + am[1].toLowerCase() + ' ' + declare(am[2])); continue; }
 
+      // 创建参与者：PlantUML 写 `create B`，Mermaid 必须写 `create participant B`。
+      // 以前这一行整行被丢弃 → 生命线凭空出现（图看着正常、语义丢了），而同一族的 `destroy`
+      // 却被原样保留，两者不对称（审计发现，2026-09-25）。
+      const cm = l.match(/^create\s+(?:(participant|actor)\s+)?(\S+)/i);
+      if (cm) {
+        const kw = (cm[1] || 'participant').toLowerCase();
+        out.push('    create ' + kw + ' ' + declare(cm[2]));
+        continue;
+      }
+
       // box 分组
       if (/^box\b/i.test(l)) { out.push('    ' + l); continue; }
       if (/^end\s+box$/i.test(l)) { out.push('    end'); continue; }
@@ -509,9 +520,21 @@
       // 控制块：Mermaid 里 `end` 必须与开启的块配对 —— 只在确实开过块时才输出 end。
       // 历史上裸 `end` 无条件输出，而 PlantUML 的 `group … end`（group 行在 SKIP 里被丢弃）
       // 会留下**孤立 end** → sequenceDiagram 直接语法报错、整张图报废（审计发现，2026-09-24）。
-      if (/^(alt|opt|loop|par|critical|break|rect)\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); blockDepth++; continue; }
-      if (/^(else|and)\b/i.test(l)) { out.push('    ' + l.replace(/\s+/g, ' ')); continue; }
-      if (/^end\b/i.test(l)) { if (blockDepth > 0) { out.push('    end'); blockDepth--; } continue; }
+      if (/^(alt|opt|loop|par|critical|break|rect)\b/i.test(l)) {
+        blockStack.push((l.trim().match(/^([a-z]+)/i) || [])[1].toLowerCase());
+        out.push('    ' + l.replace(/\s+/g, ' '));
+        blockDepth++;
+        continue;
+      }
+      if (/^(else|and)\b/i.test(l)) {
+        // ⚠ Mermaid 的 `par` 分支必须用 **and** 分隔（PlantUML 里写的是 else）——
+        // 原样透传会让整张 sequenceDiagram 语法报错、整图报废（审计发现，2026-09-25）。
+        // alt / opt / loop 等仍用 else。
+        const top = blockStack.length ? blockStack[blockStack.length - 1] : '';
+        out.push('    ' + l.replace(/\s+/g, ' ').replace(/^(else|and)\b/i, top === 'par' ? 'and' : 'else'));
+        continue;
+      }
+      if (/^end\b/i.test(l)) { if (blockDepth > 0) { out.push('    end'); blockDepth--; blockStack.pop(); } continue; }
 
       // 注释
       const nm = l.match(/^note\s+(left of|right of|over)\s+([^:]+?)\s*(?::\s*([\s\S]*))?$/i);
@@ -1106,7 +1129,8 @@
       [/@startyaml/i, '@startyaml'],
       [/@startsalt/i, '@startsalt'],
       [/^\s*(?:fork|split|repeat)\b/im, '活动图 fork/split 并发分支'],
-      [/\b(?:create|destroy)\s+\w/i, '时序图 create/destroy'],
+      // create / destroy 现在都受支持（create 会改写为 Mermaid 的 `create participant X`），
+      // 不再算"超出子集" —— 原来这里的提示会让用户以为不支持（审计发现，2026-09-25）。
       [/^\s*(?:skinparam|!include|!define|!theme|!pragma)\b/im, 'skinparam / 预处理指令'],
       [/^\s*autonumber\b/im, '时序图 autonumber'],
       // 甘特图必须有具体日期才能转成 Mermaid（Mermaid 的 gantt 需要起始日期）：

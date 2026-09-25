@@ -1388,6 +1388,29 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 
 > 说明：`scripts/check-export-html.cjs` 是**需要传入导出文件**的自动验收工具（`node scripts/check-export-html.cjs <导出.html>`），不是可自跑的守卫 —— 不传参数退出 1 属预期。
 
+### 2.38 第十七轮：PlantUML 时序图的**控制块语义**（2026-09-25）
+
+这轮专挑"能被静默画错/画崩"的语法面。先核实一个假设——siunitx 是否只支持 v2 命令名
+（`\si`/`\SI`）：**假设被推翻**，`\unit` / `\qty` / `\num` / `\ang` / `\SIrange` / `\qtyrange`
+全都有实现 ✓；`\sisetup{…}` 会被整段丢弃（合意：preamble 命令，丢掉可避免 KaTeX 报错）✓；
+编号边界也对（重复 `\label` 首个胜出、`\eqref` 指向它、`aligned` 内的 `\label` 正常编号）✓。
+
+真正的问题在 **PlantUML → Mermaid 的控制块**：
+
+| # | 问题 | 影响 | 修法 |
+|---|---|---|---|
+| 1 | **`par` 的分支分隔符原样透传 `else`** | Mermaid 的 `par` 块**只认 `and`** → 整张 `sequenceDiagram` 语法报错、**整图报废**（不是"画得差"，是画不出来） | 加**块类型栈**：`end` 出栈；`else`/`and` 按栈顶决定输出 —— 栈顶是 `par` 就写 `and`，其余（alt/opt/loop…）仍写 `else`。嵌套（`alt` 里包 `par`）各归其主 ✓ |
+| 2 | **`create B` 整行被丢弃**（同一族的 `destroy B` 却原样保留，不对称） | 生命线凭空出现：图看着正常，但"对象是中途创建的"这一语义丢了；而且用户还会看到"create/destroy 超出子集"的**误导提示** | `create [participant\|actor] X` → Mermaid 的 `create participant X` / `create actor X`（经 `declare()` 登记，与消息引用一致）；并删掉那条已不准确的提示 |
+
+#### 本地回归（`test/diagrams.test.cjs`，纯函数 → 本地可跑）
+
+- `par` 分支必须是 `and`、且**不得**出现裸 `else`；`alt` 仍必须是 `else`；`alt` 内嵌 `par` 时两种关键字各归其主
+- `create C` → `create participant C`、`create actor E` 保留、`destroy C` 保留；`unsupportedHints` 对已支持的 create/destroy 返回空
+
+> 另外记录两个**非缺陷**：`note over A,B` / `note left of` / `note right of` / 多行 `note … end note` 全部正常；
+> 只有"完全没有消息、只有一条 note"的退化图会返回 null（保留源码 + 明确提示，可接受）。
+> `group … end group` 仍按既有约定忽略（Mermaid 无等价语义块，忽略比错画安全）。
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）
