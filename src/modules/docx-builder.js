@@ -98,7 +98,13 @@
     // run → docx 子元素统一走模块级 runToChild(D, ...)：表格单元格 / 列表项也复用它。
     const toChild = (r, opts) => runToChild(D, r, opts);
     const children = [];
-    for (const node of structure || []) {
+    // 分块让出主线程：构建大文档的 docx 节点是同步重 CPU 操作，全程不 yield 会表现为
+    // "导出时界面独占、转圈卡死、点不动"（2026-09-25 用户复现）。每 200 个节点让出一帧，
+    // 使 loading spinner 持续转动、取消按钮可响应；纯局部改写，不改变产出结构。
+    const _nodes = structure || [];
+    for (let _i = 0; _i < _nodes.length; _i++) {
+      const node = _nodes[_i];
+      if (_i % 200 === 0) await new Promise((r) => setTimeout(r, 0));
       if (node.type === 'heading') {
         children.push(new Paragraph({ heading: HeadingLevel['HEADING_' + (node.level || 1)], children: (node.runs || []).map(r => toChild(r, { bold: true })) }));
       } else if (node.type === 'paragraph') {
