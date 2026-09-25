@@ -480,7 +480,9 @@
           fr.onerror = () => reject(fr.error || new Error('readAsDataURL failed'));
           fr.readAsDataURL(blob);
         });
-        const imgPromises = Array.from(clone.querySelectorAll('img')).map(async (img) => {
+        // 单张图片内联上限：超过则不再内联（改为提示），避免一张超大图就把导出期内存顶爆。
+        const MAX_SINGLE_INLINE = 15 * 1024 * 1024; // 15MB（base64 字符串长度）
+        const inlineOne = async (img) => {
           let src = img.getAttribute('src');
           if (!src) return;
           // 已内联（data:）资源直接保留
@@ -531,14 +533,36 @@
               const base64 = await TauriApi.fetchImageAsBase64({ url: dir + '/' + rel });
               dataUri = `data:${mimeOfExt(rel)};base64,${base64}`;
             }
-            if (dataUri) img.src = dataUri;
+            // 单图过大（如数 MB 的 PNG/照片）：内联会让整份导出字符串与内存瞬间翻倍，
+            // 多图/大图导出时极易触发假死或崩溃 —— 超限则保留外链并提示，而非硬塞进文档。
+            if (dataUri) {
+              if (dataUri.length > MAX_SINGLE_INLINE) {
+                warnings.push('图片过大（>' + Math.round(MAX_SINGLE_INLINE / 1048576) + 'MB）未内联，导出文件可能外链/缺失：' + src.slice(0, 60));
+              } else {
+                img.src = dataUri;
+              }
+            }
           } catch (e) {
             // 还原失败不阻断导出：保留原 src，至少用户能手动补
             console.warn('[export] 图片内联失败，保留原 src:', src, e);
             warnings.push('图片内联异常，保留原链接：' + src.slice(0, 60));
           }
-        });
-        await Promise.allSettled(imgPromises);
+        };
+        // 有界并发（默认 6）：「多图导出」时不再一次性发起几百个 fetch / IPC 拉取，
+        // 避免主线程被 IPC 往返与内存峰值拖死（界面假死）。
+        const imgs = Array.from(clone.querySelectorAll('img'));
+        const CONCURRENCY = 6;
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < imgs.length) {
+            const i = cursor++;
+            await inlineOne(imgs[i]);
+          }
+        };
+        const pool = [];
+        const n = Math.min(CONCURRENCY, imgs.length);
+        for (let k = 0; k < n; k++) pool.push(worker());
+        await Promise.all(pool);
         this._lastExportImageWarnings = warnings;
       },
 

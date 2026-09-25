@@ -445,6 +445,9 @@ async function renderMermaidPlaceholders(pres, opts) {
   // 只渲染未命中的（命中复用的不再跑 mermaid.run，避免 "already rendered" 报错）
   if (toRender.length === 0) return;
 
+  // 分批渲染：每批上限 MERMAID_BATCH 个图，批间让出一帧，避免单文档含大量
+  // Mermaid 图时 mermaid.run 一次性同步占满主线程导致界面「假死」（大文档 / 多图场景常见）。
+  const MERMAID_BATCH = 4;
   try {
     mermaid.initialize({
       startOnLoad: false,
@@ -453,7 +456,12 @@ async function renderMermaidPlaceholders(pres, opts) {
       securityLevel: 'strict',
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-preview').trim() || '-apple-system, sans-serif',
     });
-    await mermaid.run({ nodes: toRender.map(x => x.container) });
+    for (let i = 0; i < toRender.length; i += MERMAID_BATCH) {
+      const batch = toRender.slice(i, i + MERMAID_BATCH);
+      await mermaid.run({ nodes: batch.map(x => x.container) });
+      // 让出主线程：让滚动 / 输入等用户事件有机会处理，长文档多图不再整段卡死
+      await new Promise((r) => setTimeout(r, 0));
+    }
   } catch (e) {
     if (typeof console !== 'undefined') console.error('Mermaid rendering error:', e);
   } finally {
