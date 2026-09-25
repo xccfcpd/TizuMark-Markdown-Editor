@@ -125,7 +125,11 @@ test('P0-0f: run-tests.cjs 支持 argv 子串过滤，无参时行为不变', ()
   assert.ok(filtered.length < all.length, '过滤应真的缩小范围');
 });
 
-test('P0-0f: 带过滤参数时运行器只挑选匹配文件（用不存在的关键字验证短路）', () => {
+// 运行器入口有 checkBundle()：bundle 不存在时会直接报错退出，根本走不到过滤逻辑。
+// 本测试验证的是"过滤短路"，前提是 bundle 已构建（CI 里 pretest 会先 build:renderer）。
+// 本地若没有 esbuild / 未构建产物，则跳过而非误红（与 jsdom 缺失时跳过同理）。
+const BUNDLE_BUILT = fs.existsSync(path.join(ROOT, 'src', 'lib', 'unified-bundle.js'));
+test('P0-0f: 带过滤参数时运行器只挑选匹配文件（用不存在的关键字验证短路）', { skip: !BUNDLE_BUILT }, () => {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'run-tests.cjs'), '__no_such_test__'], {
     encoding: 'utf8', cwd: ROOT, timeout: 30000,
   });
