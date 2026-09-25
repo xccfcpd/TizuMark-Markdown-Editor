@@ -1931,6 +1931,16 @@
             if (settled) return;
             const d = ev.data || {};
             if (d.ok) {
+              // 静默坏文件兜底：Worker 不抛错却产出空/非法 buffer 时，不能当成成功直接写出
+              // （否则导出的 docx 打不开），判空即视为失败，回退主线程重建。
+              if (!d.buf || !(d.buf instanceof ArrayBuffer) || d.buf.byteLength === 0) {
+                settled = true;
+                clearTimeout(timer);
+                try { worker.terminate(); } catch (_) {}
+                try { URL.revokeObjectURL(url); } catch (_) {}
+                reject(new Error('docx Worker 产出为空/非法，回退主线程'));
+                return;
+              }
               settled = true;
               clearTimeout(timer);
               // 拿到结果立即终止 Worker：释放其线程内 docx 库与已构建文档占用的内存，
