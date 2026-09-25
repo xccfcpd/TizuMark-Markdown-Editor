@@ -233,9 +233,14 @@
   }
 
   const api = { buildDocxFromStructure };
+  // 双导出：node 走 module.exports（测试），浏览器走 window 全局，Web Worker 走 self 全局。
+  // 注：docx 构建现可放进 Worker 以释放主线程（见 export.js _buildDocxInWorker），
+  // 故需在 self 上暴露，使 Worker 经 importScripts 加载后能拿到 buildDocxFromStructure。
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   } else if (typeof window !== 'undefined') {
     window.buildDocxFromStructure = buildDocxFromStructure;
+  } else if (typeof self !== 'undefined') {
+    self.buildDocxFromStructure = buildDocxFromStructure;
   }
 })();

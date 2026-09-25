@@ -1858,6 +1858,16 @@
         if (typeof window.buildDocxFromStructure !== 'function') {
           throw new Error('导出组件未加载（docx-builder 未加载）');
         }
+        // 优先用 Web Worker 离主线程构建：彻底消除「导出时界面独占」，并把构建内存压力隔离在
+        // Worker 线程（Worker 终止后即回收，不拖累主线程）。Worker 不可用/加载失败/超时/报错时，
+        // 自动回退到当前稳定的主线程真 OOXML 路径——因此最坏情况与现在一致，不会更差。
+        try {
+          const buf = await this._buildDocxInWorker(structure, page);
+          if (buf) return buf;
+        } catch (e) {
+          console.warn('[export] docx Worker 构建失败，回退主线程：', e);
+        }
+        // 主线程兜底（当前稳定路径）
         // 构建若卡住（极端环境缺 Blob 等）不能让导出永远悬着，超时后仍回退 html-docx，保证「导出一定有结果」。
         const MAIN_BUILD_TIMEOUT = 60000;
         let timer = null;
@@ -1870,6 +1880,83 @@
         } finally {
           clearTimeout(timer);
         }
+      },
+      // 在 Web Worker 里执行 buildDocxFromStructure：docx.min.js + docx-builder.js 经绝对 URL
+      // importScripts 加载，规避老 Tauri/WebView 下相对路径 Worker 脚本加载不稳的问题。
+      // 返回 ArrayBuffer；任何失败都抛错交给 _buildDocxBuffer 的主线程兜底。
+      _buildDocxInWorker(structure, page) {
+        return new Promise((resolve, reject) => {
+          if (typeof Worker === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+            return reject(new Error('Web Worker 不可用'));
+          }
+          const base = location.href;
+          let libUrl, builderUrl;
+          try {
+            libUrl = new URL('lib/docx.min.js', base).href;
+            builderUrl = new URL('modules/docx-builder.js', base).href;
+          } catch (e) {
+            return reject(e);
+          }
+          // 经典 Worker（importScripts 仅经典 Worker 可用）：用 Blob 承载启动脚本，
+          // 再由 importScripts 以绝对 URL 拉取两个依赖，确保与 index.html 加载路径一致。
+          const src =
+            "self.onmessage=async function(e){" +
+            "try{" +
+            "importScripts(" + JSON.stringify(libUrl) + "," + JSON.stringify(builderUrl) + ");" +
+            "var blob=await self.buildDocxFromStructure(e.data.structure,e.data.page);" +
+            "var buf=await blob.arrayBuffer();" +
+            "self.postMessage({ok:true,buf:buf},[buf]);" +
+            "}catch(err){self.postMessage({ok:false,error:String((err&&err.stack)||err)});}" +
+            "};";
+          let worker = null;
+          let settled = false;
+          let url = null;
+          try {
+            const blob = new Blob([src], { type: 'application/javascript' });
+            url = URL.createObjectURL(blob);
+            worker = new Worker(url);
+          } catch (e) {
+            if (url) { try { URL.revokeObjectURL(url); } catch (_) {} }
+            return reject(e);
+          }
+          // Worker 构建整体超时（含 importScripts 静默卡住的情况），到时回退主线程。
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            try { worker.terminate(); } catch (_) {}
+            try { URL.revokeObjectURL(url); } catch (_) {}
+            reject(new Error('docx Worker 构建超时'));
+          }, 60000);
+          worker.onmessage = (ev) => {
+            if (settled) return;
+            const d = ev.data || {};
+            if (d.ok) {
+              settled = true;
+              clearTimeout(timer);
+              // 拿到结果立即终止 Worker：释放其线程内 docx 库与已构建文档占用的内存，
+              // 真正实现「导出内存压力隔离」，避免 worker 残留导致主线程依旧内存高压。
+              try { worker.terminate(); } catch (_) {}
+              try { URL.revokeObjectURL(url); } catch (_) {}
+              resolve(d.buf);
+            } else {
+              settled = true;
+              clearTimeout(timer);
+              try { worker.terminate(); } catch (_) {}
+              try { URL.revokeObjectURL(url); } catch (_) {}
+              reject(new Error(d.error || 'docx Worker 构建失败'));
+            }
+          };
+          worker.onerror = (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { worker.terminate(); } catch (_) {}
+            try { URL.revokeObjectURL(url); } catch (_) {}
+            reject(new Error('docx Worker 错误: ' + (err && err.message ? err.message : err)));
+          };
+          // structure 含 Uint8Array 图片数据：structured clone 拷贝即可（不 transfer，避免主线程侧被置空）。
+          worker.postMessage({ structure, page });
+        });
       },
       async exportWord() {
         // 主路径：docx 库主线程直构建真 OOXML（可编辑公式 + 二进制图片）；
