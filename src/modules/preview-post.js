@@ -753,8 +753,13 @@ async function renderNativePlaceholders(preview, jobs, opts, isStale) {
   // ⚠ 这段是对**实时 preview** 的全量查询：代际过期时 preview 里已是新一代的容器，用旧 themeKey
   // 判定会把它们按旧主题重画（暗色预览里出现浅色图）。故先做代际校验（审计发现，2026-09-24）。
   if (stale()) return;
+  // 主题无关引擎（TikZ / plot 用用户自定义配色，渲染结果与主题无关）：切主题时不重绘，避免无谓的
+  // 同步 SVG 生成（含 diagram-converters）拖慢大文档切主题（2026-09-25 审计）。
+  // 注意：markmap 通过自身 theme:'dark' 暗色适配，仍需在切主题时重绘，故不在此列。
+  const THEME_INDEPENDENT = new Set(['tikz', 'plot']);
   const staleContainers = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
     .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
+    .filter((el) => !THEME_INDEPENDENT.has(el.getAttribute('data-diagram-type')))
     .filter((el) => el.getAttribute('data-theme') !== themeKey);
   // 有界并发（默认 4）：含大量原生引擎图表（ECharts / Graphviz / WaveDrom / TikZ / plot / Markmap）
   // 的文档在主题切换时会逐个重绘，串行 await 会让界面长时间无响应（R8）。改用有界并发并每图让出主线程，

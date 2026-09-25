@@ -779,11 +779,44 @@
       },
       // 把 SVG 元素转成 PNG data URL（用于 Mermaid 图表落入 Word）。
       // 失败时返回空字符串，调用方应保留原 SVG 作为降级。
+      // 收集 markmap 注入到文档的样式表（markmap-view 把 .markmap 相关规则放进 document 的 <style> /
+      // CSSStyleSheet，不内联进 <svg>）。独立序列化 <svg> 成 <img> 时这些样式不生效 → 文字/连线落到
+      // 默认黑色（Word 灰底上即"变黑"）。导出前把它们内联进 SVG 的 <style> 子节点修正（2026-09-25 审计）。
+      _collectMarkmapCss() {
+        let css = '';
+        try {
+          const styleEls = Array.from(document.querySelectorAll('style'))
+            .filter((s) => /markmap/i.test(s.id) || /markmap/.test(s.textContent || ''));
+          for (const s of styleEls) css += (s.textContent || '') + '\n';
+          for (const sheet of Array.from(document.styleSheets)) {
+            let rules;
+            try { rules = sheet.cssRules; } catch (_e) { continue; } // 跨域样式表不可读
+            if (!rules) continue;
+            for (const r of Array.from(rules)) {
+              if (r.selectorText && /markmap/i.test(r.selectorText)) css += (r.cssText || '') + '\n';
+            }
+          }
+        } catch (_e) { /* 忽略不可读样式表 */ }
+        return css.trim();
+      },
       async _svgToPngDataUrl(svg) {
         try {
           if (typeof XMLSerializer === 'undefined' || typeof Blob === 'undefined' || typeof Image === 'undefined') return '';
+          // Markmap：把其样式表内联进 SVG 再序列化，避免导出后变黑/错位（样式本在文档级 <style> 未随 svg 序列化）
+          let target = svg;
+          if (svg && svg.classList && svg.classList.contains('markmap-svg')) {
+            const markmapCss = this._collectMarkmapCss();
+            if (markmapCss) {
+              const doc = svg.ownerDocument || document;
+              target = svg.cloneNode(true);
+              const styleEl = doc.createElementNS('http://www.w3.org/2000/svg', 'style');
+              styleEl.textContent = markmapCss;
+              if (target.firstChild) target.insertBefore(styleEl, target.firstChild);
+              else target.appendChild(styleEl);
+            }
+          }
           const serializer = new XMLSerializer();
-          let svgStr = serializer.serializeToString(svg);
+          let svgStr = serializer.serializeToString(target);
           if (!svgStr) return '';
           // 解析尺寸：优先 viewBox，其次 width/height 属性
           let width = 0, height = 0;

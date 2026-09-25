@@ -132,14 +132,16 @@
         //（对所有行调 cm.heightAtLine + 重建与行数等长的数组），导致滚动掉帧。
         // 仅在「预览重渲染」（rebuildScrollSync 置脏）或「编辑器内容变化」（changeGeneration 改变）
         // 时才重算，滚动 tick 直接复用上次结果；内容没变则同步精度不变。
-        const editorGen = (typeof this.cm.changeGeneration === 'function') ? this.cm.changeGeneration() : null;
+        // 仅以「预览重渲染」（rebuildScrollSync 置脏）与「行数变化」为失效条件：
+        // 去掉原先的 changeGeneration 键——它每次键击都变，会使大文档每次输入后全量重算
+        // （对所有行 cm.heightAtLine + 重建与行数等长的数组），造成打字/滚动偶发卡顿（2026-09-25 审计）。
+        // 现在仅在内容真实改变结构（行数增减）或预览重渲后才重算，输入过程复用缓存、与延迟渲染中的预览一致。
         const lineCount = (typeof this.cm.lineCount === 'function') ? this.cm.lineCount() : 0;
         if (!this._positionCacheDirty && this._editorElementList && this._previewElementList &&
-            this._positionEditorGen === editorGen && this._positionLineCount === lineCount) {
+            this._positionLineCount === lineCount) {
           return;
         }
         this._positionCacheDirty = false;
-        this._positionEditorGen = editorGen;
         this._positionLineCount = lineCount;
         const allElements = this.preview.querySelectorAll('[data-source-line]');
         const anchors = [];
