@@ -1881,13 +1881,14 @@
           clearTimeout(timer);
         }
       },
-      // 在 Web Worker 里执行 buildDocxFromStructure：docx.min.js + docx-builder.js 经绝对 URL
-      // importScripts 加载，规避老 Tauri/WebView 下相对路径 Worker 脚本加载不稳的问题。
-      // 返回 ArrayBuffer；任何失败都抛错交给 _buildDocxBuffer 的主线程兜底。
+      // 在 Web Worker 里执行 buildDocxFromStructure。依赖加载采用「主线程 fetch 文本 → blob URL →
+      // Worker 内 importScripts」方式，规避老 Tauri/WebView 下直接 importScripts 绝对 URL 不稳
+      // 的问题，最大化 Worker 真正生效的概率。Worker 不可用/依赖加载失败/超时/报错时，抛错交给
+      // _buildDocxBuffer 的主线程兜底——最坏情况与现在一致，不会更差。
       _buildDocxInWorker(structure, page) {
         return new Promise((resolve, reject) => {
-          if (typeof Worker === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
-            return reject(new Error('Web Worker 不可用'));
+          if (typeof Worker === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL || typeof fetch === 'undefined') {
+            return reject(new Error('Web Worker / fetch 不可用'));
           }
           const base = location.href;
           let libUrl, builderUrl;
@@ -1897,75 +1898,93 @@
           } catch (e) {
             return reject(e);
           }
-          // 经典 Worker（importScripts 仅经典 Worker 可用）：用 Blob 承载启动脚本，
-          // 再由 importScripts 以绝对 URL 拉取两个依赖，确保与 index.html 加载路径一致。
-          const src =
-            "self.onmessage=async function(e){" +
-            "try{" +
-            "importScripts(" + JSON.stringify(libUrl) + "," + JSON.stringify(builderUrl) + ");" +
-            "var blob=await self.buildDocxFromStructure(e.data.structure,e.data.page);" +
-            "var buf=await blob.arrayBuffer();" +
-            "self.postMessage({ok:true,buf:buf},[buf]);" +
-            "}catch(err){self.postMessage({ok:false,error:String((err&&err.stack)||err)});}" +
-            "};";
-          let worker = null;
-          let settled = false;
-          let url = null;
-          try {
-            const blob = new Blob([src], { type: 'application/javascript' });
-            url = URL.createObjectURL(blob);
-            worker = new Worker(url);
-          } catch (e) {
-            if (url) { try { URL.revokeObjectURL(url); } catch (_) {} }
-            return reject(e);
-          }
-          // Worker 构建整体超时（含 importScripts 静默卡住的情况），到时回退主线程。
-          const timer = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            try { worker.terminate(); } catch (_) {}
-            try { URL.revokeObjectURL(url); } catch (_) {}
-            reject(new Error('docx Worker 构建超时'));
-          }, 60000);
-          worker.onmessage = (ev) => {
-            if (settled) return;
-            const d = ev.data || {};
-            if (d.ok) {
-              // 静默坏文件兜底：Worker 不抛错却产出空/非法 buffer 时，不能当成成功直接写出
-              // （否则导出的 docx 打不开），判空即视为失败，回退主线程重建。
-              if (!d.buf || !(d.buf instanceof ArrayBuffer) || d.buf.byteLength === 0) {
+          let depUrl = null;
+          // 主线程先 fetch 两个依赖文本（同源 fetch 在 Tauri webview 通常可靠），拼成 blob URL。
+          Promise.all([
+            fetch(libUrl).then((r) => r.text()),
+            fetch(builderUrl).then((r) => r.text()),
+          ]).then(([libText, builderText]) => {
+            const depBlob = new Blob([libText + '\n;\n' + builderText], { type: 'application/javascript' });
+            depUrl = URL.createObjectURL(depBlob);
+            // 经典 Worker（importScripts 仅经典 Worker 可用）：启动脚本仅 importScripts(depUrl)。
+            const src =
+              "self.onmessage=async function(e){" +
+              "try{" +
+              "importScripts(" + JSON.stringify(depUrl) + ");" +
+              "var blob=await self.buildDocxFromStructure(e.data.structure,e.data.page);" +
+              "var buf=await blob.arrayBuffer();" +
+              "self.postMessage({ok:true,buf:buf},[buf]);" +
+              "}catch(err){self.postMessage({ok:false,error:String((err&&err.stack)||err)});}" +
+              "};";
+            let worker = null;
+            let settled = false;
+            let url = null;
+            try {
+              const blob = new Blob([src], { type: 'application/javascript' });
+              url = URL.createObjectURL(blob);
+              worker = new Worker(url);
+            } catch (e) {
+              if (url) { try { URL.revokeObjectURL(url); } catch (_) {} }
+              if (depUrl) { try { URL.revokeObjectURL(depUrl); } catch (_) {} }
+              return reject(e);
+            }
+            // Worker 构建整体超时（含 importScripts 静默卡住的情况），到时回退主线程。
+            const timer = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              try { worker.terminate(); } catch (_) {}
+              try { URL.revokeObjectURL(url); } catch (_) {}
+              try { URL.revokeObjectURL(depUrl); } catch (_) {}
+              reject(new Error('docx Worker 构建超时'));
+            }, 60000);
+            worker.onmessage = (ev) => {
+              if (settled) return;
+              const d = ev.data || {};
+              if (d.ok) {
+                // 静默坏文件兜底：Worker 不抛错却产出空/非法 buffer 时，不能当成成功直接写出
+                // （否则导出的 docx 打不开），判空即视为失败，回退主线程重建。
+                if (!d.buf || !(d.buf instanceof ArrayBuffer) || d.buf.byteLength === 0) {
+                  settled = true;
+                  clearTimeout(timer);
+                  try { worker.terminate(); } catch (_) {}
+                  try { URL.revokeObjectURL(url); } catch (_) {}
+                  try { URL.revokeObjectURL(depUrl); } catch (_) {}
+                  reject(new Error('docx Worker 产出为空/非法，回退主线程'));
+                  return;
+                }
+                settled = true;
+                clearTimeout(timer);
+                // 拿到结果立即终止 Worker：释放其线程内 docx 库与已构建文档占用的内存，
+                // 真正实现「导出内存压力隔离」，避免 worker 残留导致主线程依旧内存高压。
+                try { worker.terminate(); } catch (_) {}
+                try { URL.revokeObjectURL(url); } catch (_) {}
+                try { URL.revokeObjectURL(depUrl); } catch (_) {}
+                resolve(d.buf);
+              } else {
                 settled = true;
                 clearTimeout(timer);
                 try { worker.terminate(); } catch (_) {}
                 try { URL.revokeObjectURL(url); } catch (_) {}
-                reject(new Error('docx Worker 产出为空/非法，回退主线程'));
-                return;
+                try { URL.revokeObjectURL(depUrl); } catch (_) {}
+                reject(new Error(d.error || 'docx Worker 构建失败'));
               }
-              settled = true;
-              clearTimeout(timer);
-              // 拿到结果立即终止 Worker：释放其线程内 docx 库与已构建文档占用的内存，
-              // 真正实现「导出内存压力隔离」，避免 worker 残留导致主线程依旧内存高压。
-              try { worker.terminate(); } catch (_) {}
-              try { URL.revokeObjectURL(url); } catch (_) {}
-              resolve(d.buf);
-            } else {
+            };
+            worker.onerror = (err) => {
+              if (settled) return;
               settled = true;
               clearTimeout(timer);
               try { worker.terminate(); } catch (_) {}
               try { URL.revokeObjectURL(url); } catch (_) {}
-              reject(new Error(d.error || 'docx Worker 构建失败'));
-            }
-          };
-          worker.onerror = (err) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            try { worker.terminate(); } catch (_) {}
-            try { URL.revokeObjectURL(url); } catch (_) {}
-            reject(new Error('docx Worker 错误: ' + (err && err.message ? err.message : err)));
-          };
-          // structure 含 Uint8Array 图片数据：structured clone 拷贝即可（不 transfer，避免主线程侧被置空）。
-          worker.postMessage({ structure, page });
+              try { URL.revokeObjectURL(depUrl); } catch (_) {}
+              reject(new Error('docx Worker 错误: ' + (err && err.message ? err.message : err)));
+            };
+            // structure 含 Uint8Array 图片数据：structured clone 拷贝即可（不 transfer，避免主线程侧被置空）。
+            worker.postMessage({ structure, page });
+          }).catch((err) => {
+            // 依赖 fetch 失败：回退主线程。
+            if (depUrl) { try { URL.revokeObjectURL(depUrl); } catch (_) {} }
+            reject(new Error('docx 依赖加载失败，回退主线程: ' + (err && err.message ? err.message : err)));
+          });
         });
       },
       async exportWord() {
