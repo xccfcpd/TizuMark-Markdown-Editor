@@ -290,7 +290,13 @@
         setInterval(async () => {
           if (this._watching) return;
           this._watching = true;
-          try { await pass(); } catch (e) { /* ignore */ } finally { this._watching = false; }
+          try {
+            // 无打开的标签页或窗口处于后台时不轮询：避免「空文档 / 最小化」状态下仍每 1.5s
+            // 全量扫描磁盘改动，省下无谓的 IPC 与后台 CPU（2026-09-25 优化）。聚焦回来时
+            // 的 focus 监听仍会触发一次 pass()，故重新打开标签 / 切回前台不会漏检。
+            if (!this.tabs || this.tabs.length === 0 || (typeof document !== 'undefined' && document.hidden)) return;
+            await pass();
+          } catch (e) { /* ignore */ } finally { this._watching = false; }
         }, 1500);
   
         window.addEventListener('focus', () => {
