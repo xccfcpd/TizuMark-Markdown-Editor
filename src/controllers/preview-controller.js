@@ -155,13 +155,38 @@
         if (typeof UnifiedRenderer === 'undefined' || !UnifiedRenderer || typeof UnifiedRenderer.renderMarkdown !== 'function') {
           throw new Error('渲染器未构建或加载失败（src/lib/unified-bundle.js），请运行 npm run build:renderer');
         }
-        // equationNumbering：'section' 时公式按章节编号（2.1），否则全文连续编号（默认）。
-        const html = UnifiedRenderer.renderMarkdown(renderContent, {
-          softBreaks: this.app.settings.softBreaks,
-          tabSize: this.app.settings.tabSize,
-          extendedSyntax: this.app.settings.extendedSyntax,
-          equationNumbering: this.app.settings.equationSectionNumbering ? 'section' : 'global',
-        });
+        // 按 tab 渲染缓存（惰性渲染）：非大文档且（同一 tab + 内容 + 影响渲染的设置）未变时，
+        // 复用上次 renderMarkdown 的输出，跳过耗时的 markdown 解析 —— 切回未改内容的标签秒开。
+        // 仅对非大文档生效：大文档走滑动窗口，renderContent 是「焦点周边切片」，跨切换不稳定，故不缓存。
+        if (!this._previewCache) this._previewCache = new Map();
+        const _renderSig = [
+          this.app.settings.softBreaks,
+          this.app.settings.tabSize,
+          this.app.settings.extendedSyntax,
+          this.app.settings.equationSectionNumbering ? 'section' : 'global',
+        ].join('|');
+        const _cacheKey = _renderSig + ' ' + renderContent;
+        const _cached = (!isLarge && _tab) ? this._previewCache.get(_tab) : null;
+        let html;
+        if (_cached && _cached.key === _cacheKey) {
+          html = _cached.html;
+        } else {
+          // equationNumbering：'section' 时公式按章节编号（2.1），否则全文连续编号（默认）。
+          html = UnifiedRenderer.renderMarkdown(renderContent, {
+            softBreaks: this.app.settings.softBreaks,
+            tabSize: this.app.settings.tabSize,
+            extendedSyntax: this.app.settings.extendedSyntax,
+            equationNumbering: this.app.settings.equationSectionNumbering ? 'section' : 'global',
+          });
+          if (_tab) {
+            this._previewCache.set(_tab, { key: _cacheKey, html });
+            // LRU：最多缓存 12 个标签的渲染结果，超出淘汰最早的一个（Map 保持插入序）
+            if (this._previewCache.size > 12) {
+              const _oldest = this._previewCache.keys().next().value;
+              if (_oldest !== undefined) this._previewCache.delete(_oldest);
+            }
+          }
+        }
         if (gen !== this.app._renderGeneration) return;
 
         let finalHtml = html;

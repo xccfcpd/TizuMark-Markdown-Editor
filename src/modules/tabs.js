@@ -197,7 +197,7 @@
             this.activeTabIndex = this.tabs.length - 1;
           }
         }
-        this.updateTabBar();
+        this.updateTabBar(removeIndex);
         if (this.tabs.length > 0) {
           await this.ensureTabLoaded(this.activeTab);
           this.cm.setValue(this.activeTab.content || '');
@@ -219,6 +219,7 @@
         } else if (from > this.activeTabIndex && to <= this.activeTabIndex) {
           this.activeTabIndex++;
         }
+        this._tabBarForceFull = true; // 顺序变了，必须全量重建（增量路径不重排位置）
         this.updateTabBar();
         this.saveSession();
       },
@@ -448,58 +449,115 @@
         clear.textContent = this.t('clearRecentFiles');
         submenu.appendChild(clear);
       },
-      updateTabBar() {
+      // 构建单个标签元素（含 per-tab 监听）。监听统一读取 el.dataset.index（而非闭包 i），
+      // 这样增量更新改了 data-index 后，旧元素的点击/关闭仍指向正确标签。
+      _buildTabEl(tab, index, addBtn) {
+        const tabEl = document.createElement('div');
+        tabEl.className = `tab${index === this.activeTabIndex ? ' active' : ''}${tab.isModified ? ' modified' : ''}`;
+        tabEl.dataset.index = String(index);
+        tabEl.setAttribute('role', 'tab');
+        tabEl.setAttribute('aria-selected', index === this.activeTabIndex ? 'true' : 'false');
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'tab-name';
+        nameSpan.textContent = tab.name;
+        tabEl.appendChild(nameSpan);
+
+        if (this.tabs.length > 1) {
+          const closeBtn = document.createElement('span');
+          closeBtn.className = 'tab-close';
+          closeBtn.textContent = '×';
+          closeBtn.setAttribute('role', 'button');
+          closeBtn.setAttribute('aria-label', this.t('closeAria'));
+          closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.closeTab(Number(tabEl.dataset.index));
+          });
+          tabEl.appendChild(closeBtn);
+        }
+
+        tabEl.addEventListener('click', () => {
+          if (this._suppressClick) { this._suppressClick = false; return; }
+          this.switchTab(Number(tabEl.dataset.index));
+        });
+        // 中键点击关闭标签页；左键按下准备拖拽排序（用指针事件实现，绕过 Tauri 默认 dragDropEnabled 接管原生 DnD 导致拖不动的问题）
+        tabEl.addEventListener('mousedown', (e) => {
+          this._suppressClick = false;
+          const idx = Number(tabEl.dataset.index);
+          if (e.button === 1) { e.preventDefault(); this.closeTab(idx); return; }
+          if (e.button === 0) {
+            this._dragState = { from: idx, startX: e.clientX, startY: e.clientY, active: false };
+          }
+        });
+        // 鼠标悬停显示完整路径（含文件名）；未保存标签无 filePath 时回退文件名
+        tabEl.title = tab.filePath || tab.name;
+        return tabEl;
+      },
+
+      // 全量重建标签栏（结构变化：初始化 / 增删多 / 重排）。单次 O(N)，非 O(N²)。
+      _renderTabBarFull() {
         const tabBar = document.getElementById('tab-bar');
         const addBtn = document.getElementById('btn-add-tab');
-  
         const fragment = document.createDocumentFragment();
-  
         this.tabs.forEach((tab, i) => {
-          const tabEl = document.createElement('div');
-          tabEl.className = `tab${i === this.activeTabIndex ? ' active' : ''}${tab.isModified ? ' modified' : ''}`;
-          tabEl.dataset.index = i;
-          tabEl.setAttribute('role', 'tab');
-          tabEl.setAttribute('aria-selected', i === this.activeTabIndex ? 'true' : 'false');
-  
-          const nameSpan = document.createElement('span');
-          nameSpan.className = 'tab-name';
-          nameSpan.textContent = tab.name;
-          tabEl.appendChild(nameSpan);
-  
-          if (this.tabs.length > 1) {
-            const closeBtn = document.createElement('span');
-            closeBtn.className = 'tab-close';
-            closeBtn.textContent = '\u00d7';
-            closeBtn.setAttribute('role', 'button');
-            closeBtn.setAttribute('aria-label', this.t('closeAria'));
-            closeBtn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              this.closeTab(i);
-            });
-            tabEl.appendChild(closeBtn);
-          }
-  
-          tabEl.addEventListener('click', () => {
-            if (this._suppressClick) { this._suppressClick = false; return; }
-            this.switchTab(i);
-          });
-          // 中键点击关闭标签页；左键按下准备拖拽排序（用指针事件实现，绕过 Tauri 默认 dragDropEnabled 接管原生 DnD 导致拖不动的问题）
-          tabEl.addEventListener('mousedown', (e) => {
-            this._suppressClick = false;
-            if (e.button === 1) { e.preventDefault(); this.closeTab(i); return; }
-            if (e.button === 0) {
-              this._dragState = { from: i, startX: e.clientX, startY: e.clientY, active: false };
-            }
-          });
-          // 鼠标悬停显示完整路径（含文件名）；未保存标签无 filePath 时回退文件名
-          tabEl.title = tab.filePath || tab.name;
-          fragment.appendChild(tabEl);
+          fragment.appendChild(this._buildTabEl(tab, i, addBtn));
         });
-  
         tabBar.replaceChildren(fragment);
         if (addBtn) tabBar.appendChild(addBtn);
-        // Refresh scroll arrows after tabs change
         if (this.updateTabScrollArrows) this.updateTabScrollArrows();
+      },
+
+      // 增量更新标签栏：避免「开 / 关很多标签」时每次全量重建导致 O(N²)。
+      //   · 数量不变：仅就地更新类 / 名 / title（不重建、不重绑监听）
+      //   · 多一个（addTab 末尾追加）：只 append 一个元素
+      //   · 少一个（closeTab，且剩余 ≥2）：移除指定 index 并重排后续 data-index
+      //   · 其余（重排 / 批量增删 / 单标签收尾）：走全量重建
+      updateTabBar(removedIndex) {
+        const tabBar = document.getElementById('tab-bar');
+        const addBtn = document.getElementById('btn-add-tab');
+        const existing = Array.from(tabBar.querySelectorAll('.tab'));
+        const n = this.tabs.length;
+        // 全量重建兜底：首次（无元素）/ 单标签收尾（需校正关闭按钮）/ 结构不匹配 / 强制
+        if (this._tabBarForceFull || existing.length === 0 || n <= 1 ||
+            existing.length > n + 1 || existing.length < n - 1) {
+          this._tabBarForceFull = false;
+          this._renderTabBarFull();
+          return;
+        }
+        if (existing.length === n) {
+          // 数量一致：原地更新类 / 名 / title（顺序未变）
+          this.tabs.forEach((tab, i) => {
+            const el = existing[i];
+            if (!el) return;
+            el.className = `tab${i === this.activeTabIndex ? ' active' : ''}${tab.isModified ? ' modified' : ''}${tab.pendingExternalChange ? ' external-change' : ''}`;
+            el.setAttribute('aria-selected', i === this.activeTabIndex ? 'true' : 'false');
+            const nameSpan = el.querySelector('.tab-name');
+            if (nameSpan) nameSpan.textContent = tab.name;
+            el.title = tab.filePath || tab.name;
+          });
+          if (this.updateTabScrollArrows) this.updateTabScrollArrows();
+          return;
+        }
+        if (existing.length === n - 1) {
+          // 新增一个：末尾追加（addTab 始终 push 到末尾）
+          const tab = this.tabs[n - 1];
+          const el = this._buildTabEl(tab, n - 1, addBtn);
+          tabBar.insertBefore(el, addBtn || null);
+          if (this.updateTabScrollArrows) this.updateTabScrollArrows();
+          return;
+        }
+        if (existing.length === n + 1 && typeof removedIndex === 'number' && n >= 2) {
+          // 关闭一个：移除该元素并顺移后续 data-index
+          const el = existing[removedIndex];
+          if (el) el.remove();
+          for (let i = removedIndex; i < existing.length; i++) {
+            if (existing[i]) existing[i].dataset.index = String(i);
+          }
+          if (this.updateTabScrollArrows) this.updateTabScrollArrows();
+          return;
+        }
+        // 兜底
+        this._renderTabBarFull();
       },
       updateTabDisplay() {
         const tabs = document.querySelectorAll('.tab');
