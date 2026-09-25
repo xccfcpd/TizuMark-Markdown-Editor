@@ -1558,6 +1558,8 @@
     </body>
     </html>`;
   
+          // 让出主线程：整篇 HTML 字符串拼接与写文件是同步大操作，yield 让界面（含其他面板）不至于"假死"（2026-09-25 优化）。
+          await new Promise(r => setTimeout(r, 0));
           await TauriApi.writeFile({ path, content: fullHTML });
           this.setStatus(`${this.t('exportedHTML')}: ${path}`);
         } catch (error) {
@@ -2020,9 +2022,15 @@
   
           // 用 docx 库生成真 OOXML：DOM → 中间结构 → 主线程构建 Document → toBlob。
           // _buildDocxBuffer 内部保证 docx 库已加载（缺失时按需补加载），主路径失败才回退 altChunk。
+          // 让出主线程：DOM→结构转换与后续 docx 构建都是同步重 CPU 调用，先 yield 让 spinner 动起来、
+          // 并响应取消按钮，避免「界面像死了、其他功能用不了」（2026-09-25 优化）。
+          await new Promise(r => setTimeout(r, 0));
+          if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
           const structure = (typeof window.domToDocxStructure === 'function')
             ? window.domToDocxStructure(clone)
             : null;
+          await new Promise(r => setTimeout(r, 0));
+          if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
           const mathConverted = (structure && Array.isArray(structure))
             ? this._structureMathmlToOmml(structure)
             : false;
@@ -2038,6 +2046,10 @@
               mathConverted,
             };
             try {
+              // 进入 docx 库最终构建（同步大调用）前再让出主线程，确保 spinner 完成一帧渲染、
+              // 并使取消按钮在构建开始前可响应。
+              await new Promise(r => setTimeout(r, 0));
+              if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
               const arrayBufferDocx = await this._buildDocxBuffer(structure, page);
               clearTimeout(watchdog);
               const bufDocx = new Uint8Array(arrayBufferDocx);

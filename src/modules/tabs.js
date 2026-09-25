@@ -53,7 +53,9 @@
         // 切换代际号：加载文件是异步的，期间用户可能又点了别的标签 —— 下面每个 await 之后都要
         // 校验代际，过期就放弃（否则旧续体会把内容写回编辑器，覆盖用户真正想看的文件）。
         const gen = ++this._switchGen;
-        this._beginPaneLoad();
+        // 不再无条件显示加载层：大文档的 loading 由 render() 按 needLoad 自行接管；
+        // 否则每次切 tab（含小文档、渲染缓存命中）都会闪一下半透明白色遮罩（2026-09-25 修复）。
+        let beganPaneLoad = false;
         try {
           // 只把编辑器内容写回**真正承载它的那个标签**（this._editorTab）：此刻 activeTabIndex
           // 可能已经前移、而编辑器里仍是上一个文档。旧写法（写进 this.activeTab）在"快速连点两个
@@ -125,7 +127,7 @@
           this.highlightTreeActiveFile();
           this.syncViewModeToTab();
         } finally {
-          this._endPaneLoad();
+          if (beganPaneLoad) this._endPaneLoad();
         }
       },
       async addTab(name = '', content = '', filePath = null, kind = 'markdown') {
