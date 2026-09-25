@@ -162,8 +162,25 @@ function expandSiUnit(raw) {
       continue;
     }
     if (c === '{') {
+      // siunitx 允许用 {…} 分组：指数（`s^{-2}`）、复合单位（`{kg}{m}`）等。
+      // ⚠ 旧实现把整段 {…} **直接丢弃** → `\si{kg.m.s^{-2}}` 变成 `kg\,m\,s^`（悬空 `^`，
+      // KaTeX 直接报错、整条公式渲染不出来；审计发现，2026-09-25）。现在改为保留分组内容：
+      //   · 紧跟 `^` / `_` 时按指数补回 `{…}`；
+      //   · 其余位置当作一个单位原子（内部递归展开，相邻单位仍补细空格）。
       const e = findMatchingBrace(s, i);
+      const inner = expandSiUnit(e > i ? s.slice(i + 1, e) : '');
       i = e > i ? e + 1 : i + 1;
+      if (inner) {
+        if (/(\^|_)$/.test(out)) {
+          out += '{' + inner + '}';
+        } else {
+          if (lastWasUnit) out += '\\,';
+          out += pending + '{' + inner + '}' + pendingExp;
+          pending = '';
+          pendingExp = '';
+          lastWasUnit = true;
+        }
+      }
       continue;
     }
     // 空白与 `.` 是 siunitx 的"单位连接符"：相邻单位之间要补细空格（`kg m` → `kg\,m`）。

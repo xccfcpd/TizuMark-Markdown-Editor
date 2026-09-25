@@ -54,6 +54,19 @@ test('siunitx: \\SIrange 区间', () => {
   );
 });
 
+test('siunitx: {…} 分组不得被丢弃（\\si{kg.m.s^{-2}} 的指数）', () => {
+  // 旧实现把任何 {…} 直接丢弃 → `s^{-2}` 变成 `s^`（悬空 ^ → KaTeX 报错、整条公式渲染不出来）。
+  // 审计发现 2026-09-25（第 18 轮行为电池）。
+  assert.strictEqual(M.expandSiUnit('kg.m.s^{-2}'), 'kg\\,m\\,s^{-2}');
+  assert.strictEqual(M.expandSiUnit('m s^{-2}'), 'm\\,s^{-2}');
+  assert.strictEqual(M.expandSiUnit('s^{-2}'), 's^{-2}');
+  const full = M.expandSiunitx('$\\si{kg.m.s^{-2}}$');
+  assert.ok(full.indexOf('s^{-2}') >= 0, '展开结果应保留完整指数，实际 ' + full);
+  assert.ok(!/\^\s*\}/.test(full), '不得留下悬空 ^（KaTeX 会报错）');
+  // 分组也可作为单位原子：相邻单位之间仍补细空格
+  assert.strictEqual(M.expandSiUnit('{kg}{m}'), '{kg}\\,{m}');
+});
+
 test('siunitx: \\celsius 与 \\percent', () => {
   assert.strictEqual(M.expandSiunitx('\\SI{25}{\\celsius}'), '25\\,\\mathrm{^{\\circ}C}');
   assert.strictEqual(M.expandSiunitx('\\SI{50}{\\percent}'), '50\\,\\mathrm{\\%}');

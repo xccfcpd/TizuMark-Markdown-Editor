@@ -1447,6 +1447,60 @@ Unicode / 公式编号 / siunitx / Markmap / PlantUML / TikZ / plot / Admonition
 - `test/feature-coverage.test.cjs`：**16/16 通过（本地实跑）**
 - 全量：语法 211 文件 0 错误 · 测试文件 32 通过 / 1 需构建产物 / 107 环境跳过
 
+### 2.40 第十八轮（续）：17 项功能**逐功能行为电池** + 修一个真 bug（2026-09-25）
+
+在第 18 轮"接线核对"之后，用户要求**每一项都真正查一遍**（不只查"函数存在"）。于是给每项加
+**行为电池**（本地可执行），把临时探针固化成永久用例。结果**抓到一个真 bug**。
+
+#### 真 bug：`\si{kg.m.s^{-2}}` 的指数 `{…}` 被整段丢弃
+
+`unified-math.js` 的单位解析里，遇到 `{…}` 分组直接 `continue`（整段丢弃）：
+
+```
+kg.m.s^{-2}  →  kg\,m\,s^      ← 指数 {-2} 没了，留下悬空 ^
+```
+
+悬空的 `^` 会让 **KaTeX 直接报错、整条公式渲染失败**（红色错误框）。`s^{-2}`（加速度单位）在
+物理文档里很常见，属于"看起来是子集支持、实际会渲染崩"的硬伤。
+
+- 根因：`expandSiUnit` 对 `{…}` 的处理只有"丢弃"一种动作，没有"保留/递归展开"。
+- 修法：分组内容**递归展开**后保留 —— 紧跟 `^`/`_` 时补回 `{…}`（指数），否则当作一个单位原子
+  （相邻单位仍补细空格）。`expandSiUnit('{kg}{m}')` → `{kg}\,{m}` 仍正确。
+- 回归：`test/unified-math.test.cjs` 新增 `\si{kg.m.s^{-2}}` / `m s^{-2}` / `s^{-2}` 三组（断言不残留悬空 `^`），
+  以及"分组作为单位原子"一组。
+
+#### 本轮新增的行为电池（并入 `test/feature-coverage.test.cjs`，现 28 用例）
+
+| 功能 | 电池要点 |
+|---|---|
+| 基础 Markdown | 渲染阶段**顺序约束**：admonition 先于 alert、alert 还原先于 admonition、admonition 还原先于数学、数学保护先于 markdown 解析（按管线调用表达式比较，避开"函数定义处"误判） |
+| 代码高亮 | 语言类名解析（`c++`/`c#`/`objective-c++`/`f#`/无语言）从源码正则**实跑** |
+| 数学/mhchem/单位/siunitx | `\ce`/`\pu` 内部 `//` 不被改写；科学计数/负角/组合单位/百分号转义；`{-2}` 指数保留 |
+| 公式编号 | 前向 `\eqref`、未定义标签兜底 `(?)` |
+| Mermaid | `DIAGRAM_HTML_CACHEABLE` **逐项布尔**核对（Graphviz/TikZ/plot/WaveDrom=true，ECharts/Markmap=false），并确认写缓存前要求容器确有 `svg` |
+| Graphviz | 10 例 `quoteDotIds`：中文补引号、注释里的 `<` 不影响、HTML 串不被改、`cluster_`/`rank=same`/`shape=`/`{…}`、已加引号不重复 |
+| PlantUML | 8 例路由/箭头/控制块 + **结构不变量**（块/end 配对、par 里不得出现裸 else）+ 嵌套层级 |
+| TikZ | 6 例子集可画（含颜色/虚线/node/带单位坐标）+ 5 例明确拒绝（arc/grid/`\path`/controls/to） |
+| plot | 7 例函数式（sin/cos/幂/标题/set grid/多） + 非函数式拒绝 |
+| Unicode | 替换正则行为：真短码在表内、`:90:`/时间/URL/表格分隔线不被当短码 |
+| Admonition | 嵌套、`???+` 默认展开、未知类型正文不消失 |
+| ECharts/WaveDrom/Markmap | 导出链路接线（ECharts canvas → 快照 `<img>`、WaveDrom 皮肤、Markmap `create` + 默认高度） |
+
+#### 复核为误报（修正了断言而非代码）
+
+| 现象 | 实情 |
+|---|---|
+| sanitize 白名单"缺 details" | `details/summary/dl/dd/table/input` 来自 GitHub 基础白名单，本仓只追加 `u/center/progress/mark/figure/figcaption` |
+| `DIAGRAM_HTML_CACHEABLE` "含 echarts" | echarts 是 `false`（canvas 不缓存）；我的子串检查过粗，改成逐项布尔解析 |
+| PlantUML `actor 用户` 输出 | 走 id 化（`P1->>P2`），非 `用户->>系统`；断言按实际输出收敛 |
+| 渲染阶段顺序比较失败 | 比的是函数**定义处**位置；改成比管线**调用处**位置 |
+| `\si{%}` 输出 | 是 `\,\mathrm{\%}`（正确），非我误写的 `\` |
+
+#### 验证
+
+- `test/feature-coverage.test.cjs`：**28/28 本地通过**（覆盖全部 17 项的行为电池）
+- 全量：守卫全过；测试文件 33 通过 / 0 失败 / 107 环境跳过（无回归，siunitx 修复未冲掉既有用例）
+
 ---
 
 ## 3. 语法子集与已知偏差（审阅重点）

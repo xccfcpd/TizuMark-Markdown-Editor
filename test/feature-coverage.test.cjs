@@ -211,3 +211,198 @@ test('功能覆盖 · Admonition：四种写法解析 + 13 类样式 + 可折叠
   assert.deepStrictEqual(miss, [], '缺样式的类型: ' + miss.join(', '));
   assert.match(read('src/unified-admonitions.js'), /data-admonition/, '折叠块应带 data-admonition');
 });
+
+/* ============================================================================
+ * 第十八轮（续）：逐功能「行为电池」—— 把临时探针固化成可重复执行的用例。
+ * 每一项都真跑一遍边界输入，而不只是检查"函数存在"。
+ * ========================================================================== */
+
+test('深挖 · 基础 Markdown：渲染阶段顺序约束（顺序错了就会出中间态/丢语义）', () => {
+  // 必须在**渲染函数体内部**比较：同名函数的第一处出现通常是"定义/注释"，用它比较会误判
+  const pipelineStart = S.indexOf('abbrResult = extractAbbreviations(content)');
+  assert.ok(pipelineStart > 0, '找不到渲染管线起点');
+  const idx = (needle) => {
+    const i = S.indexOf(needle, pipelineStart);
+    assert.ok(i >= 0, '找不到管线调用: ' + needle);
+    return i;
+  };
+  const convAdm = idx('convertAdmonitions(mathResult.content)');
+  const convAlert = idx('convertAlerts(admonitionResult.content)');
+  const restAlert = idx('restoreAlerts(html, alertBlocks)');
+  const restAdm = idx('restoreAdmonitions(html, admonitionBlocks)');
+  const restMath = idx('restoreMathBlocks(html, placeholders');
+  // admonition(! / ?) 必须先于 alert(> [!TYPE])：先把缩进体反缩进成顶层文本
+  assert.ok(convAdm < convAlert, 'admonition 转换必须先于 alert');
+  // 还原顺序：alert 先、admonition 后（嵌套时内层先还原）
+  assert.ok(restAlert < restAdm, 'alert 应先于 admonition 还原');
+  // 数学还原在 admonition 还原之后（提示块正文里的公式才渲染得到）
+  assert.ok(restAdm < restMath, 'admonition 还原应先于数学还原');
+  // 数学保护必须先于 markdown 解析（否则 $…$ 里的字符被语法吃掉）
+  assert.ok(S.indexOf('guardMathBlocks(abbrResult.content)') > 0, '数学保护应作用于解析前的文本');
+});
+
+test('深挖 · 代码高亮：语言类名解析电池（含 c++ / c# / objective-c++）', () => {
+  // 直接取实现里的正则（与源码同源，避免复制出第二套规则）
+  const m = CB.match(/cls\.match\(\/([^/]+)\//);
+  assert.ok(m, '找不到语言类名解析正则');
+  const re = new RegExp(m[1]);
+  const pick = (cls) => { const r = cls.match(re); return r ? r[1] : null; };
+  assert.strictEqual(pick('language-javascript hljs'), 'javascript');
+  assert.strictEqual(pick('hljs language-c++'), 'c++', 'c++ 不能被截成 c');
+  assert.strictEqual(pick('language-c#'), 'c#');
+  assert.strictEqual(pick('language-objective-c++'), 'objective-c++');
+  assert.strictEqual(pick('language-f#'), 'f#');
+  assert.strictEqual(pick('hljs'), null, '无语言标记时不返回语言');
+});
+
+test('深挖 · 数学 / mhchem / 物理单位：边界电池', () => {
+  // ① mhchem 的 \pu / \ce 必须整段透传（内部 // 也不能被 siunitx 的"每"规则改写）
+  ['\\ce{2H2 + O2 -> 2H2O}', '\\pu{123 kJ//mol}', '\\ce{SO4^2-}', '\\ce{^{14}C}', '\\pu{1.2e-3 kg.m.s^{-2}}']
+    .forEach((s) => assert.strictEqual(UM.expandSiunitx(s), s, s + ' 不应被改写'));
+  // ② siunitx 边界：科学计数 / 负角 / 组合单位 / 数字格式
+  assert.ok(UM.expandSiunitx('$\\SI{1.2e-3}{m}$').indexOf('\\times 10^{-3}') >= 0);
+  assert.strictEqual(UM.expandSiunitx('$\\ang{-30}$').indexOf('-30^{\\circ}') >= 0, true);
+  assert.ok(UM.expandSiunitx('$\\si{kg.m.s^{-2}}$').indexOf('kg\\,m\\,s^{-2}') >= 0);
+  assert.ok(UM.expandSiunitx('$\\num{1.23e-4}$').indexOf('1.23\\times 10^{-4}') >= 0);
+  // ③ 百分号要转义（否则 % 会被当注释起始，后面内容全被吃掉）
+  assert.ok(UM.expandSiunitx('\\si{%}').indexOf('\\%') >= 0, '百分号应转义');
+});
+
+test('深挖 · 公式自动编号：\\eqref 正文引用与未定义标签兜底', () => {
+  const ph = (t, i) => ({ text: t, display: true, line: i });
+  const list = [ph('$$a\\label{eq:one}$$', 1)];
+  const labels = UM.assignEquationNumbers(list, {});
+  assert.strictEqual(list[0].eqNumber, 1);
+  const prose = UM.expandProseEqref('见式 \\eqref{eq:one} 与 \\eqref{eq:none}', labels);
+  assert.match(prose, /eq-1/, '已定义标签应生成引用链接');
+  assert.match(prose, /未定义|eq-ref-missing/, '未定义标签要有兜底提示（不能静默丢）');
+});
+
+test('深挖 · Mermaid：可缓存引擎集合逐项核对（SVG 可缓存 / canvas 与交互态不可）', () => {
+  const cacheable = PP.match(/DIAGRAM_HTML_CACHEABLE = \{[\s\S]*?\}/);
+  assert.ok(cacheable, '找不到 DIAGRAM_HTML_CACHEABLE');
+  const body = cacheable[0];
+  // 逐项解析布尔值（不能只查"是否出现名字"：echarts: false 也会命中名字）
+  const flag = (t) => {
+    const m = body.match(new RegExp(t + '\\s*:\\s*(true|false)'));
+    return m ? m[1] === 'true' : null;
+  };
+  assert.strictEqual(flag('graphviz'), true, 'Graphviz 产物是 SVG，应可缓存');
+  assert.strictEqual(flag('tikz'), true, 'TikZ 产物是 SVG，应可缓存');
+  assert.strictEqual(flag('plot'), true, 'plot 产物是 SVG，应可缓存');
+  assert.strictEqual(flag('wavedrom'), true, 'WaveDrom(svg) 应可缓存');
+  assert.strictEqual(flag('echarts'), false, 'ECharts 是 canvas：innerHTML 复用会丢像素，必须 false');
+  assert.strictEqual(flag('markmap'), false, 'Markmap 带交互状态：innerHTML 复用会丢，必须 false');
+  // 双保险：即使配置写错，写入缓存前也要求容器里**真的有 svg**（canvas 引擎不会被误缓存）
+  assert.match(PP, /DIAGRAM_HTML_CACHEABLE\[type\] && container\.querySelector\('svg'\)/,
+    '写缓存前必须确认容器内确有 svg');
+});
+
+test('深挖 · Graphviz：quoteDotIds 边界电池', () => {
+  const cases = [
+    ['digraph { 来料 -> 检验 }', /"来料" -> "检验"/],
+    ['digraph { subgraph cluster_中文 { a -> b } }', /cluster_中文/],
+    ['digraph { a [label="中文 带空格"] }', /label="中文 带空格"/],
+    ['digraph { a [label=<<B>标题</B>>] }', /label=<<B>标题<\/B>>/],
+    ['digraph { {rank=same; a; b} }', /rank=same/],
+    ['digraph { a [shape=box, width=0.5]; }', /shape=box, width=0\.5/],
+    ['digraph {\n// 注释里的 < 不影响\n来料 -> 检验\n}', /"来料" -> "检验"/],
+    ['digraph {\n/* 块注释\n   跨行 */\na -> 中文节点\n}', /"中文节点"/],
+    ['digraph { a:port -> b }', /a:port -> b/],
+    ['digraph { "已加引号" -> b }', /"已加引号" -> b/],
+  ];
+  cases.forEach(([src, re]) => assert.match(DR.quoteDotIds(src), re, 'DOT 处理不符: ' + src));
+});
+
+test('深挖 · PlantUML：控制块 / 参与者 / 箭头电池 + 结构不变量', () => {
+  const cases = [
+    ['@startuml\nparticipant A as "甲方"\nA -> B : x\n@enduml', /participant/],
+    ['@startuml\nactor 用户\n用户 -> 系统 : 登录\n@enduml', /actor P\d+ as 用户[\s\S]*P\d+->>P\d+: 登录/],
+    ['@startuml\nA ->> B : req\nB -->> A : resp\n@enduml', /->>/],
+    ['@startuml\nA --> B\n@enduml', /-->/],
+    // 异常箭头 `-\`：Mermaid 无等价符号，降级为普通消息（语义细化丢失，但消息本身保留）
+    ['@startuml\nA -\\ B : 异常\n@enduml', /A->>B: 异常/],
+    ['@startuml\nloop 每天\nA -> B : ping\nend\n@enduml', /^\s*loop 每天/m],
+    ['@startuml\nactivate B\nA -> B : x\ndeactivate B\n@enduml', /activate B/],
+    ['@startuml\nalt c1\nA -> B : x\nelse c2\nA -> B : y\nend\n@enduml', /^\s*else c2/m],
+  ];
+  cases.forEach(([src, re]) => {
+    const out = DC.plantumlToMermaid(src);
+    assert.ok(out, '应能转换: ' + src.split('\n')[1]);
+    assert.match(out, re, '输出不符: ' + src.split('\n')[1]);
+  });
+  // 结构不变量：块开启数必须与 end 数一致（否则 Mermaid 语法报错）
+  const src = '@startuml\nalt a\nA -> B : x\nloop 2\nA -> B : y\nend\nelse b\nA -> B : z\nend\n@enduml';
+  const out = DC.plantumlToMermaid(src);
+  const opens = (out.match(/^\s*(alt|opt|loop|par|critical|break|rect)\b/gm) || []).length;
+  const ends = (out.match(/^\s*end\s*$/gm) || []).length;
+  assert.strictEqual(opens, ends, '块与 end 必须配对，实际 ' + opens + ' vs ' + ends);
+  // 关键回归：par 里不得出现裸 else（Mermaid 只认 and）
+  const par = DC.plantumlToMermaid('@startuml\npar\nA -> B : x\nelse\nA -> C : y\nend\n@enduml');
+  assert.ok(!/^\s*else\s*$/m.test(par));
+  assert.match(par, /^\s*and\s*$/m);
+});
+
+test('深挖 · TikZ：\\draw / \\fill / \\node 子集电池', () => {
+  const okCases = [
+    '\\draw (0,0) -- (1,1);',
+    '\\draw[red, dashed] (0,0) -- (2,0);',
+    '\\draw (0,0) -- (1,0) -- (1,1) -- cycle;',
+    '\\fill (0,0) circle (2pt);',
+    '\\node at (1,2) {标签};',
+    '\\draw (0,0) -- (1cm,2cm);',
+  ];
+  okCases.forEach((s) => assert.ok(DC.tikzToSvg(s, { width: 700 }), '应能画: ' + s));
+  const rejectCases = ['\\draw (0,0) arc (0:90:1);', '\\draw (0,0) .. controls (1,1) .. (2,0);',
+    '\\draw (0,0) to [bend left] (1,1);', '\\draw (0,0) grid (2,2);', '\\path[draw] (0,0) -- (1,1);'];
+  rejectCases.forEach((s) => assert.strictEqual(DC.tikzToSvg(s, { width: 700 }), null, '应明确拒绝: ' + s));
+});
+
+test('深挖 · plot：函数式 battery', () => {
+  [['plot sin(x)', true], ['plot cos(x) + 1', true], ['plot x**2', true], ['plot sin(x) title "正弦"', true],
+   ['set grid\nplot x', true], ['plot a*x', false], ['plot x + b', false]].forEach(([src, expect]) => {
+    const got = !!DC.plotToSvg(src, { width: 700 });
+    assert.strictEqual(got, expect, src + ' 期望 ' + expect + ' 实际 ' + got);
+  });
+});
+
+test('深挖 · Unicode 符号：替换正则需要跳过表格分隔线/时间/URL', () => {
+  const reSrc = PP.match(/:\s*([a-z0-9_+-]+)\s*:/);
+  assert.ok(reSrc, '找不到短码匹配结构');
+  // 用与实现同源的形态构造：:name: 且 name 在表内才替换
+  const s = PP.indexOf('const EMOJI_MAP');
+  let i = PP.indexOf('{', s), depth = 0, end = -1;
+  for (; i < PP.length; i++) { if (PP[i] === '{') depth++; else if (PP[i] === '}') { depth--; if (depth === 0) { end = i; break; } } }
+  const body = PP.slice(s, end + 1);
+  const inMap = (name) => body.indexOf("'" + name + "'") >= 0 || body.indexOf(name + ':') >= 0;
+  // 真短码在表内
+  ['fire', 'rocket', 'smile', 'white_check_mark'].forEach((n) => assert.ok(inMap(n), n + ' 应在表内'));
+  // 下列形态都不该被当成短码（时间、表格分隔线、URL、数字）
+  ['12:30:45', '|:---:|', 'http://x/', ':90:', 'a:b'].forEach((t) => {
+    const m = t.match(/^:([a-z0-9_+-]{2,40}):$/);
+    assert.ok(!m || !inMap(m[1]), t + ' 不应被当作短码替换');
+  });
+});
+
+test('深挖 · Admonition：嵌套 / ???+ 默认展开 / 未知类型不误吞', () => {
+  const nested = ADM.convertAdmonitions('!!! note "外层"\n    ::: tip "内层"\n    内层正文\n    :::\n    外层正文');
+  assert.ok(nested.blocks.length >= 1, '嵌套提示块应至少解析出外层');
+  const open = ADM.convertAdmonitions('???+ note "默认展开"\n    正文');
+  assert.strictEqual(open.blocks.length, 1);
+  assert.ok(open.blocks[0].collapsible, '???+ 应可折叠');
+  assert.ok(open.blocks[0].open, '???+ 应默认展开');
+  // 未知类型不被吞：内容必须留在正文里（不能凭空消失）
+  const unknown = ADM.convertAdmonitions('::: 不存在的类型\n正文\n:::');
+  const kept = unknown.content.indexOf('正文') >= 0 || unknown.blocks.length > 0;
+  assert.ok(kept, '未知类型的正文不得消失（要么忽略标记、要么照常成块）');
+});
+
+test('深挖 · ECharts / WaveDrom / Markmap：导出与渲染链路的必要接线', () => {
+  const EX = read('src/modules/export.js');
+  assert.match(EX, /_snapshotEchartsForExport/, 'ECharts 是 canvas：导出必须走快照替换成 <img>');
+  assert.match(EX, /data-diagram-type="echarts"/, '导出快照应只挑 ECharts 容器');
+  assert.match(DR_SRC, /wavedrom\/skins\//, 'WaveDrom 需要加载皮肤（default/dark）');
+  assert.match(DR_SRC, /Markmap\.create/, 'Markmap 应通过 Markmap.create 建图');
+  assert.match(DR_SRC, /DEFAULT_MARKMAP_HEIGHT/, 'Markmap 应有默认高度（否则量不到尺寸会画不出）');
+});
+
