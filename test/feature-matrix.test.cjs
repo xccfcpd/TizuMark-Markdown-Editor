@@ -68,7 +68,7 @@ const DOC = [
   '!!! warning "警告标题"',
   '    这是 !!! 提示块的正文（必须缩进）',
   '',
-  '??? note 折叠块',
+  '??? note "折叠块"',
   '    这是 ??? 折叠块的正文',
   '',
   '> [!NOTE]',
@@ -130,9 +130,28 @@ const DOC = [
   B + B + B,
 ].join('\n');
 
+// 测试环境本身没有 mermaid 运行库：按设计（见"vendor 缺失降级"用例）缺库时**不会**创建图表容器，
+// 而是保持源码可见。为了让"图表占位/渲染/失败"这些用例走真实路径，这里注入最小 stub；
+// 需要验证"缺库"行为的用例会调用 removeMermaidStub() 把它摘掉。
+function installMermaidStub() {
+  const calls = [];
+  global.mermaid = {
+    calls,
+    initialize: () => {},
+    run: async (arg) => { calls.push(arg && arg.nodes ? arg.nodes.length : 0); },
+  };
+  if (global.window) global.window.mermaid = global.mermaid;
+  return calls;
+}
+function removeMermaidStub() {
+  delete global.mermaid;
+  if (global.window) delete global.window.mermaid;
+}
+
 // 与 preview-controller 相同的**同步**阶段顺序：图表占位 → 代码块定型 → emoji → 数学 → 缩写 → 标题
 function renderPipeline(md) {
   const env = setup();
+  installMermaidStub();
   const katexOK = loadKatex(env.window);
   const hljs = loadHljs(env.window);
   const html = renderMarkdown(md, { softBreaks: false, extendedSyntax: true });
@@ -154,18 +173,33 @@ function renderPipeline(md) {
   return { env, html, prep, opts, katexOK };
 }
 
-test('功能矩阵 · 基础 Markdown：标题 / 表格 / 任务列表 / 脚注 / 高亮 / 删除线 / 定义列表', () => {
-  const { html, env } = renderPipeline(DOC);
+// —— 基础 Markdown 拆成 4 条用例：CI 失败时能从用例名直接看出是哪一块 ——
+
+test('功能矩阵 · 基础 Markdown / 结构：标题 · 表格 · 链接', () => {
+  const { env } = renderPipeline(DOC);
   const doc = env.document;
   assert.ok(doc.querySelector('h1'), '应有一级标题');
   assert.ok(doc.querySelector('h2'), '应有二级标题');
   assert.ok(doc.querySelector('table'), '应渲染表格');
-  assert.ok(doc.querySelectorAll('input[type="checkbox"]').length >= 2, '任务列表应有复选框');
+  assert.ok(doc.querySelector('a[href="https://example.com"]'), '链接应保留 href');
+});
+
+test('功能矩阵 · 基础 Markdown / 任务列表：复选框', () => {
+  const { env } = renderPipeline(DOC);
+  const boxes = env.preview.querySelectorAll('input[type="checkbox"]');
+  assert.ok(boxes.length >= 2, '任务列表应有复选框，实际 ' + boxes.length);
+});
+
+test('功能矩阵 · 基础 Markdown / 行内扩展：删除线与 ==高亮==', () => {
+  const { html } = renderPipeline(DOC);
   assert.ok(/<del>/.test(html), '删除线应渲染为 <del>');
   assert.ok(/<mark/.test(html), '==高亮== 应渲染为 <mark>');
-  assert.ok(/footnote/i.test(html), '脚注应有对应结构');
-  assert.ok(/<dl|<dd/.test(html), '定义列表应渲染为 dl/dd');
-  assert.ok(doc.querySelector('a[href="https://example.com"]'), '链接应保留 href');
+});
+
+test('功能矩阵 · 基础 Markdown / 脚注与定义列表', () => {
+  const { html } = renderPipeline(DOC);
+  assert.ok(/footnote/i.test(html), '脚注应有对应结构（footnote-ref / footnotes）');
+  assert.ok(/<dd[ >]/.test(html), '定义列表应渲染出 <dd>');
 });
 
 test('功能矩阵 · 代码高亮：hljs 高亮 + 行号结构 + 语言类', () => {
@@ -205,7 +239,10 @@ test('功能矩阵 · Admonition：::: / !!! / ??? / > [!NOTE] 四种写法都�
   const { env } = renderPipeline(DOC);
   const alerts = env.preview.querySelectorAll('.alert, .admonition');
   assert.ok(alerts.length >= 4, '四种写法应各产出提示块，实际 ' + alerts.length);
+  // 逐种写法单独断言：失败时从信息里就能看出是哪种语法没生效
+  assert.ok(env.preview.querySelector('.alert-tip'), '::: tip 应产出 .alert-tip');
   assert.ok(env.preview.querySelector('.alert-warning'), '!!! warning 应产出 .alert-warning');
+  assert.ok(env.preview.querySelector('details[data-admonition]'), '??? 应产出可折叠的 details[data-admonition]');
   assert.ok(env.preview.querySelector('.alert-note'), '> [!NOTE] 应产出 .alert-note');
   const text = env.preview.textContent;
   assert.ok(text.indexOf('这是 ::: 容器语法的正文') >= 0, '::: 容器正文应保留');
@@ -224,10 +261,12 @@ test('功能矩阵 · 图表占位：Mermaid / PlantUML / 6 个原生引擎都�
     assert.ok((el.getAttribute('data-code') || '').length > 0, type + ' 容器应带 data-code（源码）');
     assert.ok(el.hasAttribute('data-theme'), type + ' 容器应带 data-theme');
   });
-  const mermaid = env.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]');
+  const mermaid = [...env.preview.querySelectorAll('.mermaid-container[data-diagram-type="mermaid"]')];
   assert.ok(mermaid.length >= 2, 'Mermaid 与 PlantUML 都应落到 mermaid 容器，实际 ' + mermaid.length);
-  assert.ok(env.preview.querySelector('pre[data-diagram-source="plantuml"]'),
-    'PlantUML 代码块应被标记为转换来源（data-diagram-source=plantuml）');
+  // PlantUML 的 `<pre data-diagram-source>` 在占位阶段就被容器替换掉了，所以改为断言
+  // **容器里的源码已是转换后的 Mermaid**（同样能证明 PlantUML → Mermaid 这条链路生效）
+  assert.ok(mermaid.some((el) => /^\s*sequenceDiagram/.test(el.getAttribute('data-code') || '')),
+    'PlantUML 应被转换成 sequenceDiagram 源码并落到容器 data-code 上');
   assert.ok(env.preview.querySelector('pre.diagram-src-pending'), '渲染前的 Mermaid 源码应处于 pending 占位态');
   // 渲染前所有图表容器都该带 pending（防"内容被藏住"的前提是它必须能被摘掉）
   assert.ok(env.preview.querySelector('.diagram-container.diagram-pending'), '渲染前容器应带 diagram-pending 占位');
@@ -246,6 +285,7 @@ test('功能矩阵 · 渲染阶段结束必须摘掉所有占位（内容不得�
 test('功能矩阵 · vendor 缺失降级：数学 / 高亮 / Mermaid 都不得抛错，且内容仍可读', () => {
   // 场景：node_modules / src/lib 没生成好（本地首跑、发布包缺文件）时，预览**不能白屏或抛错**，
   // 更不能把内容藏起来 —— 用户至少要看得到原始 Markdown/源码。审计核对 2026-09-25（第 16 轮）。
+  removeMermaidStub();   // 本用例就是要验证"没有 mermaid"时的降级行为
   const F = B + B + B;
   const MD = [
     '# 降级',
