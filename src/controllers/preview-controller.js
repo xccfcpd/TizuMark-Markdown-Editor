@@ -155,9 +155,11 @@
         if (typeof UnifiedRenderer === 'undefined' || !UnifiedRenderer || typeof UnifiedRenderer.renderMarkdown !== 'function') {
           throw new Error('渲染器未构建或加载失败（src/lib/unified-bundle.js），请运行 npm run build:renderer');
         }
-        // 按 tab 渲染缓存（惰性渲染）：非大文档且（同一 tab + 内容 + 影响渲染的设置）未变时，
+        // 按 tab 渲染缓存（惰性渲染）：（同一 tab + 内容 + 影响渲染的设置）未变时，
         // 复用上次 renderMarkdown 的输出，跳过耗时的 markdown 解析 —— 切回未改内容的标签秒开。
-        // 仅对非大文档生效：大文档走滑动窗口，renderContent 是「焦点周边切片」，跨切换不稳定，故不缓存。
+        // 大文档同样生效：切 tab 时 _previewFocusLine 复位为 0 → 窗口切片固定，以「切片内容」
+        // 为键即可命中（滚动/打字改变切片自然 miss，按需重渲染）。此前大文档不缓存，
+        // 每次切回都全量同步解析切片，是「快速切 tab 界面锁死数秒」的主要放大器（2026-09-25）。
         if (!this._previewCache) this._previewCache = new Map();
         const _renderSig = [
           this.app.settings.softBreaks,
@@ -166,11 +168,13 @@
           this.app.settings.equationSectionNumbering ? 'section' : 'global',
         ].join('|');
         const _cacheKey = _renderSig + ' ' + renderContent;
-        const _cached = (!isLarge && _tab) ? this._previewCache.get(_tab) : null;
+        const _cached = _tab ? this._previewCache.get(_tab) : null;
         let html;
         if (_cached && _cached.key === _cacheKey) {
           html = _cached.html;
         } else {
+          // 过代即刻退出：快速连点标签时，旧代际不必再执行耗时的同步 renderMarkdown
+          if (gen !== this.app._renderGeneration) return;
           // equationNumbering：'section' 时公式按章节编号（2.1），否则全文连续编号（默认）。
           html = UnifiedRenderer.renderMarkdown(renderContent, {
             softBreaks: this.app.settings.softBreaks,

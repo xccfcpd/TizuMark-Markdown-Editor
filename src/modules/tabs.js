@@ -98,6 +98,12 @@
           const restoreScroll = newTab.scrollPos || { top: 0, left: 0 };
           const restorePreviewTop = newTab.previewScrollTop || 0;
   
+          // 编辑器此刻承载的就是 newTab（供下一次切换正确回写内容）。
+          // ⚠ 必须在 setValue **之前**赋值：setValue 会同步触发 editor-core 的 change 处理器，
+          // 它按 _editorTab 回写 content —— 若此刻仍指向旧标签，会把新文档内容写进旧标签；
+          // 切到空内容标签（如未命名）时更是把旧标签的 content 清成 ''，之后再切回来
+          // 就是「编辑器整页空白、很久才恢复」（2026-09-25 用户报障的稳定根因）。
+          this._editorTab = newTab;
           if (newTab.kind === 'image') {
             this.cm.setValue('');
           } else {
@@ -107,8 +113,6 @@
               : (newTab.kind === 'markdown' ? 'md' : '');
             this._applyCodeMode(newExt);
           }
-          // 编辑器此刻承载的就是 newTab（供下一次切换正确回写内容）
-          this._editorTab = newTab;
           clearTimeout(this.debounceTimer);
           this.cm.setCursor(restoreCursor);
           this.cm.clearHistory();
