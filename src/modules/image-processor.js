@@ -40,6 +40,16 @@ function fail(img) {
 // 策略与 app.js 的 _imageURLCache 一致：超上限就回收最旧的（保留最近若干张，避免刚用完就被释放）。
 const INLINE_BLOB_URL_MAX = 32;
 const inlineBlobUrls = [];
+// 图片 base64 缓存容量上限：整图 base64 值可达数 MB，长会话多图/多文件若不淘汰会内存只增不减
+// （中等泄漏风险，审计发现）。仿 _imageURLCache 的 LRU：超限删最旧一条（Map 保持插入序）。
+const IMAGE_BASE64_CACHE_MAX = 256;
+const cacheBase64 = (cache, key, dataUri) => {
+  cache.set(key, dataUri);
+  if (cache instanceof Map && cache.size > IMAGE_BASE64_CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+};
 // 该 Blob URL 是否仍被文档里的 <img> 引用 —— 被引用的**绝不回收**，
 // 否则图片会当场裂开。历史 bug：只按数量裁剪，同一屏显示的图超过上限时最早的 URL 被撤销，
 // 于是「原来正常的图片回归」（用户 2026-09-24 报障）。
@@ -116,7 +126,7 @@ async function processImages(preview, deps) {
     if (dataUri) return dataUri;
     const base64 = await tauri.fetchImageAsBase64({ url: loadUrl });
     dataUri = `data:${mime};base64,${base64}`;
-    imageCache.set(loadUrl, dataUri);
+    cacheBase64(imageCache,loadUrl, dataUri);
     return dataUri;
   };
 
@@ -165,7 +175,7 @@ async function processImages(preview, deps) {
         // 代际检查 #5（校验）
         if (gen !== getRenderGeneration()) return;
         const dataUri = `data:${mimeOf(rawSrc)};base64,${base64}`;
-        imageCache.set(cacheKey, dataUri);
+        cacheBase64(imageCache,cacheKey, dataUri);
         img.src = getCachedImageURL(dataUri);
       } catch (e) {
         // 仅打包资源 tab（使用说明/demo）回退到资源定位命令：dev 模式从项目根、
@@ -177,7 +187,7 @@ async function processImages(preview, deps) {
             // 代际检查 #6（校验）
             if (gen !== getRenderGeneration()) return;
             const dataUri = `data:${mimeOf(rawSrc)};base64,${base64}`;
-            imageCache.set(cacheKey, dataUri);
+            cacheBase64(imageCache,cacheKey, dataUri);
             img.src = getCachedImageURL(dataUri);
             return;
           } catch (e2) { /* 落到统一失败处理 */ }
@@ -196,7 +206,7 @@ async function processImages(preview, deps) {
         // 代际检查 #6b（打包回退校验）
         if (gen !== getRenderGeneration()) return;
         const dataUri = `data:${mimeOf(rawSrc)};base64,${base64}`;
-        imageCache.set(rawSrc, dataUri);
+        cacheBase64(imageCache,rawSrc, dataUri);
         img.src = getCachedImageURL(dataUri);
         return;
       } catch (e2) { /* 落到下面的兜底 fetch */ }

@@ -60,6 +60,8 @@ const chartRegistry = new Map();
 // 为什么必须登记全部引擎：markmap / wavedrom 等引擎内部也会持有容器（ResizeObserver、
 // 事件监听等），只 dispose ECharts 并不够。
 const diagramContainers = new Set();
+// Markmap 交互实例（含 d3-zoom 监听器）登记，供重渲染 / 脱离 DOM 时显式 destroy 释放（疑似泄漏）。
+const markmapRegistry = new Map();
 
 function diagramTypeFromLanguage(lang) {
   if (!lang) return null;
@@ -458,6 +460,12 @@ async function renderMarkmap(container, code, opts) {
     throw new Error('Markmap 未加载（缺少 ' + MARKMAP_VENDOR + '，需 npm install 生成 vendor）');
   }
   container.style.height = DEFAULT_MARKMAP_HEIGHT + 'px';
+  // 重渲染前释放旧 markmap 实例（d3-zoom 等内部监听器），避免交互实例只增不减（疑似泄漏，2026-09-24 审计）。
+  const oldMm = markmapRegistry.get(container);
+  if (oldMm) {
+    try { if (typeof oldMm.destroy === 'function') oldMm.destroy(); } catch (_e) { /* 库无 destroy 时忽略 */ }
+    markmapRegistry.delete(container);
+  }
   container.innerHTML = '';
   // 量取容器尺寸，作为该 SVG 的显式坐标系；量不到（隐藏 / 未布局）时退到默认参考尺寸。
   // 只用于写属性，不影响布局：容器宽高仍由 CSS（width:100% / 固定高度）决定。
@@ -488,6 +496,7 @@ async function renderMarkmap(container, code, opts) {
   const transformer = new window.markmap.Transformer();
   const result = transformer.transform(source);
   const mm = window.markmap.Markmap.create(svg, null, result.root);
+  markmapRegistry.set(container, mm);
   // 第二道防线（与上面的 viewBox 双保险）：**显式设定 d3-zoom 的 extent**。
   // d3-zoom 的 defaultExtent 只在「没有 viewBox」时才去读 `svg.width.baseVal.value`，
   // 而只由 CSS 撑尺寸的 SVG 其 baseVal 是相对长度 → 一读即抛 NotSupportedError。
@@ -554,6 +563,12 @@ function disposeDetachedDiagrams(liveRoot) {
         if (!(typeof chart.isDisposed === 'function' && chart.isDisposed())) chart.dispose();
       } catch (_e) { /* 已销毁 */ }
       chartRegistry.delete(container);
+    }
+    // ②' Markmap 实例：销毁内部 d3-zoom 等交互状态，避免只增不减（疑似泄漏）
+    const mmInst = markmapRegistry.get(container);
+    if (mmInst) {
+      try { if (typeof mmInst.destroy === 'function') mmInst.destroy(); } catch (_e) { /* 库无 destroy 时忽略 */ }
+      markmapRegistry.delete(container);
     }
     // ② ResizeObserver：必须显式 disconnect，否则它会一直持有这个（已脱离的）容器
     const ro = container && container._tizuResizeObserver;

@@ -128,6 +128,19 @@
       // 3dac68c 引入的 dirty 缓存 + 布局指纹会造成某些场景下位置表过期（编辑器布局变化但
       // preview scrollHeight 未变时缓存命中 → 用旧表插值），此版本回退到 legacy 行为。
       _computedPosition() {
+        // 缓存：大文档（数千行/数千块级元素）下，原实现每次滚动 tick 都全量重算
+        //（对所有行调 cm.heightAtLine + 重建与行数等长的数组），导致滚动掉帧。
+        // 仅在「预览重渲染」（rebuildScrollSync 置脏）或「编辑器内容变化」（changeGeneration 改变）
+        // 时才重算，滚动 tick 直接复用上次结果；内容没变则同步精度不变。
+        const editorGen = (typeof this.cm.changeGeneration === 'function') ? this.cm.changeGeneration() : null;
+        const lineCount = (typeof this.cm.lineCount === 'function') ? this.cm.lineCount() : 0;
+        if (!this._positionCacheDirty && this._editorElementList && this._previewElementList &&
+            this._positionEditorGen === editorGen && this._positionLineCount === lineCount) {
+          return;
+        }
+        this._positionCacheDirty = false;
+        this._positionEditorGen = editorGen;
+        this._positionLineCount = lineCount;
         const allElements = this.preview.querySelectorAll('[data-source-line]');
         const anchors = [];
         const seenLines = new Set();
@@ -221,7 +234,9 @@
       rebuildScrollSync() {
         const content = this.cm.getValue();
         const totalLines = content.split('\n').length;
-  
+
+        // 预览内容变化：滚动同步位置表作废，下次 _computedPosition 重算（缓存守卫）
+        this._positionCacheDirty = true;
         // 构建平行位置数组（使用 data-source-line）
         this._computedPosition();
   
