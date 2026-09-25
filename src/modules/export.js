@@ -1217,11 +1217,15 @@
         // _mermaidContainersForRerender），其余容器照常走下面的截图逻辑。
         const mermaidContainers = Array.from(clone.querySelectorAll('.mermaid-container'));
         const rerenderable = new Set(this._mermaidContainersForRerender(clone));
-        for (let mi = 0; mi < mermaidContainers.length; mi++) {
+        // 有界并发（默认 4）：含大量图表（尤其 SVG→PNG 快路之外的 ECharts canvas 走 html2canvas）时，
+        // 不再严格串行逐图 await，也避免一次性全并发把 CPU/内存打满；每个图表仍独立做取消检查与进度回调。
+        const CONCURRENCY = 4;
+        let cancelled = false;
+        const processChart = async (container, mi) => {
+          if (cancelled) return;
           // 阶段之间（每个图表一次）检查取消：html2canvas / SVG 转 PNG 之间都是 await 点，
           // 能真正响应，不必再"任务管理器结束进程"。
-          if (ctl && typeof ctl.isCancelled === 'function' && ctl.isCancelled()) return 'cancelled';
-          const container = mermaidContainers[mi];
+          if (ctl && typeof ctl.isCancelled === 'function' && ctl.isCancelled()) { cancelled = true; return; }
           // 重渲染确保 SVG 就绪（仅真 mermaid 容器）
           if (rerenderable.has(container) && typeof mermaid !== 'undefined' && container.getAttribute('data-code')) {
             try {
@@ -1311,7 +1315,7 @@
               } catch (e) { dataUrl = ''; }
             }
           }
-          if (!dataUrl) continue;
+          if (!dataUrl) return;
           const img = document.createElement('img');
           img.src = dataUrl;
           img.className = 'tizu-mermaid-img';
@@ -1332,7 +1336,19 @@
           await new Promise((r) => setTimeout(r, 0));
           // 进度回调（含"已用秒数"由调用方计算）——让用户看到它在干活
           if (ctl && typeof ctl.onProgress === 'function') ctl.onProgress(mi + 1, mermaidContainers.length);
-        }
+        };
+        let cursor = 0;
+        const chartWorker = async () => {
+          while (cursor < mermaidContainers.length && !cancelled) {
+            const mi = cursor++;
+            await processChart(mermaidContainers[mi], mi);
+          }
+        };
+        const chartPool = [];
+        const cpn = Math.min(CONCURRENCY, mermaidContainers.length);
+        for (let k = 0; k < cpn; k++) chartPool.push(chartWorker());
+        await Promise.all(chartPool);
+        if (cancelled) return 'cancelled';
   
         // 10. 普通图片：读取自然尺寸，按宽高比等比缩放到 500px，并设置 HTML width/height 属性，
         //     确保 Word 按此尺寸完整显示、不裁切（CSS width 在 Word 导入器里不可靠）。

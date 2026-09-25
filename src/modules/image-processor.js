@@ -120,8 +120,11 @@ async function processImages(preview, deps) {
     return dataUri;
   };
 
-  const images = preview.querySelectorAll('img');
-  const promises = Array.from(images).map(async (img) => {
+  const images = Array.from(preview.querySelectorAll('img'));
+  // 有界并发（默认 6）：文档含上百张图片时不再一次性并发全部 fetch / IPC 读盘，
+  // 避免主线程被请求峰值拖死（与导出内联同源的稳定性修复）。每个 img 仍独立做代际检查，
+  // 中途若发生重渲染（代际过期），后续待处理项会在各自校验点短路返回。
+  const processOne = async (img) => {
     let src = img.getAttribute('src');
     if (!src) return;
     // 已可显示的内联 / 远程资源直接跳过
@@ -210,8 +213,19 @@ async function processImages(preview, deps) {
       console.warn('[preview] Failed to load image:', rawSrc, e);
       fail(img);
     }
-  });
-  await Promise.allSettled(promises);
+  };
+  const CONCURRENCY = 6;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < images.length) {
+      const i = cursor++;
+      await processOne(images[i]);
+    }
+  };
+  const pool = [];
+  const n = Math.min(CONCURRENCY, images.length);
+  for (let k = 0; k < n; k++) pool.push(worker());
+  await Promise.all(pool);
 }
 
 // 浏览器：作为独立 <script> 加载，挂到全局 ImageProcessor（与 CodeBlock 一致）。

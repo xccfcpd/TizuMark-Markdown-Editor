@@ -756,8 +756,13 @@ async function renderNativePlaceholders(preview, jobs, opts, isStale) {
   const staleContainers = Array.from(preview.querySelectorAll('.diagram-container[data-diagram-type]'))
     .filter((el) => el.getAttribute('data-diagram-type') !== 'mermaid')
     .filter((el) => el.getAttribute('data-theme') !== themeKey);
-  for (const container of staleContainers) {
-    if (stale()) return;
+  // 有界并发（默认 4）：含大量原生引擎图表（ECharts / Graphviz / WaveDrom / TikZ / plot / Markmap）
+  // 的文档在主题切换时会逐个重绘，串行 await 会让界面长时间无响应（R8）。改用有界并发并每图让出主线程，
+  // 同时保留 stale() 提前终止（主题又变了就立刻收手），单图异常仍隔离不影响其它图。
+  const CONCURRENCY = 4;
+  let staleHit = false;
+  const repaintOne = async (container) => {
+    if (stale()) { staleHit = true; return; }
     const type = container.getAttribute('data-diagram-type');
     const code = container.getAttribute('data-code') || '';
     container.setAttribute('data-theme', themeKey);
@@ -769,7 +774,22 @@ async function renderNativePlaceholders(preview, jobs, opts, isStale) {
       console.warn('[diagrams] 主题重绘 ' + type + ' 异常（已隔离）：', e);
       if (container && container.classList) container.classList.add('diagram-error');
     }
-  }
+    // 让出主线程：主题切换遮罩 spinner 与鼠标事件有机会处理
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  let rc = 0;
+  const rcWorker = async () => {
+    while (rc < staleContainers.length && !staleHit) {
+      if (stale()) { staleHit = true; return; }
+      const i = rc++;
+      await repaintOne(staleContainers[i]);
+    }
+  };
+  const rcPool = [];
+  const rcn = Math.min(CONCURRENCY, staleContainers.length);
+  for (let k = 0; k < rcn; k++) rcPool.push(rcWorker());
+  await Promise.all(rcPool);
+  if (staleHit || stale()) return;
 }
 
 // 兼容入口（既有调用方 / 测试）：等价于「先占位、再渲染」两步
