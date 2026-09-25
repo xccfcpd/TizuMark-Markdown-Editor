@@ -192,7 +192,8 @@ test('功能矩阵 · 基础 Markdown / 任务列表：复选框', () => {
 
 test('功能矩阵 · 基础 Markdown / 行内扩展：删除线与 ==高亮==', () => {
   const { html } = renderPipeline(DOC);
-  assert.ok(/<del>/.test(html), '删除线应渲染为 <del>');
+  // 删除线渲染为 <del>（可能带 data-source-line 等属性，故用 <del[ >] 而非字面的 <del>）
+  assert.ok(/<del[ >]/.test(html), '删除线应渲染为 <del>');
   assert.ok(/<mark/.test(html), '==高亮== 应渲染为 <mark>');
 });
 
@@ -251,9 +252,14 @@ test('功能矩阵 · Admonition：::: / !!! / ??? / > [!NOTE] 四种写法都�
   assert.ok(env.preview.querySelector('details[data-admonition]'), '??? 应产出可折叠的 details');
 });
 
-test('功能矩阵 · 图表占位：Mermaid / PlantUML / 6 个原生引擎都被识别并挂上类型与源码', () => {
-  const { env } = renderPipeline(DOC);
-  // PlantUML 会被转换成 Mermaid（同一容器类型），因此这里断言容器存在 + 类型正确
+test('功能矩阵 · 图表占位：Mermaid / PlantUML / 6 个原生引擎都被识别并挂上类型与源码', async () => {
+  const { env, prep, opts } = renderPipeline(DOC);
+  // 同步 prepare 阶段：Mermaid / PlantUML 源码应处于 pending 占位态（容器在异步渲染阶段才生成）
+  assert.ok(env.preview.querySelector('pre.diagram-src-pending'), '渲染前的 Mermaid 源码应处于 pending 占位态');
+  assert.ok(env.preview.querySelector('.diagram-container.diagram-pending'), '渲染前（原生）容器应带 diagram-pending 占位');
+  // 跑异步渲染（与真实控制器「prepare → 异步 renderDiagramPlaceholders」一致）：Mermaid / PlantUML 容器在此生成
+  await PP.renderDiagramPlaceholders(env.preview, prep, opts);
+  // PlantUML 会被转换成 Mermaid（同一容器类型），因此这里断言 mermaid 容器存在 + 类型正确
   const want = ['mermaid', 'graphviz', 'echarts', 'wavedrom', 'tikz', 'plot', 'markmap'];
   want.forEach((type) => {
     const el = env.preview.querySelector('.diagram-container[data-diagram-type="' + type + '"]');
@@ -267,9 +273,6 @@ test('功能矩阵 · 图表占位：Mermaid / PlantUML / 6 个原生引擎都�
   // **容器里的源码已是转换后的 Mermaid**（同样能证明 PlantUML → Mermaid 这条链路生效）
   assert.ok(mermaid.some((el) => /^\s*sequenceDiagram/.test(el.getAttribute('data-code') || '')),
     'PlantUML 应被转换成 sequenceDiagram 源码并落到容器 data-code 上');
-  assert.ok(env.preview.querySelector('pre.diagram-src-pending'), '渲染前的 Mermaid 源码应处于 pending 占位态');
-  // 渲染前所有图表容器都该带 pending（防"内容被藏住"的前提是它必须能被摘掉）
-  assert.ok(env.preview.querySelector('.diagram-container.diagram-pending'), '渲染前容器应带 diagram-pending 占位');
 });
 
 test('功能矩阵 · 渲染阶段结束必须摘掉所有占位（内容不得被永久藏住）', async () => {
