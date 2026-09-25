@@ -204,6 +204,10 @@
           }
         }
         this.updateTabBar(removeIndex);
+        // 编辑器此刻承载的就是 activeTab：不更新的话 _editorTab 仍指向刚移除的死标签，
+        // 关闭后立刻输入的内容会在下次 switchTab 时被当作"旧标签内容"错写/丢失
+        //（与 1c782cb 修的 change 回写污染同源，2026-09-25 审计补齐）。
+        this._editorTab = this.activeTab;
         if (this.tabs.length > 0) {
           await this.ensureTabLoaded(this.activeTab);
           this.cm.setValue(this.activeTab.content || '');
@@ -531,6 +535,12 @@
           return;
         }
         if (existing.length === n) {
+          // 顺序一致性守卫：DOM 顺序与 tabs 不一致（异常路径残留）时，全量重建纠正，
+          // 避免"原地按位置改名"把标签名/激活态贴到错误的元素上（表现为顺序错乱）。
+          if (existing.some((el, i) => el.dataset.index !== String(i))) {
+            this._renderTabBarFull();
+            return;
+          }
           // 数量一致：原地更新类 / 名 / title（顺序未变）
           this.tabs.forEach((tab, i) => {
             const el = existing[i];
@@ -553,12 +563,19 @@
           return;
         }
         if (existing.length === n + 1 && typeof removedIndex === 'number' && n >= 2) {
-          // 关闭一个：移除该元素并顺移后续 data-index
+          // 关闭一个：移除该元素并顺移后续 data-index。
+          // ⚠ existing[removedIndex] 就是**被移除的元素本身**：必须从 removedIndex+1 开始、
+          // 新索引 = i-1。旧写法从 removedIndex 开始赋 i 值，第一个改到的是已分离的死元素、
+          // 后续元素索引整体 +1 → 关闭后点击标签切到右边那个、首个标签永远点不到
+          //（用户实测：关掉 Untitled1 后整排标签点击全部错位，2026-09-25）。
           const el = existing[removedIndex];
           if (el) el.remove();
-          for (let i = removedIndex; i < existing.length; i++) {
-            if (existing[i]) existing[i].dataset.index = String(i);
+          for (let i = removedIndex + 1; i < existing.length; i++) {
+            if (existing[i]) existing[i].dataset.index = String(i - 1);
           }
+          // 关闭会改变后续标签位置：激活高亮/修改标记按新位置刷新（原路径不更新 class，
+          // 残留的 active 会贴在错误元素上）。
+          this.updateTabDisplay();
           if (this.updateTabScrollArrows) this.updateTabScrollArrows();
           return;
         }
@@ -598,6 +615,7 @@
         const tab = this.tabs[keepIndex];
         this.tabs = [tab];
         this.activeTabIndex = 0;
+        this._editorTab = tab; // 其余标签已移除，编辑器承载的就是保留的这个
         await this.ensureTabLoaded(tab);
         this.cm.setValue(tab.content || '');
         this.cm.setCursor(tab.cursorPos || { line: 0, ch: 0 });
@@ -621,6 +639,7 @@
         }
         this.tabs = [new Tab(`${this.t('untitled')}${this.untitledCounter++}`)];
         this.activeTabIndex = 0;
+        this._editorTab = this.tabs[0]; // 全部替换为新空标签，编辑器承载它
         this.cm.setValue('');
         this.updateTabBar();
         this.updatePreview();
