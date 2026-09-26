@@ -356,16 +356,10 @@
     return fallbackText ? [{ type: 'paragraph', runs: collectRuns(el) }] : [];
   }
 
-  // 异步分块版：顶层块每 50 个让出一次主线程，避免大文档 DOM 遍历在主线程独占卡死
-  //（导出编排拿到结构后会再交给 Web Worker 做重活；这里只是前置转换，但仍需避免长停顿）。
-  async function domToDocxStructure(root) {
+  function domToDocxStructure(root) {
     const out = [];
-    const children = root ? Array.from(root.childNodes || []) : [];
-    const CHUNK = 50;
-    for (let start = 0; start < children.length; start += CHUNK) {
-      const end = Math.min(start + CHUNK, children.length);
-      for (let idx = start; idx < end; idx++) {
-        const child = children[idx];
+    const walk = (el) => {
+      for (const child of el.childNodes) {
         if (child.nodeType === 3) {
           const t = (child.textContent || '').trim();
           if (t) out.push({ type: 'paragraph', runs: [{ text: t }] });
@@ -378,9 +372,8 @@
           else if (node) out.push(node);
         }
       }
-      // 让出主线程，保证导出过程中界面（含取消按钮）始终可响应
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    };
+    walk(root);
     return out;
   }
 
