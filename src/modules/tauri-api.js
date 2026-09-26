@@ -54,6 +54,26 @@
     api[camel(cmd)] = function (args) { return invokeCmd(cmd, args); };
   }
 
+  // 覆盖 writeBinaryFile：把「字节」编码成 base64 字符串再走 write_binary_file。
+  // 为什么：Tauri v2 会把 Uint8Array / number[] 序列化成【数字数组】过 IPC（约 8x 内存膨胀），
+  // 几十 MB 的 docx / 大图会瞬间吃掉数百 MB（导出 DOCX「内存独占」的主因之一）。
+  // base64 只有 1.33x；Rust 侧 write_binary_file 已改为接收 base64 并解码写盘。
+  // 调用方签名不变（仍传 { path, contents: <Uint8Array|number[]> }），故全部调用点与单测 mock 无需改动。
+  function bytesToBase64(bytes) {
+    if (typeof bytes === 'string') return bytes; // 已是 base64 则原样透传
+    let bin = '';
+    const CHUNK = 0x8000; // 分块 fromCharCode，避免大数组 apply 触发参数上限
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const part = bytes.subarray ? bytes.subarray(i, i + CHUNK) : bytes.slice(i, i + CHUNK);
+      bin += String.fromCharCode.apply(null, part);
+    }
+    return btoa(bin);
+  }
+  api.writeBinaryFile = function (args) {
+    const a = args || {};
+    return invokeCmd('write_binary_file', { path: a.path, contents: bytesToBase64(a.contents || []) });
+  };
+
   // plugin 类命令（本质是 core.invoke，P0-2b 收敛范围，N32）
   api.dialogOpen = function (options) { return invokeCmd('plugin:dialog|open', { options }); };
   api.dialogSave = function (options) { return invokeCmd('plugin:dialog|save', { options }); };

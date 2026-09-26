@@ -21,7 +21,9 @@ test('exportWord: docx 流程主线程构建并写出二进制', async () => {
     await ed.exportWord();
 
     assert.strictEqual(captured.path, '/tmp/out.docx', '应写出 docx');
-    assert.ok(captured.contents instanceof w.Uint8Array, 'contents 应为二进制');
+    // 现改为 base64 字符串过 IPC（避免数字数组 ~8x 内存膨胀）；解码后应是 mock 的 PK 头。
+    assert.strictEqual(typeof captured.contents, 'string', 'contents 应以 base64 字符串传输');
+    assert.deepStrictEqual(Array.from(Buffer.from(captured.contents, 'base64')), [0x50, 0x4b, 0x03, 0x04], 'base64 应解码回原二进制');
   });
 });
 

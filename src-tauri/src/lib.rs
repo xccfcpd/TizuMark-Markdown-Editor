@@ -649,9 +649,16 @@ fn write_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_binary_file(path: String, contents: Vec<u8>) -> Result<(), String> {
+fn write_binary_file(path: String, contents: String) -> Result<(), String> {
     let _ = safe_write_target(&path)?;
-    fs::write(&path, &contents).map_err(|e| e.to_string())
+    // contents 为 base64 字符串：前端把字节编码成 base64 再传，规避 Tauri v2 把 typed array
+    // 序列化成【数字数组】过 IPC 造成的约 8x 内存膨胀（几十 MB 的 docx / 大图会瞬间吃掉数百 MB）。
+    // base64 仅 1.33x，显著降低导出内存峰值。前端编码见 tauri-api.js 的 api.writeBinaryFile。
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(contents.as_bytes())
+        .map_err(|e| format!("invalid base64 contents: {}", e))?;
+    fs::write(&path, &bytes).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1564,7 +1571,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("tizumark_bin_test.bin");
         let _ = fs::remove_file(&tmp);
         let data = vec![0u8, 1, 2, 255, 254, 128];
-        write_binary_file(tmp.to_str().unwrap().to_string(), data.clone()).expect("写二进制应成功");
+        // 入参现为 base64 字符串（前端编码），验证「base64 解码 → 写盘」往返一致
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        write_binary_file(tmp.to_str().unwrap().to_string(), b64).expect("写二进制应成功");
         assert_eq!(fs::read(&tmp).unwrap(), data, "读回字节应一致");
         let _ = fs::remove_file(&tmp);
     }

@@ -45,9 +45,10 @@ test('exportWord: 调用 dialogSave(.docx) 并经 write_binary_file 写入二进
     await ed.exportWord();
 
     assert.strictEqual(captured.path, '/tmp/out.docx', '应写出 .docx 文件');
-    // 注意：jsdom 自成一个 realm，其 Uint8Array 与 Node 全局不同，故用 w.Uint8Array 判定。
-    assert.ok(captured.contents instanceof w.Uint8Array, 'contents 应为 Uint8Array 二进制');
-    assert.strictEqual(captured.contents.length, 6, '应写入 mock 的二进制内容');
+    // 现改为 base64 字符串过 IPC（规避 Tauri v2 把 typed array 序列化成数字数组的 ~8x 膨胀）；
+    // 解码后长度应与 mock 的 6 字节二进制一致。
+    assert.strictEqual(typeof captured.contents, 'string', 'contents 应以 base64 字符串传输');
+    assert.strictEqual(Buffer.from(captured.contents, 'base64').length, 6, '应写入 mock 的二进制内容（6 字节）');
     assert.ok(w.__lastWordHTML.includes('标题'), '传给 htmlDocx 的 HTML 应含预览内容');
     assert.ok(w.__lastWordHTML.includes('<title>我的笔记</title>'), '应带文档标题');
     // 关键回归：Word 导出必须带上与预览一致的样式表，否则排版丢失。
