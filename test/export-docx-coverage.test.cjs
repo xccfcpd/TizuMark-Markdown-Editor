@@ -26,9 +26,17 @@ const TABLE = '<table><thead><tr><th>列头</th></tr></thead><tbody><tr><td>单�
 const DL = '<dl><dt>术语</dt><dd>释义</dd></dl>';
 const RUBY = '<p><ruby>汉字<rp>(</rp><rt>han</rt><rp>)</rp></ruby></p>';
 const DETAILS = '<details><summary>摘要</summary><p>折叠内容</p></details>';
+// 折叠提示框（`???` / `???+` / `::: details`）的**真实产出形状** —— 见 unified-admonitions.js
+// 的 buildAdmonitionHTML：容器是 <details class="alert …">（不是 div），标题在 <summary class="alert-title">，
+// 正文在 <div class="alert-content">。2026-09-26 审计发现它在 Word 里整块丢正文，故纳入矩阵：
+// 只要「<details> 变了而导出层没跟上」，这条 fixture 就会先变红。
+const COLLAPSIBLE_ADMONITION = '<details class="alert alert-note admonition admonition-note" data-admonition="note">'
+  + '<summary class="alert-title admonition-summary">提示标题</summary>'
+  + '<div class="alert-content admonition-content"><p>折叠正文内容</p></div></details>';
 const PICTURE = '<p>图示<picture><source srcset="a.png">' + IMG + '</picture></p>';
 
-// 每个标签一条 fixture；断言由 fixture 自动提取（不手写标记文字，避免"断言写漏了"）
+// 每个标签一条 fixture；值可以是单个 HTML，也可以是**多种产出形状**的数组（每种形状都要过）。
+// 断言由 fixture 自动提取（不手写标记文字，避免"断言写漏了"）
 const FIXTURES = {
   a: '<p>见 <a href="https://example.com/x">链接文字</a> 结束</p>',
   b: '<p><b>粗体</b></p>',
@@ -37,7 +45,7 @@ const FIXTURES = {
   code: '<p>行内<code>代码</code></p>',
   dd: DL,
   del: '<p><del>删除</del></p>',
-  details: DETAILS,
+  details: [DETAILS, COLLAPSIBLE_ADMONITION],
   div: '<div><p>裸 div 文字</p></div>',
   dl: DL,
   dt: DL,
@@ -71,7 +79,7 @@ const FIXTURES = {
   strike: '<p><strike>删除 strike</strike></p>',
   strong: '<p><strong>加重</strong></p>',
   sub: '<p>H<sub>2</sub>O</p>',
-  summary: DETAILS,
+  summary: [DETAILS, COLLAPSIBLE_ADMONITION],
   sup: '<p>上标<sup>注1</sup></p>',
   table: TABLE,
   tbody: TABLE,
@@ -137,10 +145,13 @@ test('能力矩阵：渲染层标签宇宙 100% 被分类（fixture 或显式忽
 
 test('能力矩阵：每个标签的文字在导出结构里都不丢', () => {
   const broken = [];
-  for (const [tag, html] of Object.entries(FIXTURES)) {
-    const json = JSON.stringify(structureOf(html));
-    for (const m of marks(html)) {
-      if (!json.includes(m)) broken.push('<' + tag + '>: ' + m);
+  for (const [tag, spec] of Object.entries(FIXTURES)) {
+    // fixture 可以是数组（多种产出形状）—— [].concat 让单值/数组写法都能走同一条路
+    for (const html of [].concat(spec)) {
+      const json = JSON.stringify(structureOf(html));
+      for (const m of marks(html)) {
+        if (!json.includes(m)) broken.push('<' + tag + '>: ' + m);
+      }
     }
   }
   assert.deepStrictEqual(broken, [],

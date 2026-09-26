@@ -1141,3 +1141,54 @@ test('docx-builder: P1–P4 在 OOXML 里落地（ilvl / hyperlink+External / tb
   // P4：下划线必须落成 w:u（此前只留文字、丢了下划线）
   assert.ok(/<w:u\b[^>]*w:val="single"/.test(xml), '【P4】下划线应落成 <w:u w:val="single"/>');
 });
+
+// 回归（2026-09-26 审计，内容丢失级）：折叠提示框（`???` / `???+` / `::: details`）的正文此前
+// 在 Word 里**整块消失** —— 结构层只产出标题，正文文字都搜不到。这里走完整链路
+// HTML → domToDocxStructure → docx-builder → 解 word/document.xml，证明正文真的进了 OOXML
+//（结构层用例只能证明中间对，终点断言才是用户看到的结果）。
+test('docx-builder: 折叠提示框的正文落进 OOXML（审计 2026-09-26）', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const JSZip = require('jszip');
+  const { JSDOM } = require('jsdom');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  // 渲染层真实产出：容器是 <details class="alert …">（不是 div），标题在 <summary>，
+  // 正文在 div.alert-content —— 与 unified-admonitions.js 的 buildAdmonitionHTML 一致。
+  const html = '<div id="root">'
+    + '<details class="alert alert-note admonition admonition-note" data-admonition="note">'
+    + '<summary class="alert-title admonition-summary">Note</summary>'
+    + '<div class="alert-content admonition-content"><p>折叠正文内容</p></div></details></div>';
+  const dom = new JSDOM(html, { runScripts: 'dangerously' });
+  const w = dom.window;
+  w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'modules', 'export-docx.js'), 'utf8'));
+  const structure = w.domToDocxStructure(w.document.getElementById('root'));
+  assert.ok(JSON.stringify(structure).includes('折叠正文内容'),
+    '结构层就不该丢正文，实际：' + JSON.stringify(structure));
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  let xml;
+  try {
+    const blob = await builder(structure, {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+    });
+    const ab = await blob.arrayBuffer();
+    const zip = new JSZip();
+    zip.load(Buffer.from(ab));
+    xml = zip.file('word/document.xml').asText();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  assert.ok(xml.includes('折叠正文内容'),
+    '【关键断言】折叠提示框正文必须在 document.xml 里（此前整块丢失，只剩标题）');
+  assert.ok(xml.includes('Note'), '标题也不得丢');
+});

@@ -420,30 +420,45 @@
       const img = el.querySelector('img');
       return img ? elementToNode(img) : [];
     }
-    if (tag === 'div' && /alert/.test(el.className || '')) {
-      const imgs = [];
+    // 提示框（admonition）。两处陷阱都会造成**用户可见的内容丢失**（2026-09-26 审计，已实测）：
+    //   ① 折叠提示框（`???` / `???+` / `::: details`）渲染成 <details class="alert …">（见
+    //      unified-admonitions.js 的 buildAdmonitionHTML），容器**不是 div** → 此前直接落到
+    //      兜底分支；而它的正文 <div class="alert-content admonition-content"> 自身带 "alert-"
+    //      前缀，会命中下面的子串判断，却又找不到任何**后代** .alert-title/.alert-content
+    //      → 产出空数组。父级 <details> 于是「有个标题就算有产出」（nested.length > 0，
+    //      兜底里的纯文本救援不触发）→ 正文整块静默消失（实测 document.xml 里搜不到正文）。
+    //   ② /alert/ 是子串判断，.alert-content / .alert-title 自身也会命中 → 必须显式排除，
+    //      否则这些「内容容器」会被当成空提示框吞掉。
+    // 另：容器里既无标题也无正文时（例如裸 <div class="alert">文字</div>）不再返回空数组，
+    // 改为交给兜底分支，至少把文字保住。
+    const alertCls = typeof el.className === 'string' ? el.className : '';
+    const isAlertPart = /\balert-(?:content|title|icon)\b/.test(alertCls);
+    if ((tag === 'div' || tag === 'details') && /alert/.test(alertCls) && !isAlertPart) {
       const title = el.querySelector('.alert-title');
       const content = el.querySelector('.alert-content');
-      const runs = [];
-      if (title) {
-        // 标题按纯文本 + 加粗；公式必须走 mathml run —— textContent 会把 KaTeX 的
-        // MathML 渲染文本 + <annotation> 的 LaTeX 源码 + katex-html 可见文本拼成
-        // "公式 α\alphaα 的取值"（2026-09-14 用户导出验证）。
-        const titleRuns = collectInlineRuns(title);
-        for (const r of titleRuns) if (typeof r.text === 'string') r.bold = true;
-        if (titleRuns.length) runs.push(...titleRuns);
-        runs.push({ text: '\n' });
+      if (title || content) {
+        const imgs = [];
+        const runs = [];
+        if (title) {
+          // 标题按纯文本 + 加粗；公式必须走 mathml run —— textContent 会把 KaTeX 的
+          // MathML 渲染文本 + <annotation> 的 LaTeX 源码 + katex-html 可见文本拼成
+          // "公式 α\alphaα 的取值"（2026-09-14 用户导出验证）。
+          const titleRuns = collectInlineRuns(title);
+          for (const r of titleRuns) if (typeof r.text === 'string') r.bold = true;
+          if (titleRuns.length) runs.push(...titleRuns);
+          runs.push({ text: '\n' });
+        }
+        if (content) runs.push(...(collectRuns(content, undefined, imgs)));
+        const nodes = [];
+        // 提示框同理：把 _prepareWordDOM 内联的彩色底/左边框色带进 docx（此前底纹全丢）
+        if (runs.length) nodes.push({
+          type: 'paragraph', runs, quote: true,
+          quoteBg: cssColorToHex(el.style.backgroundColor || el.style.background) || '',
+          quoteColor: cssColorToHex(el.style.borderLeftColor) || '',
+        });
+        nodes.push(...imgs);
+        return nodes;
       }
-      if (content) runs.push(...(collectRuns(content, undefined, imgs)));
-      const nodes = [];
-      // 提示框同理：把 _prepareWordDOM 内联的彩色底/左边框色带进 docx（此前底纹全丢）
-      if (runs.length) nodes.push({
-        type: 'paragraph', runs, quote: true,
-        quoteBg: cssColorToHex(el.style.backgroundColor || el.style.background) || '',
-        quoteColor: cssColorToHex(el.style.borderLeftColor) || '',
-      });
-      nodes.push(...imgs);
-      return nodes;
     }
     // 代码块容器：_prepareWordDOM 会把每个 <pre> 换成 div.tizu-code-block（内部 pre 用 <br> 换行）。
     // 这里必须下探取回代码文本，否则代码块在 docx 主路径里会整块丢失。

@@ -433,3 +433,45 @@ test('domToDocxStructure: 下划线按标签名与内联样式两条路径都能
     assert.strictEqual(r.underline, true, '【关键断言】应带 underline 标记：' + t);
   }
 });
+
+// 回归（2026-09-26 审计，内容丢失级）：折叠提示框（`???` / `???+` / `::: details`）在 Word 里
+// **正文整块消失**。渲染产物见 unified-admonitions.js 的 buildAdmonitionHTML：
+//   <details class="alert alert-note admonition …" data-admonition="note">
+//     <summary class="alert-title admonition-summary">Note</summary>
+//     <div class="alert-content admonition-content">正文</div></details>
+// 两个原因叠加：① 容器是 <details> 不是 div → 落到兜底分支；② 正文容器自身带 "alert-" 前缀，
+// 会命中 /alert/ 子串判断、却又找不到**后代** .alert-content → 产出空数组。于是父级 <details>
+// 「把 <summary> 那个标题算作唯一产出」（nested.length > 0，兜底的纯文本救援不触发）
+// → 正文连文字都没了。实测修前结构只有 [{paragraph:[Note]}]，document.xml 搜不到正文。
+test('domToDocxStructure: 折叠提示框（details.admonition）的正文不得丢失', () => {
+  const md = '<div id="root"><details class="alert alert-note admonition admonition-note" data-admonition="note">'
+    + '<summary class="alert-title admonition-summary">Note</summary>'
+    + '<div class="alert-content admonition-content"><p>折叠正文内容</p></div></details></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const json = JSON.stringify(structure);
+  assert.ok(json.includes('折叠正文内容'), '【关键断言】折叠提示框的正文不得丢，实际结构：' + json);
+  assert.ok(json.includes('Note'), '标题不得丢');
+  const para = structure.find((n) => n.type === 'paragraph');
+  assert.strictEqual(para.quote, true, '折叠提示框应与普通提示框同样按引用块输出（带底色/左边框色）');
+  const titleRun = para.runs.find((r) => r.text === 'Note');
+  assert.strictEqual(titleRun.bold, true, '标题应加粗');
+});
+
+// 同一根因的另一面：.alert-content / .alert-title 自身此前会被当成「空提示框」吞掉 ——
+// 它们出现在提示框之外的任何位置（或裸 <div class="alert">）都不能丢字。
+test('domToDocxStructure: 提示框子容器与无标题的 .alert 不吞字', () => {
+  const cases = [
+    ['裸正文容器', '<div class="alert-content admonition-content"><p>裸正文容器</p></div>'],
+    ['只有文字的提示框', '<div class="alert alert-note">只有文字的提示框</div>'],
+  ];
+  for (const [mark, html] of cases) {
+    const dom = new JSDOM('<div id="root">' + html + '</div>', { runScripts: 'dangerously' });
+    const w = dom.window;
+    const fn = loadDomModule(w);
+    const json = JSON.stringify(fn(w.document.getElementById('root')));
+    assert.ok(json.includes(mark), '【关键断言】不得整块丢失：' + mark + '，实际结构：' + json);
+  }
+});
