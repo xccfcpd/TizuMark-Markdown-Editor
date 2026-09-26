@@ -513,8 +513,11 @@
       },
       updateBreadcrumb(force = false, line = null) {
         if (!this.cm) return;
-        const content = this.cm.getValue();
-        if (force || this._breadcrumbLastContent !== content) {
+        // 仅在「被强制」或「尚无标题数据」时解析内容：光标移动 / 滚动路径（每键、每帧都调）不解析，
+        // 避免每次 cm.getValue() + extractHeadings 的 O(N) 开销（大文档下是打字/滚动的放大器）。
+        // 内容变更时的标题新鲜度由 updateOutline（change 防抖 300ms 内必调）负责维护。
+        if (force || !this._breadcrumbHeadings) {
+          const content = this.cm.getValue();
           this._breadcrumbHeadings = Outline.extractHeadings(content, { headingToId: (t) => this.headingToId(t) });
           this._breadcrumbLastContent = content;
         }

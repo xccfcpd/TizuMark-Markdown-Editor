@@ -162,3 +162,20 @@ test('outline-ui: 纯符号标题点击不抛 SyntaxError', async () => withEdit
   }, '点击空 id 标题不得抛 SyntaxError');
   assert.strictEqual(ed.cm.getCursor().line, 0, '光标应跳到标题行');
 }));
+
+test('breadcrumb: 光标/滚动路径不再调用 cm.getValue()（大文档性能）', async () => withEditor({ captureInitErr: true }, async (w, ed) => {
+  setActiveFileName(ed, 'perf.md');
+  ed.cm.setValue('# A\n正文\n## B');
+  ed.updateOutline(); // 预热 _breadcrumbHeadings（内容变更时由 updateOutline 维护）
+  let calls = 0;
+  const orig = ed.cm.getValue.bind(ed.cm);
+  ed.cm.getValue = () => { calls++; return orig(); };
+  try {
+    ed.updateBreadcrumb();          // 模拟 cursorActivity 路径
+    ed.updateBreadcrumb(false, 1);  // 模拟 scroll 路径
+  } finally {
+    ed.cm.getValue = orig;
+  }
+  assert.strictEqual(calls, 0, '光标/滚动路径的 updateBreadcrumb 不应再调用 cm.getValue()（避免大文档每键/每帧 O(N)）');
+  assert.ok(ed._breadcrumbHeadings && ed._breadcrumbHeadings.length >= 2, '标题数据应由 updateOutline 维护');
+}));

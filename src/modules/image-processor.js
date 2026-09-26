@@ -43,11 +43,23 @@ const inlineBlobUrls = [];
 // 图片 base64 缓存容量上限：整图 base64 值可达数 MB，长会话多图/多文件若不淘汰会内存只增不减
 // （中等泄漏风险，审计发现）。仿 _imageURLCache 的 LRU：超限删最旧一条（Map 保持插入序）。
 const IMAGE_BASE64_CACHE_MAX = 256;
+// 同时按「总字节」封顶：整图 base64 单条可达数 MB，仅按条数(256)封顶最坏会保留上百 MB~上 GB
+//（长会话多图/多文件内存只增不减的主因之一）。超预算从最旧开始淘汰（缓存可重建，淘汰安全）。
+const IMAGE_BASE64_CACHE_MAX_BYTES = 64 * 1024 * 1024; // 64MB
 const cacheBase64 = (cache, key, dataUri) => {
+  if (!(cache instanceof Map)) { cache.set(key, dataUri); return; }
+  // 外部 clear() 后 size 归零 → 重置字节计数，避免计数漂移导致过度淘汰
+  if (cache.size === 0 || typeof cache.__bytes !== 'number') cache.__bytes = 0;
+  const prev = cache.get(key);
+  if (typeof prev === 'string') cache.__bytes -= prev.length;
   cache.set(key, dataUri);
-  if (cache instanceof Map && cache.size > IMAGE_BASE64_CACHE_MAX) {
+  cache.__bytes += (dataUri ? dataUri.length : 0);
+  while (cache.size > IMAGE_BASE64_CACHE_MAX || cache.__bytes > IMAGE_BASE64_CACHE_MAX_BYTES) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest === undefined) break;
+    const oldVal = cache.get(oldest);
+    if (typeof oldVal === 'string') cache.__bytes -= oldVal.length;
+    cache.delete(oldest);
   }
 };
 // 该 Blob URL 是否仍被文档里的 <img> 引用 —— 被引用的**绝不回收**，
