@@ -1,7 +1,50 @@
 // exportWord 真 OOXML 流程：页面设置对话框 → DOM→结构 → 主线程构建 → write_binary_file；失败回退 html-docx。
 const test = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
+const JSZip = require('jszip');
 const { withEditor } = require('./helpers/app-env.cjs');
+
+// ── 「结构 → docx 字节 → 解 OOXML」共用脚手架 ───────────────────────────────
+// 本文件所有验 OOXML 的用例都要这几步（此前每处各抄一份，且都藏着两个必须照做的动作）：
+//   ① node 下 DocxLib.Packer.toBlob 依赖浏览器 Blob 流、不会 settle → 用真实 toBuffer 桩掉；
+//   ② 上游 jsdom 用例会把 window 泄漏到全局（其 Packer.toBlob 被桩成返回 3 字节）→
+//      构建期间必须临时置空 globalThis.window，强制走 ①。
+const DOCX_PAGE = {
+  pageWidth: 11906, pageHeight: 16838,
+  marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+};
+
+// 结构 → docx ArrayBuffer（pageOpts 覆盖页面设置，例如 lineHeight）
+async function buildDocxBuffer(structure, pageOpts) {
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const build = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  try {
+    const blob = await build(structure, Object.assign({}, DOCX_PAGE, pageOpts));
+    return await blob.arrayBuffer();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+}
+
+// 解 zip 取 word/document.xml（关系表另取：zip.file('word/_rels/document.xml.rels')）。
+// 仓库内 jszip 为 2.x：同步 load + asText（无 3.x 的 loadAsync）。
+function unzipDocx(ab) {
+  const zip = new JSZip();
+  zip.load(Buffer.from(ab));
+  return { zip, xml: zip.file('word/document.xml').asText() };
+}
 
 test('exportWord: docx 流程主线程构建并写出二进制', async () => {
   const captured = {};
@@ -440,40 +483,14 @@ test('docx-builder: runToChild 对非法 OMML 降级为纯文本不抛错', asyn
 // **整篇**导出。runToChild 必须丢弃非法颜色（与上面非法 OMML「降级不抛错」同一原则），
 // 同时不能误伤合法 HEX —— 这里用真实 docx 打包 + 解 XML 验证两头都对。
 test('docx-builder: runToChild 丢弃非法颜色不抛错，合法 HEX 仍写进 w:color', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  // 同上游测试：屏蔽 jsdom 泄漏的 window（其 toBlob 被桩成 3 字节），强制走真实 docx 打包
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
-  let ab;
-  try {
-    const blob = await builder([{ type: 'paragraph', runs: [
-      { text: '命名色', color: 'RED' },        // 旧行为：原样下传 → 抛错中止整篇
-      { text: '半透明', color: 'rgba(1,2,3,0.5)' },
-      { text: '变量', color: 'var(--x)' },
-      { text: '合法', color: 'FF0000' },
-    ] }], {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    ab = await blob.arrayBuffer();
-  } finally {
-    globalThis.window = savedWindow;
-  }
+  const ab = await buildDocxBuffer([{ type: 'paragraph', runs: [
+    { text: '命名色', color: 'RED' },        // 旧行为：原样下传 → 抛错中止整篇
+    { text: '半透明', color: 'rgba(1,2,3,0.5)' },
+    { text: '变量', color: 'var(--x)' },
+    { text: '合法', color: 'FF0000' },
+  ] }]);
   assert.ok(ab.byteLength > 0, '含非法颜色的文档也应成功构建（不拖垮整篇）');
-  const zip = new JSZip();
-  zip.load(Buffer.from(ab));
-  const xml = zip.file('word/document.xml').asText();
+  const { xml } = unzipDocx(ab);
   assert.strictEqual((xml.match(/<w:color\b/g) || []).length, 1, '只有合法 HEX 的那个 run 应带颜色');
   assert.ok(xml.includes('w:val="FF0000"'), '合法 6 位 HEX 必须保留');
   for (const bad of ['RED', 'rgba(', 'var(--x', 'currentColor']) {
@@ -486,43 +503,18 @@ test('docx-builder: runToChild 丢弃非法颜色不抛错，合法 HEX 仍写�
 // 所以 AlignmentType[node.align] 永远取到 undefined：独立公式的居中、text-align:center/right 的
 // 段落在 Word 里全部变左对齐（document.xml 里连 <w:jc> 都没有）。同时验证空表格不再抛错。
 test('docx-builder: CSS text-align 正确落到 w:jc；空表格不抛错不产出 tbl', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
-  let xml;
-  try {
-    const blob = await builder([
-      { type: 'paragraph', runs: [{ text: '居中' }], align: 'center' },
-      { type: 'paragraph', runs: [{ text: '右对齐' }], align: 'right' },
-      { type: 'paragraph', runs: [{ text: '两端' }], align: 'justify' },
-      { type: 'paragraph', runs: [{ text: '无对齐' }] },
-      { type: 'paragraph', runs: [{ text: '未知值' }], align: 'foo' },
-      { type: 'table', rows: [] },                      // 空表格：此前整篇导出中止
-      { type: 'table', rows: [{ cells: [] }] },          // 行内无单元格：同上
-      { type: 'paragraph', runs: [{ text: '表格之后的正文' }] },
-    ], {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    const ab = await blob.arrayBuffer();
-    assert.ok(ab.byteLength > 0, '含空表格的文档也应成功构建（不拖垮整篇）');
-    const zip = new JSZip();
-    zip.load(Buffer.from(ab));
-    xml = zip.file('word/document.xml').asText();
-  } finally {
-    globalThis.window = savedWindow;
-  }
+  const ab = await buildDocxBuffer([
+    { type: 'paragraph', runs: [{ text: '居中' }], align: 'center' },
+    { type: 'paragraph', runs: [{ text: '右对齐' }], align: 'right' },
+    { type: 'paragraph', runs: [{ text: '两端' }], align: 'justify' },
+    { type: 'paragraph', runs: [{ text: '无对齐' }] },
+    { type: 'paragraph', runs: [{ text: '未知值' }], align: 'foo' },
+    { type: 'table', rows: [] },                      // 空表格：此前整篇导出中止
+    { type: 'table', rows: [{ cells: [] }] },          // 行内无单元格：同上
+    { type: 'paragraph', runs: [{ text: '表格之后的正文' }] },
+  ]);
+  assert.ok(ab.byteLength > 0, '含空表格的文档也应成功构建（不拖垮整篇）');
+  const { xml } = unzipDocx(ab);
   const jc = (xml.match(/<w:jc w:val="[^"]+"\/>/g) || []).map(s => s.replace(/.*w:val="([^"]+)".*/, '$1'));
   assert.deepStrictEqual(jc, ['center', 'right', 'both'],
     '【关键断言】三类 CSS 对齐各落一条 w:jc，且无对齐/未知值不得产出（此前全部丢失）');
@@ -536,49 +528,23 @@ test('docx-builder: CSS text-align 正确落到 w:jc；空表格不抛错不产�
 // 或字节为空就跳过该图，绝不中止整篇（与「非法 OMML 降级」「非法颜色丢弃」同一原则）。
 // 另外宽高必须落成正整数：transformation 是必填项，undefined/NaN 会写进非法尺寸。
 test('docx-builder: 非白名单图片格式/空字节被跳过，合法 png 仍嵌入且宽高为正整数', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
   // 1×1 真 PNG：docx 会把字节原样放进 word/media
   const pngBytes = Array.from(Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64'));
   // 非法节点用与合法图完全不同的字节：一旦漏进 zip，媒体文件名/扩展名会立刻暴露
   const junkBytes = [1, 2, 3, 4];
-  let xml;
-  let zip;
-  try {
-    const blob = await builder([
-      { type: 'paragraph', runs: [{ text: '图片之前的正文' }] },
-      { type: 'image', imageType: 'svg', data: junkBytes, width: 20, height: 20, srcMime: 'image/svg+xml' }, // 漏栅格化
-      { type: 'image', imageType: 'webp', data: junkBytes, width: 20, height: 20, srcMime: 'image/webp' },   // 漏栅格化
-      { type: 'image', imageType: 'png', data: [], width: 20, height: 20 },                                  // 空字节
-      { type: 'image', data: junkBytes, width: 20, height: 20 },                                             // 老结构漏传 imageType
-      { type: 'image', imageType: 'png', data: pngBytes, width: 80, height: 40 },                            // 合法
-      { type: 'image', imageType: 'png', data: pngBytes },                                                   // 宽高缺失 → 兜底
-      { type: 'paragraph', runs: [{ text: '图片之后的正文' }] },
-    ], {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    const ab = await blob.arrayBuffer();
-    assert.ok(ab.byteLength > 0, '含非法图片节点的文档也应成功构建（不拖垮整篇）');
-    zip = new JSZip();
-    zip.load(Buffer.from(ab));
-    xml = zip.file('word/document.xml').asText();
-  } finally {
-    globalThis.window = savedWindow;
-  }
+  const ab = await buildDocxBuffer([
+    { type: 'paragraph', runs: [{ text: '图片之前的正文' }] },
+    { type: 'image', imageType: 'svg', data: junkBytes, width: 20, height: 20, srcMime: 'image/svg+xml' }, // 漏栅格化
+    { type: 'image', imageType: 'webp', data: junkBytes, width: 20, height: 20, srcMime: 'image/webp' },   // 漏栅格化
+    { type: 'image', imageType: 'png', data: [], width: 20, height: 20 },                                  // 空字节
+    { type: 'image', data: junkBytes, width: 20, height: 20 },                                             // 老结构漏传 imageType
+    { type: 'image', imageType: 'png', data: pngBytes, width: 80, height: 40 },                            // 合法
+    { type: 'image', imageType: 'png', data: pngBytes },                                                   // 宽高缺失 → 兜底
+    { type: 'paragraph', runs: [{ text: '图片之后的正文' }] },
+  ]);
+  assert.ok(ab.byteLength > 0, '含非法图片节点的文档也应成功构建（不拖垮整篇）');
+  const { zip, xml } = unzipDocx(ab);
   const drawings = xml.match(/<w:drawing\b/g) || [];
   assert.strictEqual(drawings.length, 2, '只有两张合法 png 应产出 drawing，其余四张必须被跳过');
   // 注意排除目录条目自身（zip.files 里含 'word/media/' 这个 dir）。docx 会按图片字节去重：
@@ -682,39 +648,10 @@ test('exportWord: 非 png/jpg/gif/bmp 的内联图栅格化成 PNG 后交给构�
 // 修复：代码块每行一个独立段落 + 显式左对齐——段落末行永不被拉伸；相邻段落
 // 边框/底纹/缩进一致时 Word 自动把边框合并为一个整体框，视觉仍是一个连续代码块。
 test('docx-builder: 代码块每行独立段落（无软换行 <w:br/>，显式左对齐）', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  // node 下 Packer.toBlob 依赖浏览器 Blob 流：用真实 toBuffer 桩掉（jsdom 同款做法）
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  // 注意：先前的 jsdom 测试可能向全局泄漏 window（其 DocxLib.Packer.toBlob 被桩成返回 3 字节）。
-  // 构建期间临时屏蔽全局 window，强制 resolveDocxLib 走上面这份 require('docx') + toBuffer 桩。
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
   const lines = ['let left = 0;', '', '  return -1;'];
-  let ab;
-  try {
-    const blob = await builder([{ type: 'code', lines }], {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    ab = await blob.arrayBuffer();
-  } finally {
-    globalThis.window = savedWindow;
-  }
+  const ab = await buildDocxBuffer([{ type: 'code', lines }]);
   assert.ok(ab.byteLength > 0, '代码块文档应成功构建');
-  // 仓库内 jszip 为 2.x：同步 load + asText（无 3.x 的 loadAsync）
-  const zip = new JSZip();
-  zip.load(Buffer.from(ab));
-  const xml = zip.file('word/document.xml').asText();
+  const { xml } = unzipDocx(ab);
   assert.strictEqual((xml.match(/<w:br/g) || []).length, 0, '不得含 <w:br/> 软换行（软换行行会被两端对齐拉伸）');
   assert.strictEqual((xml.match(/F6F5F4/g) || []).length, lines.length, '每行一个灰底段落');
   assert.strictEqual((xml.match(/<w:jc w:val="left"/g) || []).length, lines.length, '每段显式左对齐');
@@ -725,21 +662,6 @@ test('docx-builder: 代码块每行独立段落（无软换行 <w:br/>，显式�
 // 回归（2026-09-14 用户导出验证）：表格单元格 / 列表项里的公式此前被 textContent 拼成
 // "α\alphaα" 纯文本；现在这两处与段落一样走 runs，公式落成 OMML，上标/换行/缩进也保留。
 test('docx-builder: 单元格与列表项内的公式落成 OMML（不再退化成纯文本）', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
   const omml = '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>x</m:t></m:r></m:oMath>';
   const structure = [
     { type: 'table', rows: [{ cells: [{ paragraphs: [{ text: '', runs: [{ omml }, { text: ' 尾' }] }], width: 0 }] }] },
@@ -747,18 +669,8 @@ test('docx-builder: 单元格与列表项内的公式落成 OMML（不再退化�
     { type: 'paragraph', runs: [{ text: '[1]', superScript: true }], indent: { left: 720 } },
     { type: 'paragraph', runs: [{ text: 'a' }, { break: true }, { text: 'b' }] },
   ];
-  let ab;
-  try {
-    const blob = await builder(structure, {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800, lineHeight: 1.7,
-    });
-    ab = await blob.arrayBuffer();
-  } finally {
-    globalThis.window = savedWindow;
-  }
-  const zip = new JSZip();
-  zip.load(Buffer.from(ab));
-  const xml = zip.file('word/document.xml').asText();
+  const ab = await buildDocxBuffer(structure, { lineHeight: 1.7 });
+  const { xml } = unzipDocx(ab);
   assert.strictEqual((xml.match(/<m:oMath/g) || []).length, 2, '单元格与列表项里的公式都应落成 OMML');
   assert.ok(xml.includes('质能方程'), '列表项文本保留');
   assert.ok(xml.includes('↩'), '列表项尾部文本保留');
@@ -1063,60 +975,34 @@ test('_structureMathmlToOmmlChunked: 分块版与同步版产出逐位一致（>
 //    P1 列表层级 → w:ilvl    P2 超链接 → w:hyperlink + TargetMode="External"
 //    P3 表头     → w:tblHeader + 底色 + 加粗 + w:jc    P4 下划线 → w:u
 test('docx-builder: P1–P4 在 OOXML 里落地（ilvl / hyperlink+External / tblHeader / w:u）', async () => {
-  const path = require('path');
-  const JSZip = require('jszip');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
-  let xml;
-  let rels = '';
-  try {
-    const blob = await builder([
-      // P1：第 3 层（level=2）此前整项丢失。两条路径都要能看出层级：
-      // 无序项走 docx 的 bullet level（→ w:ilvl），有序项走「序号 + 悬挂缩进」
-      //（docx 的 bullet 没有内置编号样式，builder 用 marker + indent 呈现，见其注释）。
-      { type: 'bullet', ordered: false, marker: '', level: 0, runs: [{ text: '父项' }] },
-      { type: 'bullet', ordered: false, marker: '', level: 2, runs: [{ text: '孙项' }] },
-      { type: 'bullet', ordered: true, marker: '1.', level: 2, runs: [{ text: '有序孙项' }] },
-      // P2 + P4：链接与下划线
-      { type: 'paragraph', runs: [
-        { text: '官网', link: 'https://example.com/a?b=1' },
-        { text: '下划线', underline: true },
+  const ab = await buildDocxBuffer([
+    // P1：第 3 层（level=2）此前整项丢失。两条路径都要能看出层级：
+    // 无序项走 docx 的 bullet level（→ w:ilvl），有序项走「序号 + 悬挂缩进」
+    //（docx 的 bullet 没有内置编号样式，builder 用 marker + indent 呈现，见其注释）。
+    { type: 'bullet', ordered: false, marker: '', level: 0, runs: [{ text: '父项' }] },
+    { type: 'bullet', ordered: false, marker: '', level: 2, runs: [{ text: '孙项' }] },
+    { type: 'bullet', ordered: true, marker: '1.', level: 2, runs: [{ text: '有序孙项' }] },
+    // P2 + P4：链接与下划线
+    { type: 'paragraph', runs: [
+      { text: '官网', link: 'https://example.com/a?b=1' },
+      { text: '下划线', underline: true },
+    ] },
+    // P3：表头行 + 三列对齐
+    { type: 'table', rows: [
+      { header: true, cells: [
+        { paragraphs: [{ text: '左', runs: [{ text: '左' }] }], width: 0, header: true, align: 'left' },
+        { paragraphs: [{ text: '中', runs: [{ text: '中' }] }], width: 0, header: true, align: 'center' },
       ] },
-      // P3：表头行 + 三列对齐
-      { type: 'table', rows: [
-        { header: true, cells: [
-          { paragraphs: [{ text: '左', runs: [{ text: '左' }] }], width: 0, header: true, align: 'left' },
-          { paragraphs: [{ text: '中', runs: [{ text: '中' }] }], width: 0, header: true, align: 'center' },
-        ] },
-        { header: false, cells: [
-          { paragraphs: [{ text: '右' }], width: 0, align: 'right' },
-          { paragraphs: [{ text: '默认' }], width: 0 },
-        ] },
+      { header: false, cells: [
+        { paragraphs: [{ text: '右' }], width: 0, align: 'right' },
+        { paragraphs: [{ text: '默认' }], width: 0 },
       ] },
-    ], {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    const ab = await blob.arrayBuffer();
-    assert.ok(ab.byteLength > 0, '应成功构建 docx');
-    const zip = new JSZip();
-    zip.load(Buffer.from(ab));
-    xml = zip.file('word/document.xml').asText();
-    const relFile = zip.file('word/_rels/document.xml.rels');
-    rels = relFile ? relFile.asText() : '';
-  } finally {
-    globalThis.window = savedWindow;
-  }
+    ] },
+  ]);
+  assert.ok(ab.byteLength > 0, '应成功构建 docx');
+  const { zip, xml } = unzipDocx(ab);
+  const relFile = zip.file('word/_rels/document.xml.rels');
+  const rels = relFile ? relFile.asText() : '';
   // P1：无序项的层级必须写进 w:ilvl（此前第 3 层整项丢失，只剩前两层）
   assert.ok(/<w:ilvl w:val="2"\/>/.test(xml), '【P1】第 3 层无序项应写 <w:ilvl w:val="2"/>');
   assert.ok(xml.includes('孙项'), '【P1】第 3 层文字必须在 document.xml 里');
@@ -1148,19 +1034,7 @@ test('docx-builder: P1–P4 在 OOXML 里落地（ilvl / hyperlink+External / tb
 //（结构层用例只能证明中间对，终点断言才是用户看到的结果）。
 test('docx-builder: 折叠提示框的正文落进 OOXML（审计 2026-09-26）', async () => {
   const fs = require('fs');
-  const path = require('path');
-  const JSZip = require('jszip');
   const { JSDOM } = require('jsdom');
-  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
-  const D = globalThis.DocxLib;
-  if (!D.Packer.__toBufferPatched) {
-    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
-    D.Packer.toBlob = async (doc) => {
-      const buf = await realToBuffer(doc);
-      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
-    };
-    D.Packer.__toBufferPatched = true;
-  }
   // 渲染层真实产出：容器是 <details class="alert …">（不是 div），标题在 <summary>，
   // 正文在 div.alert-content —— 与 unified-admonitions.js 的 buildAdmonitionHTML 一致。
   const html = '<div id="root">'
@@ -1173,21 +1047,7 @@ test('docx-builder: 折叠提示框的正文落进 OOXML（审计 2026-09-26）'
   const structure = w.domToDocxStructure(w.document.getElementById('root'));
   assert.ok(JSON.stringify(structure).includes('折叠正文内容'),
     '结构层就不该丢正文，实际：' + JSON.stringify(structure));
-  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
-  const savedWindow = globalThis.window;
-  globalThis.window = undefined;
-  let xml;
-  try {
-    const blob = await builder(structure, {
-      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
-    });
-    const ab = await blob.arrayBuffer();
-    const zip = new JSZip();
-    zip.load(Buffer.from(ab));
-    xml = zip.file('word/document.xml').asText();
-  } finally {
-    globalThis.window = savedWindow;
-  }
+  const { xml } = unzipDocx(await buildDocxBuffer(structure));
   assert.ok(xml.includes('折叠正文内容'),
     '【关键断言】折叠提示框正文必须在 document.xml 里（此前整块丢失，只剩标题）');
   assert.ok(xml.includes('Note'), '标题也不得丢');

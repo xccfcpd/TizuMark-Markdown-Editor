@@ -11,6 +11,14 @@ function loadDomModule(w) {
   return w.domToDocxStructure;
 }
 
+// 取结构层的统一姿势：在 jsdom realm 里 eval 模块 → 从 #root 取结构。
+// 与 export-docx-coverage.test.cjs 里的同名辅助函数语义一致，便于两个文件对照阅读。
+function structureOf(html) {
+  const dom = new JSDOM('<div id="root">' + html + '</div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  return loadDomModule(w)(w.document.getElementById('root'));
+}
+
 test('domToDocxStructure: 标题/段落/加粗映射', () => {
   const dom = new JSDOM('<div id="root"><h1>一级标题</h1><p>正文 <strong>加粗</strong></p></div>', { runScripts: 'dangerously' });
   const w = dom.window;
@@ -440,38 +448,30 @@ test('domToDocxStructure: 下划线按标签名与内联样式两条路径都能
 //     <summary class="alert-title admonition-summary">Note</summary>
 //     <div class="alert-content admonition-content">正文</div></details>
 // 两个原因叠加：① 容器是 <details> 不是 div → 落到兜底分支；② 正文容器自身带 "alert-" 前缀，
-// 会命中 /alert/ 子串判断、却又找不到**后代** .alert-content → 产出空数组。于是父级 <details>
-// 「把 <summary> 那个标题算作唯一产出」（nested.length > 0，兜底的纯文本救援不触发）
-// → 正文连文字都没了。实测修前结构只有 [{paragraph:[Note]}]，document.xml 搜不到正文。
+// 会命中 /alert/ 子串判断、却又找不到**后代** .alert-content → 返回空数组。父级 <details> 于是
+// 「把 <summary> 那个标题算作唯一产出」（nested.length > 0，兜底的纯文本救援不触发）→ 正文没了。
+// 实测修前结构只有 [{paragraph:[Note]}]，document.xml 搜不到正文。
 test('domToDocxStructure: 折叠提示框（details.admonition）的正文不得丢失', () => {
-  const md = '<div id="root"><details class="alert alert-note admonition admonition-note" data-admonition="note">'
+  const structure = structureOf('<details class="alert alert-note admonition admonition-note" data-admonition="note">'
     + '<summary class="alert-title admonition-summary">Note</summary>'
-    + '<div class="alert-content admonition-content"><p>折叠正文内容</p></div></details></div>';
-  const dom = new JSDOM(md, { runScripts: 'dangerously' });
-  const w = dom.window;
-  const fn = loadDomModule(w);
-  const structure = fn(w.document.getElementById('root'));
+    + '<div class="alert-content admonition-content"><p>折叠正文内容</p></div></details>');
   const json = JSON.stringify(structure);
   assert.ok(json.includes('折叠正文内容'), '【关键断言】折叠提示框的正文不得丢，实际结构：' + json);
   assert.ok(json.includes('Note'), '标题不得丢');
   const para = structure.find((n) => n.type === 'paragraph');
   assert.strictEqual(para.quote, true, '折叠提示框应与普通提示框同样按引用块输出（带底色/左边框色）');
-  const titleRun = para.runs.find((r) => r.text === 'Note');
-  assert.strictEqual(titleRun.bold, true, '标题应加粗');
+  assert.strictEqual(para.runs.find((r) => r.text === 'Note').bold, true, '标题应加粗');
 });
 
 // 同一根因的另一面：.alert-content / .alert-title 自身此前会被当成「空提示框」吞掉 ——
-// 它们出现在提示框之外的任何位置（或裸 <div class="alert">）都不能丢字。
+// 它们出现在提示框之外的任何位置（或裸 <div class="alert">）都必须保住文字。
 test('domToDocxStructure: 提示框子容器与无标题的 .alert 不吞字', () => {
   const cases = [
     ['裸正文容器', '<div class="alert-content admonition-content"><p>裸正文容器</p></div>'],
     ['只有文字的提示框', '<div class="alert alert-note">只有文字的提示框</div>'],
   ];
   for (const [mark, html] of cases) {
-    const dom = new JSDOM('<div id="root">' + html + '</div>', { runScripts: 'dangerously' });
-    const w = dom.window;
-    const fn = loadDomModule(w);
-    const json = JSON.stringify(fn(w.document.getElementById('root')));
+    const json = JSON.stringify(structureOf(html));
     assert.ok(json.includes(mark), '【关键断言】不得整块丢失：' + mark + '，实际结构：' + json);
   }
 });

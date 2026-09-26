@@ -420,17 +420,13 @@
       const img = el.querySelector('img');
       return img ? elementToNode(img) : [];
     }
-    // 提示框（admonition）。两处陷阱都会造成**用户可见的内容丢失**（2026-09-26 审计，已实测）：
-    //   ① 折叠提示框（`???` / `???+` / `::: details`）渲染成 <details class="alert …">（见
-    //      unified-admonitions.js 的 buildAdmonitionHTML），容器**不是 div** → 此前直接落到
-    //      兜底分支；而它的正文 <div class="alert-content admonition-content"> 自身带 "alert-"
-    //      前缀，会命中下面的子串判断，却又找不到任何**后代** .alert-title/.alert-content
-    //      → 产出空数组。父级 <details> 于是「有个标题就算有产出」（nested.length > 0，
-    //      兜底里的纯文本救援不触发）→ 正文整块静默消失（实测 document.xml 里搜不到正文）。
-    //   ② /alert/ 是子串判断，.alert-content / .alert-title 自身也会命中 → 必须显式排除，
-    //      否则这些「内容容器」会被当成空提示框吞掉。
-    // 另：容器里既无标题也无正文时（例如裸 <div class="alert">文字</div>）不再返回空数组，
-    // 改为交给兜底分支，至少把文字保住。
+    // 提示框（admonition）。折叠提示框（`???` / `???+` / `::: details`）的容器是
+    // <details class="alert …">（见 unified-admonitions.js 的 buildAdmonitionHTML），不是 div；
+    // 其正文容器 div.alert-content 自身带 "alert-" 前缀，会命中下面的子串判断、却找不到任何
+    // **后代** .alert-content → 返回空数组，父级「有标题就算有产出」（nested.length > 0，
+    // 兜底的纯文本救援不触发）→ 正文整块静默消失（2026-09-26 审计实测，document.xml 无正文）。
+    // 故：容器接受 details；显式排除 .alert-content/.alert-title/.alert-icon 自身（否则会被当成
+    // 空提示框吞掉）；容器内既无标题也无正文时不再返回空数组，交给兜底保字。
     const alertCls = typeof el.className === 'string' ? el.className : '';
     const isAlertPart = /\balert-(?:content|title|icon)\b/.test(alertCls);
     if ((tag === 'div' || tag === 'details') && /alert/.test(alertCls) && !isAlertPart) {
