@@ -558,14 +558,15 @@
           this._updateBreadcrumbOverflow();
         }
       },
-      updateOutline() {
-        const content = this.cm.getValue();
+      // content 可选：调用方（switchTab）已知编辑器内容，传入可省一次 O(N) 的 cm.getValue()。
+      updateOutline(content) {
+        const text = (content == null) ? this.cm.getValue() : content;
         const outlineContent = document.getElementById('outline-content');
-        const headings = Outline.extractHeadings(content, { headingToId: (t) => this.headingToId(t) });
+        const headings = Outline.extractHeadings(text, { headingToId: (t) => this.headingToId(t) });
   
         // 面包屑共享同一套标题数据，避免重复抽取
         this._breadcrumbHeadings = headings;
-        this._breadcrumbLastContent = content;
+        this._breadcrumbLastContent = text;
         this._renderBreadcrumb(Outline.computeBreadcrumbPath(headings, this.cm.getCursor().line));
   
         if (headings.length === 0) {

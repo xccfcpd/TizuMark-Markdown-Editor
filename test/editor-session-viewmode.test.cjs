@@ -70,7 +70,7 @@ test('会话级 md 模式记忆：md 预览态下新建文档（newFile）不应
     ed.activeTabIndex = 0;
     ed._sessionMdViewMode = null; // 刚启动，尚未手动切换
 
-    ed.newFile();
+    await ed.newFile();
 
     assert.strictEqual(ed._sessionMdViewMode, null, 'newFile 不应把会话记忆写成 edit');
   });

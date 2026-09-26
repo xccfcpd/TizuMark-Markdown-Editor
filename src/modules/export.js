@@ -1603,7 +1603,7 @@
       //   - 转换且 OMML 良构 → { omml }（Word 可编辑公式）
       //   - 转换失败 / OMML 非良构 → { text: LaTeX源码 }（不丢内容，也不拖垮整篇）
       // 返回 true 表示可走主路径（个别公式降级文本不影响整体）。
-      _structureMathmlToOmml(structure) {
+      *_genMathmlToOmml(structure) {
         const convert = (typeof MathML2OMML !== 'undefined' && MathML2OMML.mml2omml)
           ? MathML2OMML.mml2omml
           : null;
@@ -1732,38 +1732,41 @@
           return out;
         };
         let sawMath = false;
-        const walkRuns = (runs) => {
+        // 逐 run 处理（含公式者）：每个公式处理完 yield 一次，供同步/异步两个驱动器复用。
+        const walkRuns = function* (runs) {
           if (!Array.isArray(runs)) return;
           for (let i = runs.length - 1; i >= 0; i--) {
             const r = runs[i];
             if (r && typeof r.mathml === 'string') {
               sawMath = true;
-              if (!convert) continue; // 缺库：保留 mathml run，外层据 sawMath 决定走主路径还是回退
-              let ommlStr = null;
-              try { ommlStr = String(convert(stripMathmlPhantom(r.mathml))); } catch (e) { ommlStr = null; }
-              // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再修空必需参数槽
-              // （Word 会把空槽画成虚线占位框），最后做文本转义 —— 三者顺序不可颠倒：
-              // 反了会把错位结构里的 < 转义掉、或在已转义文本上做结构搬迁，都会产出坏 OMML。
-              // （含裸 < 的 OMML 由两个 repair 内部先做最小可解析化，不再被解析失败跳过。）
-              if (ommlStr) ommlStr = repairMisplacedOMML(ommlStr);
-              if (ommlStr) ommlStr = repairOmmlEmptyArgs(ommlStr);
-              if (ommlStr) ommlStr = repairTextEscaping(ommlStr);
-              if (ommlStr && isWellFormed(ommlStr)) {
-                runs[i] = { omml: ommlStr };
-              } else {
-                // 降级为 LaTeX 源码文本：宁可显示源码也不让坏 OMML 拖垮整篇文档。
-                const tex = decodeXmlEntities(extractLatex(r.mathml)) || r.mathml.replace(/<[^>]+>/g, '').trim();
-                runs[i] = { text: tex };
+              if (convert) {
+                let ommlStr = null;
+                try { ommlStr = String(convert(stripMathmlPhantom(r.mathml))); } catch (e) { ommlStr = null; }
+                // 先修结构错位（\overset/\underset 被 mml2omml 包进了 m:t），再修空必需参数槽
+                // （Word 会把空槽画成虚线占位框），最后做文本转义 —— 三者顺序不可颠倒：
+                // 反了会把错位结构里的 < 转义掉、或在已转义文本上做结构搬迁，都会产出坏 OMML。
+                // （含裸 < 的 OMML 由两个 repair 内部先做最小可解析化，不再被解析失败跳过。）
+                if (ommlStr) ommlStr = repairMisplacedOMML(ommlStr);
+                if (ommlStr) ommlStr = repairOmmlEmptyArgs(ommlStr);
+                if (ommlStr) ommlStr = repairTextEscaping(ommlStr);
+                if (ommlStr && isWellFormed(ommlStr)) {
+                  runs[i] = { omml: ommlStr };
+                } else {
+                  // 降级为 LaTeX 源码文本：宁可显示源码也不让坏 OMML 拖垮整篇文档。
+                  const tex = decodeXmlEntities(extractLatex(r.mathml)) || r.mathml.replace(/<[^>]+>/g, '').trim();
+                  runs[i] = { text: tex };
+                }
               }
+              yield; // 每个公式一个让出点（同步驱动器忽略；异步驱动器据此分块让出主线程）
             }
           }
         };
         for (const node of structure) {
-          if (node && node.runs) walkRuns(node.runs);
+          if (node && node.runs) yield* walkRuns(node.runs);
           if (node && node.type === 'table') {
             for (const row of node.rows || []) {
               for (const cell of row.cells || []) {
-                for (const p of cell.paragraphs || []) walkRuns(p.runs);
+                for (const p of cell.paragraphs || []) yield* walkRuns(p.runs);
               }
             }
           }
@@ -1771,6 +1774,25 @@
         // 无公式 → 走主路径；有公式但缺转换库 → 走 html-docx 回退（公式降级 LaTeX 文本）。
         if (!sawMath) return true;
         return !!convert;
+      },
+      // 同步版（既有契约不变，测试直接调用）：一次驱动生成器到结束。
+      _structureMathmlToOmml(structure) {
+        const it = this._genMathmlToOmml(structure);
+        let res = it.next();
+        while (!res.done) res = it.next();
+        return res.value;
+      },
+      // 异步分块版（导出主路径用）：每 20 个公式让出主线程一帧。公式多时逐条 mml2omml + 多次
+      // DOMParser 会累积数秒同步卡顿；分块后 spinner 持续转、取消可响应。产出与同步版逐位一致。
+      async _structureMathmlToOmmlChunked(structure) {
+        const it = this._genMathmlToOmml(structure);
+        let res = it.next();
+        let n = 0;
+        while (!res.done) {
+          res = it.next();
+          if (++n % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+        }
+        return res.value;
       },
       // 弹「导出 DOCX」确认框：只做说明 + 确认，返回 Promise<boolean>（true=开始导出）。
       // 纸张/方向/边距固定 A4/纵向/标准——Word 是页面模型需要这些值，但让用户在导出前选
@@ -2145,8 +2167,9 @@
             : null;
           await new Promise(r => setTimeout(r, 0));
           if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
+          // 用异步分块版：公式多时每 20 个让出主线程一帧，避免 MathML→OMML 逐条转换整段同步卡死。
           const mathConverted = (structure && Array.isArray(structure))
-            ? this._structureMathmlToOmml(structure)
+            ? await this._structureMathmlToOmmlChunked(structure)
             : false;
           if (structure && Array.isArray(structure) && structure.length > 0 && mathConverted) {
             const page = this._docxPageConfig(); // 固定 A4/纵向/标准边距

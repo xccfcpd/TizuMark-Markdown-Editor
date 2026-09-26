@@ -7,9 +7,13 @@
 
   const mixin = {
       newFile() {
-        this.addTab(this.t('untitled'), '', null);
+        // 返回 addTab 的 Promise：newFile 触发的「建标签→切标签→预览渲染」是异步链，
+        // 返回它让调用方（测试/脚本）可 await，避免渲染续体在 teardown（document 已销毁）后
+        // 继续执行导致 unhandledRejection。菜单/快捷键等 fire-and-forget 调用不受影响。
+        const pending = this.addTab(this.t('untitled'), '', null);
         this.setViewMode('edit');
         this.setStatus(this.t('newFileCreated'));
+        return pending;
       },
       async reloadFile() {
         const tab = this.activeTab;

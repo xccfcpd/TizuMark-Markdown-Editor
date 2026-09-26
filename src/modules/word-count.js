@@ -14,9 +14,21 @@ function countStats(content) {
     .replace(/[#*`~\[\]()>_|\\-]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const words = text ? text.split(/\s+/).length : 0;
-  const chars = (content || '').length;
-  const lines = content ? content.split('\n').length : 0;
+  // 词数：text 已被折叠成「单空格分隔 + trim」，故词数 = 空格数 + 1 —— 避免 split(/\s+/) 分配大数组。
+  let words = 0;
+  if (text) {
+    let sp = 0;
+    for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 32) sp++;
+    words = sp + 1;
+  }
+  const raw = content || '';
+  const chars = raw.length;
+  // 行数：按换行符扫描计数，避免 split('\n') 生成 N 个子串（大文档下是明显开销）。空内容记 0。
+  let lines = 0;
+  if (raw) {
+    lines = 1;
+    for (let i = 0; i < raw.length; i++) if (raw.charCodeAt(i) === 10) lines++;
+  }
   return { words, chars, lines };
 }
 

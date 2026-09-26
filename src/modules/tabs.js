@@ -125,8 +125,10 @@
           // ⚠ 这里之前**不能**插"代际过期就 return"的判定：一旦 return 掉，滚动位置永远不会恢复
           // （CI 的 tab-scroll 用例正是钉住这一条）。代际校验只放在 ensureTabLoaded 之后。
           this._restoreSwitchScroll(restoreScroll, restorePreviewTop);
-          this.updateWordCount();
-          this.updateOutline();
+          // 编辑器内容此刻等于 newTab.content；直接传入，省去 updateWordCount/updateOutline 各自
+          // 再来一次 O(N) 的 cm.getValue()（大文档切 tab 的关键放大器，2026-09-26）。
+          this.updateWordCount(newTab.content || '');
+          this.updateOutline(newTab.content || '');
           this.updateExternalChangeBanner();
           this.highlightTreeActiveFile();
           this.syncViewModeToTab();

@@ -313,8 +313,11 @@
           }
         }, 3000);
       },
-      updateWordCount() {
-        const { chars, lines } = WordCount.countStats(this.cm.getValue());
+      // content 可选：调用方（switchTab）已知编辑器内容等于该 tab 的 content，传入可省一次 O(N) 的
+      // cm.getValue()（大文档切 tab 时，updateWordCount/updateOutline/render/rebuildScrollSync 各来一次）。
+      updateWordCount(content) {
+        const text = (content == null) ? this.cm.getValue() : content;
+        const { chars, lines } = WordCount.countStats(text);
         // 原始字数 = 原文文件字符数（含 markdown 标记/空白），预览字数 = 渲染后可见文本字符数。
         // 两者统一按字符数口径，保证「原文 ≥ 预览」恒成立（中文/英文均如此）。
         this.wordCountEl.textContent = `${this.t('words')}: ${chars}`;

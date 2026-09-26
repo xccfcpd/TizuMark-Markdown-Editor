@@ -233,9 +233,12 @@
         return ans + 1; // 1-based 源码行
       },
       // 根据 unified 渲染结果重建滚动同步数据（仅在内容变化时调用）
-      rebuildScrollSync() {
-        const content = this.cm.getValue();
-        const totalLines = content.split('\n').length;
+      // content 可选：调用方（render）已持有同一份内容时传入，省一次 O(N) 的 cm.getValue() 大字符串重建。
+      rebuildScrollSync(content) {
+        const text = (content == null) ? this.cm.getValue() : content;
+        // 行数按换行符扫描计数（不 split 分配）：空内容 = 1 行，与 split('\n').length 等价。
+        let totalLines = 1;
+        for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) totalLines++;
 
         // 预览内容变化：滚动同步位置表作废，下次 _computedPosition 重算（缓存守卫）
         this._positionCacheDirty = true;

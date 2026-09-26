@@ -99,7 +99,9 @@
     }
     try {
       const content = this.app.cm.getValue();
-        const totalLines = content.split('\n').length;
+        // 行数按换行符扫描计数：大文档下 split('\n') 会生成 N 个子串（明显开销），这里只数不分配。
+        let totalLines = 1;
+        for (let i = 0; i < content.length; i++) if (content.charCodeAt(i) === 10) totalLines++;
         // _previewForceFull：导出等场景临时要求**全量渲染**（见 export.js 的 _preparePreviewForExport）。
         // 不加这个开关，大文档会走下面的滑动窗口只渲染约 1200 行，而导出基于
         // preview.cloneNode(true) → 导出的 HTML/PDF/Word 只会包含那一段（2026-09-23 用户报障）。
@@ -276,7 +278,7 @@
 
         // 超大文档：顶部全局横幅提示（不塞进预览内容，避免随滚动/重渲染消失）
         if (this.app._previewTruncated) {
-          const totalLines = content.split('\n').length;
+          // totalLines 复用上方已算好的值（避免再次 split 整篇内容）
           const key = this.app.activeTab ? (this.app.activeTab.filePath || ('untitled:' + this.app.tabs.indexOf(this.app.activeTab))) : 'none';
           this.app.showLargeFileNotice(key, totalLines, content.length);
           this.app._previewTruncated = false;
@@ -348,8 +350,8 @@
           return;
         }
 
-        // 重建滚动同步数据（blocks + 预览子元素）
-        this.app.rebuildScrollSync();
+        // 重建滚动同步数据（blocks + 预览子元素）；传入已取到的 content，省一次 cm.getValue()
+        this.app.rebuildScrollSync(content);
 
         // 恢复预览滚动位置（逐行密集插值）；预览发起的编辑（复选框勾选）已保存位置，跳过以免被重算覆盖
         if (this.app.settings.scrollSync && this.app._editorElementList && this.app._editorElementList.length > 1) {

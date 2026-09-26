@@ -737,3 +737,32 @@ test('_structureMathmlToOmml: &nbsp; 还原为空格 + 矩阵空格子/空 run �
     }
   });
 });
+
+// 回归：导出主路径用的「异步分块版」与既有「同步版」必须产出完全一致
+//（分块只是每 20 个公式让出主线程一帧，绝不改变转换结果）。
+test('_structureMathmlToOmmlChunked: 分块版与同步版产出逐位一致（>20 公式触发分块）', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  await withEditor({}, async (w, ed) => {
+    w.eval(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'mathml2omml.min.js'), 'utf8'));
+    const mk = (n) => ({
+      type: 'paragraph',
+      runs: [
+        { text: '公式 ' + n + ' ' },
+        {
+          mathml: '<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msup><mi>x</mi><mn>'
+            + n + '</mn></msup></mrow><annotation encoding="application/x-tex">x^' + n + '</annotation></semantics></math>',
+        },
+      ],
+    });
+    const build = () => { const a = []; for (let i = 0; i < 25; i++) a.push(mk(i + 1)); return a; };
+    const syncStruct = build();
+    const chunkStruct = build();
+    const syncOk = ed._structureMathmlToOmml(syncStruct);
+    const chunkOk = await ed._structureMathmlToOmmlChunked(chunkStruct);
+    assert.strictEqual(syncOk, true, '有库且有公式应返回 true');
+    assert.strictEqual(chunkOk, syncOk, '分块版与同步版返回布尔应一致');
+    assert.deepStrictEqual(chunkStruct, syncStruct, '分块版与同步版产出应逐位一致');
+    assert.ok(chunkStruct[0].runs.some((r) => typeof r.omml === 'string' && r.omml.includes('oMath')), '应产出 OMML run');
+  });
+});
