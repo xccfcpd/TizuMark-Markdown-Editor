@@ -154,6 +154,23 @@
           tab.fileMeta = null;
         }
       },
+      // 批量刷新多个 tab 的磁盘元数据（一次 IPC 取代逐个 file_meta）——后台轮询 / 多标签刷新用。
+      // 后端不支持批量（旧版 / 测试桩）时回退逐个 refreshFileMeta，语义不变。
+      async refreshTabsMeta(tabs) {
+        const list = (tabs || []).filter((t) => t && t.filePath);
+        if (!list.length) return;
+        try {
+          const res = await TauriApi.fileMetaBatch({ paths: list.map((t) => t.filePath) });
+          if (Array.isArray(res) && res.length === list.length) {
+            for (let i = 0; i < list.length; i++) {
+              const item = res[i];
+              list[i].fileMeta = (!item || item.error) ? null : (item.meta || null);
+            }
+            return;
+          }
+        } catch (e) { /* 落到逐个兜底 */ }
+        await Promise.all(list.map((t) => this.refreshFileMeta(t)));
+      },
       async reloadTabFromDisk(tab) {
         if (!tab || !tab.filePath) return;
         try {
@@ -264,11 +281,26 @@
         }
   
         const pass = async () => {
-          for (const tab of this.tabs) {
-            if (!tab.filePath) continue;
+          const tabs = this.tabs.filter((t) => t && t.filePath);
+          if (!tabs.length) return;
+          // 批量取 meta：一次 IPC 取代「每个已打开文件各发一次 file_meta」（B，多文件时是稳定的后台
+          // IPC/CPU 开销）。后端不支持批量（旧版/测试桩）时回退逐个，语义完全不变。
+          let metas = null;
+          try {
+            const res = await TauriApi.fileMetaBatch({ paths: tabs.map((t) => t.filePath) });
+            if (Array.isArray(res) && res.length === tabs.length) metas = res;
+          } catch (e) { metas = null; }
+          for (let i = 0; i < tabs.length; i++) {
+            const tab = tabs[i];
             let meta;
-            try { meta = await TauriApi.fileMeta({ path: tab.filePath }); }
-            catch (e) { meta = undefined; }
+            if (metas) {
+              const item = metas[i];
+              if (!item || item.error) continue; // 读取失败：与单项 file_meta 抛错同义，跳过本轮
+              meta = item.meta;                 // null = 文件不存在
+            } else {
+              try { meta = await TauriApi.fileMeta({ path: tab.filePath }); }
+              catch (e) { meta = undefined; }
+            }
             if (meta === undefined) continue;
             if (!meta) {
               if (tab.fileMeta !== null && !tab.pendingExternalChange) this.enqueueExternalChange(tab);

@@ -326,15 +326,29 @@
         if (!this._recentFiles || this._recentFiles.length === 0) return;
         const fileMenu = document.getElementById('file-menu');
         if (!fileMenu || fileMenu.classList.contains('hidden')) return;
+        const paths = this._recentFiles.slice();
+        // 批量取 meta（一次 IPC 取代逐个 file_meta）；不可用则逐个兜底。
+        let metas = null;
+        try {
+          const res = await TauriApi.fileMetaBatch({ paths });
+          if (Array.isArray(res) && res.length === paths.length) metas = res;
+        } catch (_) { metas = null; }
         let changed = false;
         const survivors = [];
-        for (const p of this._recentFiles) {
+        for (let i = 0; i < paths.length; i++) {
+          const p = paths[i];
           let exists = true;
-          try {
-            const meta = await TauriApi.fileMeta({ path: p });
-            exists = meta !== null && meta !== undefined;
-          } catch {
-            exists = true; // 查询失败保守保留，避免误删
+          if (metas) {
+            const item = metas[i];
+            // error 视为「查询失败」保守保留；meta 为 null 才是文件已不存在
+            exists = (!item || item.error) ? true : (item.meta !== null && item.meta !== undefined);
+          } else {
+            try {
+              const meta = await TauriApi.fileMeta({ path: p });
+              exists = meta !== null && meta !== undefined;
+            } catch {
+              exists = true; // 查询失败保守保留，避免误删
+            }
           }
           if (exists) survivors.push(p); else changed = true;
         }

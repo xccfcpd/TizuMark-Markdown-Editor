@@ -196,7 +196,7 @@
           active._loaded = true;
         }
   
-        await Promise.all(this.tabs.map(t => this.refreshFileMeta(t)));
+        await this.refreshTabsMeta(this.tabs);
   
         // 同 switchTab：setValue 会同步触发 scroll / cursorActivity 事件，污染 activeTab.scrollPos / cursorPos，先取快照
         const restoreCursor = (active && active.cursorPos) || { line: 0, ch: 0 };

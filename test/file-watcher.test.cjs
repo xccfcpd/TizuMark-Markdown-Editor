@@ -88,3 +88,30 @@ test('filewatcher: ignoreAllExternalChanges 忽略全部并清空队列', async 
     assert.strictEqual(t2.pendingExternalChange, false);
   }
 ));
+
+test('filewatcher: refreshTabsMeta 优先批量 file_meta_batch；不支持时逐个兜底', async () => {
+  // 情形一：后端支持批量 → 一次 IPC 取回全部
+  await withEditor(
+    { captureInitErr: true, invokeImpl: async (cmd, args) => {
+      if (cmd === 'file_meta_batch') return (args.paths || []).map(() => ({ error: false, meta: { mtime: 1, size: 2 } }));
+      if (cmd === 'file_meta') return { mtime: 9, size: 9 };
+      return undefined;
+    } },
+    async (w, ed) => {
+      const t1 = { filePath: 'C:/a.md' };
+      const t2 = { filePath: 'C:/b.md' };
+      await ed.refreshTabsMeta([t1, t2, {}]);
+      assert.deepStrictEqual(t1.fileMeta, { mtime: 1, size: 2 }, '应来自批量结果');
+      assert.deepStrictEqual(t2.fileMeta, { mtime: 1, size: 2 }, '应来自批量结果');
+    }
+  );
+  // 情形二：不支持批量（桩未实现，返回 undefined）→ 逐个 file_meta 兜底
+  await withEditor(
+    { captureInitErr: true, invokeImpl: async (cmd) => (cmd === 'file_meta' ? { mtime: 7, size: 8 } : undefined) },
+    async (w, ed) => {
+      const t = { filePath: 'C:/c.md' };
+      await ed.refreshTabsMeta([t]);
+      assert.deepStrictEqual(t.fileMeta, { mtime: 7, size: 8 }, '批量不可用应逐个兜底');
+    }
+  );
+});

@@ -358,6 +358,26 @@ fn file_meta(path: String) -> Result<Option<FileMeta>, String> {
     }))
 }
 
+// 批量版 file_meta：一次 IPC 取回多个路径的元数据，替代「每个已打开文件各发一次 file_meta」的
+// 后台轮询（B）与「打开文件夹时逐个刷新」（D），显著减少 IPC 往返与后台 CPU。
+// 语义与单项 file_meta 对齐：error=true 表示读取失败（调用方应跳过），meta=None 表示文件不存在。
+#[derive(serde::Serialize, Clone)]
+struct FileMetaResult {
+    error: bool,
+    meta: Option<FileMeta>,
+}
+
+#[tauri::command]
+fn file_meta_batch(paths: Vec<String>) -> Vec<FileMetaResult> {
+    paths
+        .into_iter()
+        .map(|p| match file_meta(p) {
+            Ok(meta) => FileMetaResult { error: false, meta },
+            Err(_) => FileMetaResult { error: true, meta: None },
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn is_directory(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
@@ -1256,6 +1276,7 @@ pub fn run() {
             read_file,
             write_file,
             file_meta,
+            file_meta_batch,
             is_directory,
             list_dir,
             search_files,
