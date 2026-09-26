@@ -349,17 +349,25 @@
       // cm.getValue()（大文档切 tab 时，updateWordCount/updateOutline/render/rebuildScrollSync 各来一次）。
       updateWordCount(content) {
         const text = (content == null) ? this.cm.getValue() : content;
-        const { chars, lines } = WordCount.countStats(text);
+        // skipWords：状态栏只用 chars / lines，词数需要两次全量正则 + 逐字符扫描，纯浪费
+        //（大文档每次防抖键入省一遍整篇扫描，2026-09-26）。
+        const { chars, lines } = WordCount.countStats(text, { skipWords: true });
         // 原始字数 = 原文文件字符数（含 markdown 标记/空白），预览字数 = 渲染后可见文本字符数。
         // 两者统一按字符数口径，保证「原文 ≥ 预览」恒成立（中文/英文均如此）。
         this.wordCountEl.textContent = `${this.t('words')}: ${chars}`;
         // 预览字数：统计预览渲染后的可见文本字符数（区别于原文口径）。
         // 纯预览大文档（虚拟滚动窗口）时统计的是当前渲染窗口的文本，随滚动重渲染更新。
-        const previewChars = (typeof WordCount.countPreviewText === 'function' && this.preview)
-          ? WordCount.countPreviewText(this.preview)
-          : 0;
+        // 状态栏没有该元素时整段 DOM 遍历直接跳过（此前算了也没处用，2026-09-26）。
+        // 预览隐藏时（纯编辑模式 / 预览折叠，offsetParent 为 null）统计不可见 DOM 纯属浪费：
+        // 跳过遍历并保留上次显示值，等预览重新可见后的下一次统计刷新（2026-09-26）。
         if (this.previewWordCountEl) {
-          this.previewWordCountEl.textContent = `${this.t('previewWords')}: ${previewChars}`;
+          const pv = this.preview;
+          if (!pv || pv.offsetParent !== null) {
+            const previewChars = (typeof WordCount.countPreviewText === 'function' && pv)
+              ? WordCount.countPreviewText(pv)
+              : 0;
+            this.previewWordCountEl.textContent = `${this.t('previewWords')}: ${previewChars}`;
+          }
         }
         this.lineCountEl.textContent = `${this.t('lines')}: ${lines}`;
       },

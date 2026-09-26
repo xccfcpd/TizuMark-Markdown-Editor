@@ -20,97 +20,6 @@
           this.updateOutline();
         }, 300);
       },
-      // 按空行切分为逻辑块，跟踪围栏代码块（内部不切分）
-      parseBlocks(content) {
-        const lines = content.split('\n');
-        const blocks = [];
-        let inFence = false;
-        let fenceChar = '';
-        let fenceCount = 0;
-        let blockStart = -1;
-  
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          const trimmed = line.trim();
-  
-          if (!inFence && (trimmed.startsWith('```') || trimmed.startsWith('~~~'))) {
-            const fc = trimmed[0];
-            const match = trimmed.match(new RegExp('^\\' + fc + '{3,}'));
-            if (match) {
-              inFence = true;
-              fenceChar = fc;
-              fenceCount = match[0].length;
-              if (blockStart >= 0) {
-                blocks.push({ startLine: blockStart, endLine: i - 1 });
-                blockStart = -1;
-              }
-              blockStart = i;
-              continue;
-            }
-          }
-  
-          if (inFence) {
-            if (trimmed.startsWith(fenceChar)) {
-              const match = trimmed.match(new RegExp('^\\' + fenceChar + '{' + fenceCount + ',}'));
-              if (match && trimmed.replace(match[0], '').trim() === '') {
-                blocks.push({ startLine: blockStart, endLine: i });
-                blockStart = -1;
-                inFence = false;
-              }
-            }
-            continue;
-          }
-  
-          if (trimmed === '') {
-            if (blockStart >= 0) {
-              blocks.push({ startLine: blockStart, endLine: i - 1 });
-              blockStart = -1;
-            }
-          } else if (blockStart < 0) {
-            blockStart = i;
-          }
-        }
-  
-        if (blockStart >= 0) {
-          blocks.push({ startLine: blockStart, endLine: lines.length - 1 });
-        }
-  
-        return blocks;
-      },
-      // 遍历预览 DOM，收集所有块级渲染元素（用于比例映射）
-      collectBlockElements(root) {
-        const blockTags = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'TABLE', 'UL', 'OL', 'BLOCKQUOTE', 'HR', 'DETAILS', 'DIV']);
-        const result = [];
-        const walk = (el) => {
-          if (!el || !el.children) return;
-          for (const child of el.children) {
-            if (blockTags.has(child.tagName)) {
-              result.push(child);
-            } else if (child.tagName === 'IMG') {
-              result.push(child);
-            } else {
-              walk(child);
-            }
-          }
-        };
-        walk(root);
-        return result;
-      },
-      // 去掉 markdown 语法，提取用于匹配的纯文本关键词
-      cleanMarkdownForSearch(text) {
-        return text
-          .replace(/^#{1,6}\s*/, '')
-          .replace(/^[-*+]\s+/, '')
-          .replace(/^>\s*/, '')
-          .replace(/\*\*(.+?)\*\*/g, '$1')
-          .replace(/\*(.+?)\*/g, '$1')
-          .replace(/~~(.+?)~~/g, '$1')
-          .replace(/`(.+?)`/g, '$1')
-          .replace(/\[(.+?)\]\(.+?\)/g, '$1')
-          .replace(/!\[(.+?)\]\(.+?\)/g, '$1')
-          .replace(/^\d+\.\s+/, '')
-          .trim();
-      },
       // 从预览元素获取对应的源文件行号（通过 unified 嵌入的 data-source-line）
       _getSourceLine(el) {
         if (el.dataset && el.dataset.sourceLine) {
@@ -127,7 +36,9 @@
       // 无缓存：每次调用全量重建，与 legacy-master 行为一致（用户报告精准匹配）。
       // 3dac68c 引入的 dirty 缓存 + 布局指纹会造成某些场景下位置表过期（编辑器布局变化但
       // preview scrollHeight 未变时缓存命中 → 用旧表插值），此版本回退到 legacy 行为。
-      _computedPosition() {
+      // elements 可选：调用方（rebuildScrollSync）已查询过同一批元素时直接传入，
+      // 省掉一次对整棵预览 DOM 的 querySelectorAll（2026-09-26）。
+      _computedPosition(elements) {
         // 缓存：大文档（数千行/数千块级元素）下，原实现每次滚动 tick 都全量重算
         //（对所有行调 cm.heightAtLine + 重建与行数等长的数组），导致滚动掉帧。
         // 仅在「预览重渲染」（rebuildScrollSync 置脏）或「编辑器内容变化」（changeGeneration 改变）
@@ -143,7 +54,7 @@
         }
         this._positionCacheDirty = false;
         this._positionLineCount = lineCount;
-        const allElements = this.preview.querySelectorAll('[data-source-line]');
+        const allElements = elements || this.preview.querySelectorAll('[data-source-line]');
         const anchors = [];
         const seenLines = new Set();
   
@@ -242,11 +153,13 @@
 
         // 预览内容变化：滚动同步位置表作废，下次 _computedPosition 重算（缓存守卫）
         this._positionCacheDirty = true;
-        // 构建平行位置数组（使用 data-source-line）
-        this._computedPosition();
-  
-        // 生成 _linePositions（兼容 updatePreview 滚动恢复）
+        // 一次性取出预览中所有 [data-source-line] 元素：位置表与下方的 _linePositions 共用
+        // 这一次查询 —— 原先同一次重建对整棵 DOM 查了两遍（2026-09-26）。
         const allElements = Array.from(this.preview.querySelectorAll('[data-source-line]'));
+        // 构建平行位置数组（使用 data-source-line）
+        this._computedPosition(allElements);
+  
+        // 生成 _linePositions（兼容 updatePreview 滚动恢复）；allElements 复用上方那一次查询
         const previewRect = this.preview.getBoundingClientRect();
         const st = this.preview.scrollTop;
         const sh = this.preview.scrollHeight || 1;
@@ -443,99 +356,6 @@
         const targetTop = this.cm.heightAtLine(bestLine, 'local');
         if (this.activeTab) this.activeTab.scrollPos = { top: targetTop, left: 0 };
         this.cm.scrollTo(0, targetTop);
-      },
-      // 按 markdown 块级元素边界分割源码，与 pulldown-cmark 渲染输出对齐
-      // 注意：此方法保留用于兼容旧的 _blocks 数组引用
-      _splitMarkdownBlocks(lines) {
-        const blocks = [];
-        let i = 0;
-  
-        while (i < lines.length) {
-          while (i < lines.length && lines[i].trim() === '') i++;
-          if (i >= lines.length) break;
-  
-          const startLine = i;
-          const line = lines[i].trim();
-  
-          // 代码围栏：作为一个整体 block
-          if (line.startsWith('```') || line.startsWith('~~~')) {
-            const fence = line.match(/^(`{3,}|~{3,})/)[0];
-            i++;
-            while (i < lines.length) {
-              if (lines[i].trim().startsWith(fence)) break;
-              i++;
-            }
-            if (i < lines.length) i++;
-            blocks.push({ startLine, endLine: i - 1 });
-            continue;
-          }
-  
-          // 标题：始终是单行 block（demo 中每个 # 行 = 一个预览元素）
-          if (/^#{1,6}\s/.test(line)) {
-            blocks.push({ startLine, endLine: i });
-            i++;
-            continue;
-          }
-  
-          // 水平分割线：单行 block
-          if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-            blocks.push({ startLine, endLine: i });
-            i++;
-            continue;
-          }
-  
-          // 表格：连续的 | 行
-          if (line.startsWith('|')) {
-            while (i < lines.length && lines[i].trim().startsWith('|')) i++;
-            blocks.push({ startLine, endLine: i - 1 });
-            continue;
-          }
-  
-          // 段落/列表/引用：消费连续非空行，遇到标题/围栏/分割线/表格时停止
-          i++;
-          while (i < lines.length && lines[i].trim() !== '') {
-            const t = lines[i].trim();
-            if (/^#{1,6}\s/.test(t) ||
-                t.startsWith('```') || t.startsWith('~~~') ||
-                /^(-{3,}|\*{3,}|_{3,})\s*$/.test(t) ||
-                t.startsWith('|')) {
-              break;
-            }
-            i++;
-          }
-          blocks.push({ startLine, endLine: i - 1 });
-        }
-  
-        return blocks;
-      },
-      // 获取预览 DOM 的直系 block 级子元素（与 blocks 顺序一一对应）
-      _getPreviewBlockElements() {
-        const tags = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'TABLE', 'UL', 'OL', 'BLOCKQUOTE', 'HR', 'DETAILS', 'DIV', 'DL', 'FIGURE', 'IMG']);
-        return Array.from(this.preview.children).filter(el => tags.has(el.tagName));
-      },
-      // 像素比例兜底：在文档中均匀取样 20 个点
-      _fallbackPositionMap(totalLines) {
-        const positions = [{ line: 0, fraction: 0 }];
-        const step = Math.max(1, Math.floor(totalLines / 20));
-        for (let l = step; l < totalLines - 1; l += step) {
-          positions.push({ line: l, fraction: l / totalLines });
-        }
-        positions.push({ line: totalLines - 1, fraction: 1 });
-        return positions;
-      },
-      // 超大文档预览保护：返回前 maxLines 行内容。
-      // 若在代码围栏内被截断，向后补足到下一个围栏，避免后续整段被当作代码块。
-      _headForPreview(content, maxLines) {
-        const lines = content.split('\n');
-        if (lines.length <= maxLines) return content;
-        let head = lines.slice(0, maxLines).join('\n');
-        const fences = (head.match(/^\s*```/gm) || []).length;
-        if (fences % 2 === 1) {
-          const rest = lines.slice(maxLines).join('\n');
-          const idx = rest.indexOf('```');
-          if (idx >= 0) head += '\n' + rest.slice(0, idx + 3);
-        }
-        return head;
       },
       // P2-1 Strangler（ADR-3）：以下 5 个虚拟窗口方法逻辑已迁至 PreviewController，
       // 当前保留薄委托，待全部调用点迁移后删除。

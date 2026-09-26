@@ -220,6 +220,15 @@
           finalHtml = finalHtml.replace(/data-source-line="(\d+)"/g, (m, n) => `data-source-line="${parseInt(n, 10) + off}"`);
         }
 
+        // 内容守卫（2026-09-26）：按本次渲染的 HTML 预判各后处理是否有活可干，免去每次
+        // 重渲染在整棵预览 DOM 上反复 querySelectorAll / TreeWalker。语义等价 ——
+        // 某类子串不存在时，对应选择器必为空（或该段处理本身就是空操作），结论不变。
+        const hasPre = finalHtml.indexOf('<pre') !== -1;
+        const hasDetails = finalHtml.indexOf('<details') !== -1;
+        const hasCheckbox = finalHtml.indexOf('checkbox') !== -1;
+        const hasHeading = /<h[1-6][\s>]/.test(finalHtml);
+        const hasFootnote = finalHtml.indexOf('footnote-ref') !== -1;
+
         this.app._canScroll.editor = false;
         this.app._canScroll.preview = false;
         if (this.app._previewVirtual && this.app.previewWindow) {
@@ -253,6 +262,7 @@
           diagramPrep = PreviewPost.prepareDiagramPlaceholders(this.app.preview, {
             isDark: this.app.isDark,
             mermaidCache: this.app._mermaidCache,
+            html: finalHtml,
           });
         } catch (e) { console.warn('[preview] Diagram prepare error:', e); }
 
@@ -264,6 +274,8 @@
           escapeAttr: (s) => this.app.escapeAttr(s),
           headingToId: (s) => this.app.headingToId(s),
           mermaidCache: this.app._mermaidCache,
+          // 供各后处理器做「本次有没有活可干」的子串预判（见 preview-post.js 的 opts.html 守卫）
+          html: finalHtml,
         };
 
         // 代码块「定型」也必须在同一个**同步**阶段做完：高亮（hljs）+ 行号 + 复制按钮。
@@ -275,14 +287,18 @@
         //   · mermaid 系仍是 <pre><code class="language-mermaid">，由两者的既有规则跳过
         //     （code-block.js 跳过 language-(math|mermaid|katex)；另外还显式跳过
         //     pre.diagram-src-pending —— 它们的源码要在渲染阶段被引擎原样读取）。
-        try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
-        try {
-          CodeBlock.processCodeBlocks(this.app.preview, {
-            hljs,
-            cache: this.app._hljsCache,
-            lineNumbers: this.app.preview.classList.contains('code-line-numbers'),
-          });
-        } catch (e) { console.warn('[preview] Code block error:', e); }
+        // 内容守卫：无 <pre> 时整段代码后处理（复制按钮 + 高亮/行号）直接跳过，
+        // 免去每次重渲染对整棵 DOM 的两次 `pre code` 查询（2026-09-26）。
+        if (hasPre) {
+          try { PreviewPost.addCopyButtons(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Copy btn error:', e); }
+          try {
+            CodeBlock.processCodeBlocks(this.app.preview, {
+              hljs,
+              cache: this.app._hljsCache,
+              lineNumbers: this.app.preview.classList.contains('code-line-numbers'),
+            });
+          } catch (e) { console.warn('[preview] Code block error:', e); }
+        }
 
         // 超大文档：顶部全局横幅提示（不塞进预览内容，避免随滚动/重渲染消失）
         if (this.app._previewTruncated) {
@@ -300,20 +316,21 @@
         // Markdown 里手写的原生 <details> 仍保持既有「渲染后展开」行为，不做改动。
         // 注意：??? 内的 ECharts / Markmap 在 display:none 下量不到宽高，故
         // processDiagrams 渲染图表时会临时展开其祖先 <details>（见 preview-post.js）。
-        this.app.preview.querySelectorAll('details:not([open]):not([data-admonition])').forEach(el => el.open = true);
+        if (hasDetails) this.app.preview.querySelectorAll('details:not([open]):not([data-admonition])').forEach(el => el.open = true);
         // 任务列表 checkbox：remark-gfm 默认输出 disabled 不可交互，渲染后移除 disabled 使其可点击
-        this.app.preview.querySelectorAll('input[type="checkbox"][disabled]').forEach(cb => cb.removeAttribute('disabled'));
+        if (hasCheckbox) this.app.preview.querySelectorAll('input[type="checkbox"][disabled]').forEach(cb => cb.removeAttribute('disabled'));
 
         // 其余**同步**后处理也在这里做完：emoji / 数学 / 缩写 / 脚注 / 标题锚点。
         // 它们只读写 DOM 文本、与图片内联没有依赖关系，提前后浏览器一次绘制就是最终形态；
         // 顺带让图表渲染（最慢的一环）可以在下面与图片内联**并行**跑。
-        try { PreviewPost.processEmojiShortcodes(this.app.preview); } catch (e) { console.warn('[preview] Emoji error:', e); }
+        try { PreviewPost.processEmojiShortcodes(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Emoji error:', e); }
         // 无 `$` = 无公式：整段 KaTeX 后处理（TreeWalker 保护 + renderMathInElement 全 DOM 扫描）
         // 全部跳过 —— 纯文本/代码/图表文档每次重渲染都省一次全 DOM 遍历（2026-09-26）。
-        try { if (finalHtml.indexOf('$') !== -1) PreviewPost.processMath(this.app.preview); } catch (e) { console.warn('[preview] Math error:', e); }
+        try { if (finalHtml.indexOf('$') !== -1) PreviewPost.processMath(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Math error:', e); }
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
-        try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
-        try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
+        // 内容守卫：无脚注引用时跳过整棵 DOM 的 .footnote-ref / .footnote-backref 查询（2026-09-26）
+        if (hasFootnote) { try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); } }
+        if (hasHeading) { try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); } }
 
         // 图表渲染（Mermaid + 原生引擎）**立刻启动**，与下面的图片内联并行：
         // 命中缓存的图已在同步阶段复原，这里只渲染没缓存过的；await 放在图片内联之后。
@@ -335,7 +352,8 @@
         // 轨道在短代码块上也出现），只有内容真的超出 max-height 时才显式设 auto（必须
         // 显式 'auto'，不能清空让 CSS 接管——CSS 已是 hidden，清空后还是 hidden）。
         // 代码块按需滚动：仅当设置「代码块滚动条」开启时生效；关闭时由 CSS(.code-no-scroll)撑开高度
-        if (!(this.app.settings && this.app.settings.codeScroll === false)) {
+        // `.code-scroll` 由上面的 CodeBlock 生成；无 <pre> 时必然一个都没有，跳过整棵 DOM 查询（2026-09-26）
+        if (hasPre && !(this.app.settings && this.app.settings.codeScroll === false)) {
           this.app.preview.querySelectorAll('.code-scroll').forEach((el) => {
             el.style.overflowY = el.scrollHeight > el.clientHeight + 1 ? 'auto' : 'hidden';
           });

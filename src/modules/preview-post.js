@@ -42,7 +42,10 @@ const EMOJI_MAP = {
   ':hourglass:': '⌛', ':alarm_clock:': '⏰', ':stopwatch:': '⏱️', ':coffee_cup:': '☕'
 };
 
-function processEmojiShortcodes(preview) {
+function processEmojiShortcodes(preview, opts) {
+  // 内容守卫：本次渲染的 HTML 里一个 ':' 都没有 → 不可能出现 :shortcode:，
+  // 直接跳过整棵 DOM 的 TreeWalker 扫描（2026-09-26）。无 opts.html 时照旧执行。
+  if (opts && typeof opts.html === 'string' && opts.html.indexOf(':') === -1) return;
   const emojiMap = EMOJI_MAP;
   // 主题/滚动重渲染时，命中缓存的图表在**同步阶段**就已经是 <svg>（不是 <pre><code>），
   // 若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，造成"同一份源码第一次正常、
@@ -163,11 +166,15 @@ function protectUnpairedDollar(text) {
   }
   return out;
 }
-function processMath(preview) {
+function processMath(preview, opts) {
   if (typeof renderMathInElement === 'undefined') {
     if (typeof console !== 'undefined') console.warn('[math] renderMathInElement not loaded');
     return;
   }
+  // opts.html（可选）：本次渲染的 HTML 串。给了就按子串预判公式锚点/编号/标签是否存在，
+  // 免去每次重渲染对整棵预览 DOM 的多次全量查询（2026-09-26）。
+  // 不传（旧调用方 / 单测）则不加守卫，行为与原来完全一致。
+  const html = (opts && typeof opts.html === 'string') ? opts.html : null;
   try {
     // 先把不成对的 $ / $$ 包进 <span class="katex-ignore">，让 KaTeX 跳过、原样显示 $，
     // 避免孤 $ 跨段配对吞掉正文/表格。
@@ -214,15 +221,19 @@ function processMath(preview) {
     // 公式自动编号：unified-renderer 给带 \label 的块级公式标注了统一锚点 data-eq-anchor
     // （自动编号 eq-N / 自定义 \tag eql-<slug>），这里把它落成 id，
     // 使 \eqref / \ref / \cref / \autoref 生成的 #锚点 都能跳转到对应公式。
-    preview.querySelectorAll('[data-eq-anchor]').forEach((el) => {
-      const a = el.getAttribute('data-eq-anchor');
-      if (a && !el.id) el.id = a;
-    });
+    if (!html || html.indexOf('data-eq-anchor') !== -1) {
+      preview.querySelectorAll('[data-eq-anchor]').forEach((el) => {
+        const a = el.getAttribute('data-eq-anchor');
+        if (a && !el.id) el.id = a;
+      });
+    }
     // 兼容旧产物（只带 data-eq-number 的 HTML）
-    preview.querySelectorAll('[data-eq-number]').forEach((el) => {
-      const n = el.getAttribute('data-eq-number');
-      if (n && !el.id) el.id = 'eq-' + n;
-    });
+    if (!html || html.indexOf('data-eq-number') !== -1) {
+      preview.querySelectorAll('[data-eq-number]').forEach((el) => {
+        const n = el.getAttribute('data-eq-number');
+        if (n && !el.id) el.id = 'eq-' + n;
+      });
+    }
 
     renderMathInElement(preview, {
       delimiters: [
@@ -244,7 +255,7 @@ function processMath(preview) {
     // 公式编号「点一下复制 \eqref{label}」：KaTeX 把 \tag 渲染成 .tag 元素，
     // 绑在它上面（找不到则退到整个公式块）。data-eq-label 由 unified-renderer 输出；
     // 用 dataset 标记避免重复绑定（预览会反复重渲染，否则监听器会累积）。
-    preview.querySelectorAll('[data-eq-label]').forEach((el) => {
+    if (!html || html.indexOf('data-eq-label') !== -1) preview.querySelectorAll('[data-eq-label]').forEach((el) => {
       if (el.dataset.eqCopyBound) return;
       el.dataset.eqCopyBound = '1';
       const label = el.getAttribute('data-eq-label');
@@ -277,6 +288,8 @@ function processMath(preview) {
 
 function processAbbreviations(preview, opts) {
   const { escapeAttr, escapeHtml } = opts;
+  // 内容守卫：本次 HTML 里没有 abbr 数据容器 → 整段（含全 DOM TreeWalker）跳过（2026-09-26）。
+  if (typeof opts.html === 'string' && opts.html.indexOf('abbr-data') === -1) return;
   const dataDiv = preview.querySelector('#abbr-data');
   if (!dataDiv) return;
   try {
@@ -343,6 +356,8 @@ function processAbbreviations(preview, opts) {
 
 function processHeadings(preview, opts) {
   const { headingToId } = opts;
+  // 内容守卫：本次 HTML 里没有任何 h1~h6 → 跳过整棵 DOM 的标题查询（2026-09-26）。
+  if (typeof opts.html === 'string' && !/<h[1-6][\s>]/.test(opts.html)) return;
   const idCount = {};
   preview.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(heading => {
     if (heading.id) return;
@@ -508,6 +523,8 @@ function getRawCodeText(pre) {
 
 function addCopyButtons(preview, opts) {
   const { t } = opts;
+  // 内容守卫：本次 HTML 里没有 <pre> → 不存在代码块，跳过整棵 DOM 的查询（2026-09-26）。
+  if (typeof opts.html === 'string' && opts.html.indexOf('<pre') === -1) return;
   preview.querySelectorAll('pre').forEach(pre => {
     if (pre.querySelector('.copy-btn')) return;
     if (pre.querySelector('code.language-mermaid')) return;
@@ -836,6 +853,9 @@ function prepareDiagramPlaceholders(preview, opts) {
   const opt = opts || {};
   const jobs = { mermaid: [], native: [], themeKey: opt.isDark ? 'dark' : 'light' };
   if (!preview) return jobs;
+  // 内容守卫：本次 HTML 里没有 <pre> → 不存在围栏代码块，也就没有图表可渲染。
+  // 跳过 PlantUML/D2 改写与两轮对整棵 DOM 的 `pre > code` 查询（2026-09-26）。
+  if (typeof opt.html === 'string' && opt.html.indexOf('<pre') === -1) return jobs;
   // PlantUML / D2 → Mermaid 源码改写（同步）：必须在占位之前，改写后它们才归入 mermaid 系
   try { convertMermaidSources(preview); } catch (e) { console.warn('[diagrams] PlantUML/D2 转换失败：', e); }
   jobs.mermaid = prepareMermaidPlaceholders(preview, opt);

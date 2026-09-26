@@ -380,7 +380,9 @@
   
         // 编辑器滚动 → 同步预览（demo 的 onScroll 思路）
         this.cm.on('scroll', () => {
-          const container = document.querySelector('.editor-container');
+          // 容器是 index.html 里的静态 <main class="editor-container">，缓存引用即可，
+          // 不必在每次滚动事件回调里重做一次 document.querySelector（2026-09-26）。
+          const container = this._editorContainerEl || (this._editorContainerEl = document.querySelector('.editor-container'));
           // 编辑器被隐藏（纯预览模式 / 编辑器折叠）时 getScrollInfo().top 恒为 0，
           // 若写回 scrollPos 会把已保存位置清零，导致切回编辑跳顶部。仅当编辑器可见才更新快照。
           if (container.classList.contains('preview-mode') || container.classList.contains('editor-collapsed')) return;
@@ -408,7 +410,8 @@
   
         // 预览滚动 → 同步编辑器（demo 的 onScroll 思路，方向相反）
         this.preview.addEventListener('scroll', () => {
-          const container = document.querySelector('.editor-container');
+          // 同上方编辑器滚动：容器引用缓存，避免每帧滚动都查询一次 DOM（2026-09-26）。
+          const container = this._editorContainerEl || (this._editorContainerEl = document.querySelector('.editor-container'));
           // 持续记录预览滚动位置（预览可见时）。edit/preview 切换恢复以及滚动同步都依赖它；
           // 预览折叠时其 scrollTop 不可靠，跳过以免覆盖有效值。
           const pt = (this._editorTab && this.tabs && this.tabs.indexOf(this._editorTab) >= 0)
