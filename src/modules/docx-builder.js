@@ -1,15 +1,15 @@
 // docx 真 OOXML 构建器：把「DOM→中间结构」转成 DocxLib 的 Document 并打包成 Blob。
 //
-// 在主线程运行（lib/docx.min.js 由 index.html 常驻加载）。曾把这段逻辑放在 Web Worker 里，
-// 但部分 Tauri/WebView 环境下 Worker 不可用（自定义协议对 Worker 脚本加载不稳），
-// 整条 docx 主路径会静默降级成 html-docx 的 altChunk——公式全变纯文本、图片变占位符。
-// 主线程直构建无此不确定性，代价是打包期间主线程短暂阻塞（有 loading 遮罩，可接受）。
+// 运行位置：优先由 export.js 把它与 docx 库内联进 Web Worker 脚本里执行（释放主线程）；
+// 若 Worker 不可用 / 依赖加载失败 / 超时 / 报错，则回退到主线程直构建（lib/docx.min.js
+// 由 index.html 常驻加载）。主线程直构建时打包期间会有短暂阻塞（有 loading 遮罩兜底）。
+// 因此本模块需同时支持三种全局：node(module.exports)、浏览器(window)、Worker(self)。
 //
 // 双导出：node 走 module.exports（测试），浏览器走 window 全局。
 (function () {
   'use strict';
 
-  // worker 已弃用；node 测试走全局 DocxLib，浏览器走 window.DocxLib。
+  // 解析 docx 库：node 测试走全局，浏览器走 window.DocxLib，Worker 走 self.DocxLib。
   function resolveDocxLib() {
     if (typeof window !== 'undefined' && window && window.DocxLib) return window.DocxLib;
     if (typeof self !== 'undefined' && self && self.DocxLib) return self.DocxLib;

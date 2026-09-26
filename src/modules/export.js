@@ -1898,43 +1898,40 @@
           } catch (e) {
             return reject(e);
           }
-          let depUrl = null;
-          // 主线程先 fetch 两个依赖文本（同源 fetch 在 Tauri webview 通常可靠），拼成 blob URL。
+          // 主线程先 fetch 两个依赖文本（同源 fetch 在 Tauri webview 通常可靠），
+          // 直接内联进 Worker 自身脚本 —— 不使用 importScripts：
+          //   · importScripts(绝对URL) 在老 Tauri/WebView 下加载不稳；
+          //   · 生产 CSP 的 script-src 未放行 blob:，importScripts(blobURL) 会被拦截。
+          // 内联后 Worker 只有一个「自身脚本」，仅受 worker-src（'self' blob:）约束，稳。
           Promise.all([
             fetch(libUrl).then((r) => r.text()),
             fetch(builderUrl).then((r) => r.text()),
           ]).then(([libText, builderText]) => {
-            const depBlob = new Blob([libText + '\n;\n' + builderText], { type: 'application/javascript' });
-            depUrl = URL.createObjectURL(depBlob);
-            // 经典 Worker（importScripts 仅经典 Worker 可用）：启动脚本仅 importScripts(depUrl)。
-            const src =
+            const handler =
               "self.onmessage=async function(e){" +
               "try{" +
-              "importScripts(" + JSON.stringify(depUrl) + ");" +
               "var blob=await self.buildDocxFromStructure(e.data.structure,e.data.page);" +
               "var buf=await blob.arrayBuffer();" +
               "self.postMessage({ok:true,buf:buf},[buf]);" +
               "}catch(err){self.postMessage({ok:false,error:String((err&&err.stack)||err)});}" +
               "};";
+            const src = libText + '\n;\n' + builderText + '\n;\n' + handler;
             let worker = null;
             let settled = false;
             let url = null;
             try {
-              const blob = new Blob([src], { type: 'application/javascript' });
-              url = URL.createObjectURL(blob);
+              url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
               worker = new Worker(url);
             } catch (e) {
               if (url) { try { URL.revokeObjectURL(url); } catch (_) {} }
-              if (depUrl) { try { URL.revokeObjectURL(depUrl); } catch (_) {} }
               return reject(e);
             }
-            // Worker 构建整体超时（含 importScripts 静默卡住的情况），到时回退主线程。
+            // Worker 构建整体超时（含脚本加载静默卡住的情况），到时回退主线程。
             const timer = setTimeout(() => {
               if (settled) return;
               settled = true;
               try { worker.terminate(); } catch (_) {}
               try { URL.revokeObjectURL(url); } catch (_) {}
-              try { URL.revokeObjectURL(depUrl); } catch (_) {}
               reject(new Error('docx Worker 构建超时'));
             }, 60000);
             worker.onmessage = (ev) => {
@@ -1948,7 +1945,6 @@
                   clearTimeout(timer);
                   try { worker.terminate(); } catch (_) {}
                   try { URL.revokeObjectURL(url); } catch (_) {}
-                  try { URL.revokeObjectURL(depUrl); } catch (_) {}
                   reject(new Error('docx Worker 产出为空/非法，回退主线程'));
                   return;
                 }
@@ -1958,14 +1954,12 @@
                 // 真正实现「导出内存压力隔离」，避免 worker 残留导致主线程依旧内存高压。
                 try { worker.terminate(); } catch (_) {}
                 try { URL.revokeObjectURL(url); } catch (_) {}
-                try { URL.revokeObjectURL(depUrl); } catch (_) {}
                 resolve(d.buf);
               } else {
                 settled = true;
                 clearTimeout(timer);
                 try { worker.terminate(); } catch (_) {}
                 try { URL.revokeObjectURL(url); } catch (_) {}
-                try { URL.revokeObjectURL(depUrl); } catch (_) {}
                 reject(new Error(d.error || 'docx Worker 构建失败'));
               }
             };
@@ -1975,14 +1969,12 @@
               clearTimeout(timer);
               try { worker.terminate(); } catch (_) {}
               try { URL.revokeObjectURL(url); } catch (_) {}
-              try { URL.revokeObjectURL(depUrl); } catch (_) {}
               reject(new Error('docx Worker 错误: ' + (err && err.message ? err.message : err)));
             };
             // structure 含 Uint8Array 图片数据：structured clone 拷贝即可（不 transfer，避免主线程侧被置空）。
             worker.postMessage({ structure, page });
           }).catch((err) => {
             // 依赖 fetch 失败：回退主线程。
-            if (depUrl) { try { URL.revokeObjectURL(depUrl); } catch (_) {} }
             reject(new Error('docx 依赖加载失败，回退主线程: ' + (err && err.message ? err.message : err)));
           });
         });

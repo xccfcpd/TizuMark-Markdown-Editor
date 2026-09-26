@@ -1442,7 +1442,7 @@
 
 <script src="lib/unified-bundle.js"></script>
 <script src="lib/md-links.js"></script>
-<!-- docx 真 OOXML 库：主线程直构建（Worker 在部分 Tauri/WebView 环境不可用，已弃用 Worker 路径） -->
+<!-- docx 真 OOXML 库：主线程常驻加载（导出优先在 Web Worker 内联此库构建，失败回退主线程直构建） -->
 <script src="lib/docx.min.js"></script>
 <script src="lib/mathml2omml.min.js"></script>
 <script src="modules/code-block.js"></script>
