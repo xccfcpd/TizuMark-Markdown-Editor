@@ -208,7 +208,10 @@
         // 内嵌 base64 图片改为按内容缓存的 Blob URL，避免每次重渲染重复解码（大文档多图时是关键性能点）
         // 打开"保护窗口"：这段期间新建的 blob URL 还没进 DOM，不能被 LRU 淘汰/撤销（否则图片会裂）
         this.app._imageURLBuilding = true;
-        finalHtml = finalHtml.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, (m) => this.app.getCachedImageURL(m));
+        // 无内联图片时跳过整段正则扫描（纯文本/公式文档常见），省一次全串正则
+        if (finalHtml.indexOf('data:image/') !== -1) {
+          finalHtml = finalHtml.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, (m) => this.app.getCachedImageURL(m));
+        }
 
         // 滑动窗口：渲染的是切片后的源码，需把 data-source-line 还原为绝对行号（与编辑区一致），
         // 否则大纲锚点 / 滚动定位会错位

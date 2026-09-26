@@ -38,10 +38,19 @@ function detectLanguage(hljs, block) {
 // clear —— settings.js）。这里与 preview-post.js 的 capCache 保持同一策略与同一上限：
 // Map 保持插入序，超限删最旧一条（审计发现，2026-09-25）。
 const CODE_CACHE_MAX_ENTRIES = 300;
+// 同时按「总字节」封顶：每条是整段代码的高亮 HTML（可达几十 KB），仅按条数(300)最坏会保留十余 MB。
+const CODE_CACHE_MAX_BYTES = 16 * 1024 * 1024; // 16MB
 function capCache(cache) {
-  if (!cache || typeof cache.size !== 'number' || cache.size <= CODE_CACHE_MAX_ENTRIES) return;
-  const oldest = cache.keys().next().value;
-  if (oldest !== undefined) cache.delete(oldest);
+  if (!cache || typeof cache.size !== 'number') return;
+  let total = 0;
+  for (const v of cache.values()) total += (typeof v === 'string' ? v.length : 0);
+  while (cache.size > CODE_CACHE_MAX_ENTRIES || total > CODE_CACHE_MAX_BYTES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    const v = cache.get(oldest);
+    total -= (typeof v === 'string' ? v.length : 0);
+    cache.delete(oldest);
+  }
 }
 
 function highlightLine(hljs, lang, line) {
