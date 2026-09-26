@@ -142,7 +142,7 @@
         return raw;
       },
       saveSettings() {
-        try { localStorage.setItem('tizumark-settings', JSON.stringify(this.settings)); } catch {}
+        try { localStorage.setItem('tizumark-settings', JSON.stringify(this.settings)); } catch (e) { RuntimeEnv.warnOnce('settings:save', e); }
       },
       // 只把 customFonts 字段写回 localStorage（不落盘面板内其他未应用设置）。
       // 需求（2026-08-06）：添加字体后字体列表立即保存，但编辑器/预览字体选择
@@ -154,7 +154,7 @@
           if (!stored) return;
           stored.customFonts = this.settings.customFonts;
           localStorage.setItem('tizumark-settings', JSON.stringify(stored));
-        } catch {}
+        } catch (e) { RuntimeEnv.warnOnce('settings:saveCustomFonts', e); }
       },
       // 把 this.settings 同步到设置面板各控件（initSettings 与「取消/X 恢复」共用）
       syncSettingsControls() {
@@ -214,18 +214,10 @@
       // 确保浏览器先完成一次 paint，再执行后续重活。
       // 关键：设置 spinner 的 innerHTML 后若「紧接 await 一个内部含同步重渲染的 async 函数」，
       // 该同步重活会作为微任务在 paint 之前执行，把首帧 paint 推迟到重活之后，导致 loading
-      // 只闪一帧（用户看不到）。rAF 回调后接 setTimeout(0)（宏任务，保证在 paint 之后）是
-      // 最稳的「等一帧 paint」写法：第一帧 paint 出 spinner，第二帧才开始重活（卡顿时可见）。
+      // 只闪一帧（用户看不到）。具体调度（rAF + setTimeout(0)）与无 rAF 宿主的降级
+      // 已收口到 RuntimeEnv.whenPainted，此处不再自带分支。
       _ensurePainted() {
-        return new Promise((res) => {
-          if (typeof requestAnimationFrame === 'function') {
-            requestAnimationFrame(() => setTimeout(res, 0));
-          } else {
-            // jsdom 等没有 requestAnimationFrame 的环境：直接等约一帧（16ms）再继续，
-            // 保证 resolve 不依赖浏览器 paint 调度，避免 handler 永远挂起。
-            setTimeout(res, 16);
-          }
-        });
+        return RuntimeEnv.whenPainted();
       },
       async initSettings() {
         document.getElementById('btn-settings').addEventListener('click', () => this.showSettings());

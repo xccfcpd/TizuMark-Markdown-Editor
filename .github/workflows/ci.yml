@@ -103,3 +103,56 @@ jobs:
       - name: Run cargo test
         working-directory: src-tauri
         run: cargo test
+
+  # 浏览器回归（真实 Chrome / 真实布局）：test/browser/ 下的用例验证的是 jsdom 天然测不到的
+  # 滚动同步、勾选框跳动等「依赖真实排版引擎」的行为。此前它们在任何环境都不跑 ——
+  # npm test 里检测不到 puppeteer-core 就整批跳过，CI 从来不装它，于是这类回归只能靠本机发现。
+  #
+  # 本关卡把「永远不跑」变成「跑了就报信号」，同时刻意做成**非阻塞**：
+  #   - runner 镜像是否带 Chrome、puppeteer-core 能否装上，都会影响可用性；
+  #   - 用例自身在缺环境时会 SKIP 并 exit 0（见 test/browser/*.test.cjs 开头），
+  #     故这里额外检测 SKIP 并打 ::warning::，避免"绿色"被误读成"已验证"。
+  browser:
+    name: Browser regression (real Chrome, signal only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node 22 (LTS)
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (npm ci, full)
+        run: npm ci
+
+      # 刻意**不**写进 devDependencies：一旦装上，所有机器的 `npm test` 都会去跑浏览器用例，
+      # 改变本地语义（本地范式见 ADR-7）。这里按需临时安装，仅本关卡可见。
+      - name: Install puppeteer-core (ad-hoc, not saved)
+        run: npm install --no-save puppeteer-core
+
+      - name: Locate Chrome
+        id: chrome
+        run: |
+          p=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)
+          echo "path=$p" >> "$GITHUB_OUTPUT"
+          [ -n "$p" ] || echo "::warning title=Chrome 缺失::runner 上未找到 Chrome，浏览器回归将被跳过（本关卡无实际覆盖）"
+
+      - name: Build renderer bundle
+        run: npm run build:renderer
+
+      - name: Run browser tests
+        env:
+          PUPPETEER_MODULES: ${{ github.workspace }}/node_modules
+          CHROME_PATH: ${{ steps.chrome.outputs.path }}
+        run: |
+          set +e
+          node scripts/run-tests.cjs browser 2>&1 | tee /tmp/tm-browser.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if grep -q 'SKIP:' /tmp/tm-browser.log; then
+            echo "::warning title=浏览器回归被跳过::检测到 SKIP：环境不满足（Chrome/puppeteer-core），本次无真实覆盖"
+          fi
+          exit "$status"

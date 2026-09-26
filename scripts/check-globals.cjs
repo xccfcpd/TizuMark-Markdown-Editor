@@ -35,6 +35,7 @@ const KNOWN_GLOBALS = new Set([
   'FileTypes', // 文件类型分类白名单（文件夹树 / 打开文件路由使用）
   'DiagramRenderers', // 图表引擎适配器（ECharts / WaveDrom / Graphviz / TikZ / plot / Markmap，2026-09 引入）
   'DiagramConverters', // 图表语言转换器（PlantUML/D2→Mermaid、TikZ/plot→SVG），2026-09 引入
+  'RuntimeEnv', // 运行时环境探测与诊断（宿主布局/帧调度差异收口 + warnOnce），2026-09-26 引入
   // 以下为 master 模块统一导出重构注入的 TM* 命名空间（重基后生效，均为刻意导出）
   'TMConst', 'TMCtxMenu', 'TMEditorCore', 'TMExport', 'TMFiles', 'TMFind', 'TMFont',
   'TMFormat', 'TMLayout', 'TMLifecycle', 'TMMiscUI', 'TMNotify', 'TMPreviewSync',

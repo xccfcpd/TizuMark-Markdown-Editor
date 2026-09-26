@@ -47,7 +47,11 @@
           // 「手上这个包是哪次提交」，避免把旧包的故障当成新代码的 bug 去查。
           const build = (document.body && document.body.getAttribute('data-build')) || '';
           if (el) el.textContent = 'v' + ver + (build ? ' · ' + build : '');
-        } catch (_) {}
+        } catch (e) {
+          // 版本号取不到只影响「关于」对话框的显示，不影响功能，故不弹错；
+          // 但以前完全静默 —— 保留一次性告警便于排查（版本号显示为空白时至少有线可查）。
+          RuntimeEnv.warnOnce('about:version', e);
+        }
       },
       hideAbout() {
         document.getElementById('about-dialog').classList.add('hidden');
@@ -96,7 +100,7 @@
           const ver = await TauriApi.getVersion();
           if (checkId !== undefined && this._updateCheckId !== checkId) return;
           el.textContent = 'v' + ver;
-        } catch (_) {}
+        } catch (e) { RuntimeEnv.warnOnce('update:latestVersion', e); }
       },
       async checkUpdate(showUpToDate = false) {
         // 本 fork 已彻底停用更新器：直接短路，不弹窗、不发起任何 IPC（入口已在 tauri-api.js 置为 no-op，菜单项在 index.html 隐藏）。
@@ -125,7 +129,7 @@
             const ver = await TauriApi.getVersion();
             if (this._updateCheckId !== checkId || this._updateDismissed) return;
             document.getElementById('update-current-version').textContent = ver;
-          } catch (_) {}
+          } catch (e) { RuntimeEnv.warnOnce('update:currentVersion', e); }
           const notesEl = document.getElementById('update-notes-body');
           if (update.body) {
             if (window.markdownit) {

@@ -253,7 +253,11 @@ async function fsScanDirLegacy(dirPath, result, rootDir, depth, token) {
         if (token !== __fs_scanToken) return;
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    // 逐层扫描的兜底路径：以前完全静默 —— 权限不足 / 路径中途消失时，用户只看到
+    // 「搜索结果少了一部分」且毫无线索。仅补一次性告警，不改变控制流（原本就继续返回已收集结果）。
+    RuntimeEnv.warnOnce('file-search:scanDirLegacy', e);
+  }
 }
 
 function openFileSearchDialog() {

@@ -134,8 +134,10 @@ function isBrowserTest(file) {
 }
 
 function resolvePuppeteerModules() {
-  // 优先级：显式 env > 当前 NODE_PATH > 本机固定路径
-  return process.env.PUPPETEER_MODULES || process.env.NODE_PATH || 'C:/Users/admin/node_modules';
+  // 优先级：显式 env > 当前 NODE_PATH；**没有配置就返回 null，绝不猜本机路径**。
+  // 历史教训：这里曾写死 'C:/Users/admin/node_modules' —— 换一台机器后它只会指向一个
+  // 不存在的目录，反而令人误判为「依赖已就绪，只是用例有问题」（release.js 有过同类问题）。
+  return process.env.PUPPETEER_MODULES || process.env.NODE_PATH || null;
 }
 
 function waitForDevServer(timeoutMs) {
@@ -171,7 +173,9 @@ function killDevServer() {
 }
 
 function runBrowserOne(file) {
-  const env = { ...process.env, NODE_PATH: resolvePuppeteerModules() };
+  const mods = resolvePuppeteerModules();
+  const env = { ...process.env };
+  if (mods) env.NODE_PATH = mods;   // 未配置时不注入，由子进程继承父进程环境
   const res = spawnSync(process.execPath, [file], {
     cwd: path.join(__dirname, '..'),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -232,11 +236,16 @@ function main() {
     const mods = resolvePuppeteerModules();
     let hasPuppeteer = false;
     try { require.resolve('puppeteer-core'); hasPuppeteer = true; } catch (_) {}
-    if (!hasPuppeteer) {
+    if (!hasPuppeteer && mods) {
       try { hasPuppeteer = fs.existsSync(path.join(mods, 'puppeteer-core', 'package.json')); } catch (_) {}
     }
     if (!hasPuppeteer) {
       console.log(`⚠ 跳过 ${browserFiles.length} 个浏览器测试（环境缺少 puppeteer-core / 系统 Chrome；属本地范式）。\n`);
+      if (!mods) {
+        console.log('  未配置 puppeteer-core 所在目录。需要运行这批用例时：\n' +
+          '      PUPPETEER_MODULES=<装有 puppeteer-core 的目录> npm test\n' +
+          '  （也可导出为 NODE_PATH。运行器不再内置本机路径猜测。）\n');
+      }
       // 显式提示覆盖缺口（审计发现，2026-09-24）：CI（ubuntu）恒定缺该环境，于是这批用例
       // 永远不跑且没有任何汇总痕迹 —— 涉及浏览器行为的回归只能在本地被发现。
       if (process.env.CI) console.log('⚠ 注意：CI 环境同样缺少该依赖，这批浏览器用例不会执行（已知测试缺口）。\n');

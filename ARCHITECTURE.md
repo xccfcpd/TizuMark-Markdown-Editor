@@ -97,7 +97,11 @@ app 侧字段/方法统一经 `this.app` 访问，控制器自有方法走 `this
   `scripts/dev-server.mjs`（静态 serve `src/`），`frontendDist = ../dist`。
   经典 `<script>` 全局模式在 dev server 下完全可用，**不需要 ESM 化**即可实现
   dev/release 分离；ESM 化/压缩属后续可选项，不做也不影响分离机制。
-  注：CSP 的 `unsafe-eval` 未移除（需先确认 CM/mermaid 无 eval 依赖，属独立改动）。
+  注：CSP 的 `unsafe-eval` 未移除。2026-09-26 全树实测（在 `src/` 下搜 `new Function(` / `eval(`）：
+  CodeMirror 5 与 mermaid **均未命中** —— 原记录把它们列为"待确认对象"，方向有误；真正命中的是
+  `src/lib/wavedrom/wavedrom.min.js`、`src/lib/echarts.min.js`、`src/lib/docx.min.js`、
+  `src/lib/highlight.js/languages/julia.js`。故移除该条目需先替换/隔离这几个引擎（或逐一实测
+  命中点确属死分支/仅构建期），属独立改动。在此之前它是有明确责任方的已知偏差，而非"待查项"。
 
 ### ADR-5：构建产物「缺失即可见」，而非静默降级
 - **Status**：Accepted
@@ -212,7 +216,8 @@ app 侧字段/方法统一经 `this.app` 访问，控制器自有方法走 `this
 
 1. ~~ADR-4 未完整切换~~ **已完整落地（2026-08-01）**：dev server（`scripts/dev-server.mjs` + `devUrl`）
    + `frontendDist = ../dist` 已生效。经典 `<script>` 全局模式在 dev server 下无需 ESM 化即可分离；
-   CSP 的 `unsafe-eval` 未移除（需先确认 CM/mermaid 无 eval 依赖，属独立改动）。
+   CSP 的 `unsafe-eval` 未移除 —— 阻塞方已实测为 wavedrom / echarts / docx / highlight.js(julia)；
+  CodeMirror 5 与 mermaid 实测干净（原记录方向有误），详见 ADR-4 注。
 2. **highlight.js 已升级 11.11.1（2026-08-01）**：纳入 `ensure-vendor` 再生（esbuild 三路兼容
    window/globalThis/module.exports），A/B 验证 10 种语言 9 种输出完全一致、typescript 为增强、
    语言覆盖 +8；历史「4 例退化」根因是打包形状与 loadHljs 不兼容而非版本差异（详见 git log）。
