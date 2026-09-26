@@ -308,7 +308,9 @@
         // 它们只读写 DOM 文本、与图片内联没有依赖关系，提前后浏览器一次绘制就是最终形态；
         // 顺带让图表渲染（最慢的一环）可以在下面与图片内联**并行**跑。
         try { PreviewPost.processEmojiShortcodes(this.app.preview); } catch (e) { console.warn('[preview] Emoji error:', e); }
-        try { PreviewPost.processMath(this.app.preview); } catch (e) { console.warn('[preview] Math error:', e); }
+        // 无 `$` = 无公式：整段 KaTeX 后处理（TreeWalker 保护 + renderMathInElement 全 DOM 扫描）
+        // 全部跳过 —— 纯文本/代码/图表文档每次重渲染都省一次全 DOM 遍历（2026-09-26）。
+        try { if (finalHtml.indexOf('$') !== -1) PreviewPost.processMath(this.app.preview); } catch (e) { console.warn('[preview] Math error:', e); }
         try { PreviewPost.processAbbreviations(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Abbr error:', e); }
         try { this.app.processFootnotes(); } catch (e) { console.warn('[preview] Footnotes error:', e); }
         try { PreviewPost.processHeadings(this.app.preview, postOpts); } catch (e) { console.warn('[preview] Headings error:', e); }
