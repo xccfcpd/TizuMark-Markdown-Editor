@@ -120,15 +120,19 @@
         this.app._previewTruncated = false;
         if (isLarge) {
           const focus = Number.isFinite(this.app._previewFocusLine) ? this.app._previewFocusLine : 0;
+          // 整篇只 split 一次：窗口计算与切片共用这条行数组（原先同一份内容被 split 两次，
+          // 每次分配「长度 = 行数」的字符串数组，10k 行文档下就是数万个子串）（2026-09-26）。
+          const lines = content.split('\n');
           const win = PreviewWindow.computePreviewWindow(content, focus, {
             maxLines: MAX_PREVIEW_LINES,
             lead: PREVIEW_WINDOW_LEAD,
             windowLines: PREVIEW_WINDOW_LINES,
+            lines,
           });
           this.app.previewWindow = win;
           this.app._previewSliceOffset = win.start;
           this.app._previewVirtual = (this.app.viewMode === 'preview');
-          const slice = content.split('\n').slice(win.start, win.end).join('\n');
+          const slice = lines.slice(win.start, win.end).join('\n');
           renderContent = slice.length > HEAD_RENDER_CHAR_CAP ? slice.slice(0, HEAD_RENDER_CHAR_CAP) : slice;
           this.app._previewTruncated = true;
         } else {
@@ -141,8 +145,17 @@
         const hasToc = content.includes('[TOC]') || content.includes('[toc]');
         let tocHtml = '';
         if (hasToc) {
-          tocHtml = await TauriApi.generateToc({ content });
-          if (gen !== this.app._renderGeneration) return;
+          // 单槽缓存：TOC 只依赖**全文**，与窗口切片无关。纯预览大文档靠滚动驱动重渲染时
+          // 内容并未改变 → 直接复用上次结果，省掉一次「整篇内容过 IPC + Rust 侧重解析」。
+          // 内容一变字符串即不相等，缓存自然失效，不需要额外版本号（2026-09-26）。
+          const tocCached = this.app._tocCache;
+          if (tocCached && tocCached.content === content) {
+            tocHtml = tocCached.html;
+          } else {
+            tocHtml = await TauriApi.generateToc({ content });
+            if (gen !== this.app._renderGeneration) return;
+            this.app._tocCache = { content, html: tocHtml };
+          }
         }
 
         // 仅在 loading 遮罩可见时，让出主线程两帧确保遮罩先绘制（避免大文档同步渲染期间“无 loading 白屏”）；普通打字刷新不额外延迟
@@ -228,11 +241,13 @@
         const hasCheckbox = finalHtml.indexOf('checkbox') !== -1;
         const hasHeading = /<h[1-6][\s>]/.test(finalHtml);
         const hasFootnote = finalHtml.indexOf('footnote-ref') !== -1;
+        const hasDiagramCtn = finalHtml.indexOf('diagram-container') !== -1;
+        const hasImg = finalHtml.indexOf('<img') !== -1;
 
         this.app._canScroll.editor = false;
         this.app._canScroll.preview = false;
         if (this.app._previewVirtual && this.app.previewWindow) {
-          this._renderPreviewWindowBlock(finalHtml, this.app.previewWindow, content);
+          this._renderPreviewWindowBlock(finalHtml, this.app.previewWindow, totalLines);
         } else {
           this.app.preview.style.position = '';
           this.app.preview.style.padding = '';
@@ -251,7 +266,13 @@
         // ResizeObserver 永不释放（审计发现，2026-09-24）。
         const DR = (typeof DiagramRenderers !== 'undefined') ? DiagramRenderers : null;
         if (DR && typeof DR.disposeDetachedDiagrams === 'function') {
-          try { DR.disposeDetachedDiagrams(this.app.preview); } catch (e) { console.warn('[preview] dispose diagrams error:', e); }
+          // 无图表时跳过整棵 DOM 的 .diagram-container 查询；但**注册表非空时必须执行** ——
+          // 上一代容器已脱离文档，全靠这里回收，漏调即内存只增不减（2026-09-26）。
+          const needRecycle = hasDiagramCtn
+            || (typeof DR.hasRegisteredDiagrams !== 'function' || DR.hasRegisteredDiagrams());
+          if (needRecycle) {
+            try { DR.disposeDetachedDiagrams(this.app.preview); } catch (e) { console.warn('[preview] dispose diagrams error:', e); }
+          }
         }
 
         // 图表「源码 → 占位」：**同步**执行，必须早于下面任何 await（processImages 等）。
@@ -342,7 +363,7 @@
         // 避免变成 unhandled rejection（全局红条），也避免"被抛弃的渲染"在后台继续改 DOM。
         diagramRender.catch(() => {});
 
-        try { await this.app.processImages(); } catch (e) { console.warn('[preview] Images error:', e); }
+        try { await this.app.processImages(hasImg); } catch (e) { console.warn('[preview] Images error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
         try { await diagramRender; } catch (e) { console.warn('[preview] Diagram render error:', e); }
         if (gen !== this.app._renderGeneration) { this.app._resumeScroll(); return; }
@@ -354,9 +375,17 @@
         // 代码块按需滚动：仅当设置「代码块滚动条」开启时生效；关闭时由 CSS(.code-no-scroll)撑开高度
         // `.code-scroll` 由上面的 CodeBlock 生成；无 <pre> 时必然一个都没有，跳过整棵 DOM 查询（2026-09-26）
         if (hasPre && !(this.app.settings && this.app.settings.codeScroll === false)) {
+          // 两趟处理：先只读收集、再批量只写。原先是「读 scrollHeight/clientHeight → 写 style」
+          // 交替执行，每个代码块各触发一次强制布局（几十上百个块时是明显卡顿源，2026-09-26）。
+          // 判定准确性不变：代码块高度由 max-height 封顶，兄弟块出现的滚动条不会改变本块结果。
+          const needAuto = [];
+          const needHidden = [];
           this.app.preview.querySelectorAll('.code-scroll').forEach((el) => {
-            el.style.overflowY = el.scrollHeight > el.clientHeight + 1 ? 'auto' : 'hidden';
+            if (el.scrollHeight > el.clientHeight + 1) needAuto.push(el);
+            else needHidden.push(el);
           });
+          for (const el of needAuto) el.style.overflowY = 'auto';
+          for (const el of needHidden) if (el.style.overflowY !== 'hidden') el.style.overflowY = 'hidden';
         }
 
         // 等待浏览器完成布局后再测量元素位置
@@ -458,10 +487,12 @@
     // 纯预览模式大文档：把窗口片段渲染到「撑满全文高度的占位 + 绝对定位块」中，
     // 使原生滚动条代表整篇文档，用户可平滑滚动 / 拖到任意位置查看全文（虚拟滚动）。
     // 平均行高恒定（首次渲染后校准一次），故 scrollTop ↔ 源码行比例精确，与 avg 估算无关。
-    _renderPreviewWindowBlock(finalHtml, win, content) {
-      const totalLines = content.split('\n').length;
+    _renderPreviewWindowBlock(finalHtml, win, totalLines) {
+      // totalLines 由调用方 render() 传入（它已用 charCodeAt 零分配地数过一遍）；
+      // 原先这里为了取长度又把整篇内容 split('\n') 了一次（2026-09-26）。
+      const lines = Number.isFinite(totalLines) ? totalLines : 1;
       const avg = this.app._avgLineHeight || 22;
-      const estTotal = totalLines * avg;
+      const estTotal = lines * avg;
       const blockTop = win.start * avg;
       this.app.preview.style.position = 'relative';
       this.app.preview.style.padding = '0';

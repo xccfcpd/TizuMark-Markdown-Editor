@@ -573,15 +573,27 @@
         this._renderBreadcrumb(Outline.computeBreadcrumbPath(headings, this.cm.getCursor().line));
   
         if (headings.length === 0) {
-          outlineContent.innerHTML = `<div class="outline-empty">${this.t('noHeadings')}</div>`;
+          const emptyHtml = `<div class="outline-empty">${this.t('noHeadings')}</div>`;
+          // 与下方同一策略：HTML 未变就不重写节点（无标题文档每轮防抖都会走到这里）（2026-09-26）。
+          if (emptyHtml !== this._outlineLastHtml) {
+            this._outlineLastHtml = emptyHtml;
+            outlineContent.innerHTML = emptyHtml;
+          }
           return;
         }
   
         const tree = Outline.buildOutlineTree(headings);
-        outlineContent.innerHTML = Outline.renderOutlineHtml(tree, {
+        const outlineHtml = Outline.renderOutlineHtml(tree, {
           escapeHtml: (t) => this.escapeHtml(t),
           maxLevel: this.settings.outlineFilterLevel || 0,
         });
+        // 防抖键入时大纲多数轮次毫无变化：生成的 HTML 与上次相同就跳过 innerHTML 重建，
+        // 省掉整棵大纲 DOM 的解析与布局，也顺带保住用户在大纲里的折叠状态（2026-09-26）。
+        const outlineRebuilt = outlineHtml !== this._outlineLastHtml;
+        if (outlineRebuilt) {
+          this._outlineLastHtml = outlineHtml;
+          outlineContent.innerHTML = outlineHtml;
+        }
   
         // Event delegation on outline-content
         outlineContent.onclick = (e) => {
@@ -658,9 +670,14 @@
           item.classList.add('active');
         };
   
-        // 渲染后按当前光标行设置高亮（DOM 已重建，重置 guard 再派生）
-        this._outlineActiveKey = null;
-        this.updateOutlineActive(this.cm.getCursor().line);
+        // 渲染后按当前光标行设置高亮（DOM 已重建，重置 guard 再派生）。
+        // 仅在真的重建了 DOM 时才重置 guard：HTML 未变说明现有 active 标记仍然有效，
+        // 若照旧重置，下面的 updateOutlineActive 会每轮防抖都全量 querySelectorAll('.outline-item')
+        // 并重新派生高亮 —— 正是该 guard 存在的意义（2026-09-26）。
+        if (outlineRebuilt) {
+          this._outlineActiveKey = null;
+          this.updateOutlineActive(this.cm.getCursor().line);
+        }
       },
       // 大纲动态跟随：根据给定行号高亮当前标题，并将该标题滚动进 outline 视口，
       // 与面包屑共用 computeBreadcrumbPath，保证二者指向同一当前标题。

@@ -27,7 +27,9 @@
 
     // N22 ①：模块入口归一化，焦点行非有限数一律视作 0（不污染窗口）
     const f = Number.isFinite(focusLine) ? focusLine : 0;
-    const lines = (content == null ? '' : String(content)).split('\n');
+    // opts.lines 可选：调用方（render()）已为窗口计算切好整篇行数组时直接复用，
+    // 避免同一份内容被反复 split 出「长度 = 行数」的字符串数组（2026-09-26）。
+    const lines = Array.isArray(opts.lines) ? opts.lines : (content == null ? '' : String(content)).split('\n');
     const total = lines.length;
     if (total <= maxLines) return { start: 0, end: total };
 

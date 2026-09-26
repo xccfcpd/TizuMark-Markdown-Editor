@@ -617,9 +617,16 @@ async function renderInto(container, type, code, opts) {
   }
 }
 
+// 注册表是否还留有容器：调用方在「本次渲染 HTML 不含图表容器」时用它判断能否跳过整棵 DOM 的
+// .diagram-container 回收查询 —— 有残留就必须继续执行，否则脱离 DOM 的实例永不释放
+//（ECharts / markmap / ResizeObserver 泄漏，表现为久用后莫名卡顿）（2026-09-26）。
+function hasRegisteredDiagrams() {
+  return diagramContainers.size > 0 || markmapRegistry.size > 0 || chartRegistry.size > 0;
+}
+
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
-    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
+    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams, hasRegisteredDiagrams,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
@@ -628,7 +635,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams,
+    diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams, hasRegisteredDiagrams,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,

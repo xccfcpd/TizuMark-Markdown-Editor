@@ -365,8 +365,8 @@
       _focusPreviewToLine(line) {
         return this.previewController._focusPreviewToLine(line);
       },
-      _renderPreviewWindowBlock(finalHtml, win, content) {
-        return this.previewController._renderPreviewWindowBlock(finalHtml, win, content);
+      _renderPreviewWindowBlock(finalHtml, win, totalLines) {
+        return this.previewController._renderPreviewWindowBlock(finalHtml, win, totalLines);
       },
       _updateVirtualScrollMetrics() {
         return this.previewController._updateVirtualScrollMetrics();
@@ -380,7 +380,10 @@
         },
       // P1-1：逻辑已抽到 src/modules/image-processor.js（纯函数 + 依赖注入）。
       // 这里只做 DI 适配：把实例字段/方法包成注入项，错误仍上交调用方（6772 处的 try/catch）。
-      async processImages() {
+      // hasImg 由渲染方按本次 HTML 预判传入：明确为 false 时无图可内联，直接跳过整棵预览 DOM
+      // 的 img 查询与替换（2026-09-26）。不传（旧调用方 / 测试）时行为与原来完全一致。
+      async processImages(hasImg) {
+        if (hasImg === false) return;
         return ImageProcessor.processImages(this.preview, {
           activeTab: this.activeTab,
           imageCache: this._imageBase64Cache,

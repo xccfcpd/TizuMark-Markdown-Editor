@@ -42,10 +42,18 @@ const EMOJI_MAP = {
   ':hourglass:': '⌛', ':alarm_clock:': '⏰', ':stopwatch:': '⏱️', ':coffee_cup:': '☕'
 };
 
+// emoji 短码匹配：EMOJI_MAP 的 key 全部为 `:小写字母/数字/下划线:` 形态（已逐条核对），
+// 因此可以用一条正则直接定位短码再查表，替代原先「每个含 ':' 的文本节点重建
+// Object.entries(~120 项) + 最多 120 次 includes」的 O(文本节点 × 120) 写法（2026-09-26）。
+// 两个常量分开：守卫用非全局副本 —— 全局 regex 的 test() 会推进 lastIndex，跨调用会漏判。
+const EMOJI_SHORTCODE_RE = /:[a-z0-9_+-]+:/;
+const EMOJI_REPLACE_RE = /:[a-z0-9_+-]+:/g;
+
 function processEmojiShortcodes(preview, opts) {
-  // 内容守卫：本次渲染的 HTML 里一个 ':' 都没有 → 不可能出现 :shortcode:，
+  // 内容守卫：本次渲染的 HTML 里不存在 `:短码:` 形态 → 不可能有可替换的 shortcode，
   // 直接跳过整棵 DOM 的 TreeWalker 扫描（2026-09-26）。无 opts.html 时照旧执行。
-  if (opts && typeof opts.html === 'string' && opts.html.indexOf(':') === -1) return;
+  // 注意用非全局副本：全局 regex 的 test() 会推进 lastIndex，跨调用会漏判。
+  if (opts && typeof opts.html === 'string' && !EMOJI_SHORTCODE_RE.test(opts.html)) return;
   const emojiMap = EMOJI_MAP;
   // 主题/滚动重渲染时，命中缓存的图表在**同步阶段**就已经是 <svg>（不是 <pre><code>），
   // 若不跳过，`:fire:` 之类的短码会被写进 SVG 的 <text> 里，造成"同一份源码第一次正常、
@@ -80,10 +88,11 @@ function processEmojiShortcodes(preview, opts) {
   textNodes.forEach(textNode => {
     const text = textNode.textContent;
     if (!text.includes(':')) return;
-    let newText = text;
-    for (const [code, emoji] of Object.entries(emojiMap)) {
-      if (newText.includes(code)) newText = newText.split(code).join(emoji);
-    }
+    // 一条正则 + 查表：原先对每个含 ':' 的文本节点重建 Object.entries(~120 项)，再做最多
+    // 120 次 includes 与 split/join，整体是 O(文本节点 × 120)；这里降为 O(文本长度)（2026-09-26）。
+    // 语义等价：查不到的短码原样返回；短码字符集与 EMOJI_MAP 的 key 形态一致（已逐条核对），
+    // 且 emoji 值本身不含 ':'，不存在"替换后新生成短码"的连锁情况。
+    const newText = text.replace(EMOJI_REPLACE_RE, (m) => emojiMap[m] || m);
     if (newText !== text) textNode.textContent = newText;
   });
 }

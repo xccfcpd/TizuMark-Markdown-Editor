@@ -598,12 +598,18 @@
         // 兜底
         this._renderTabBarFull();
       },
+      // 每键入都会调用（cm.on('change') → updateTabDisplay）：原实现无条件对**每个** tab 写
+      // className（必然触发样式重算）与名字，哪怕只有一个脏标记变了。改为值相同不写，
+      // 多标签文档下每键省掉 N 次无意义的 DOM 写入与样式失效（2026-09-26）。
       updateTabDisplay() {
         const tabs = document.querySelectorAll('.tab');
         tabs.forEach((tab, i) => {
           if (i >= this.tabs.length) return;
-          tab.className = `tab${i === this.activeTabIndex ? ' active' : ''}${this.tabs[i].isModified ? ' modified' : ''}${this.tabs[i].pendingExternalChange ? ' external-change' : ''}`;
-          tab.querySelector('.tab-name').textContent = this.tabs[i].name;
+          const cls = `tab${i === this.activeTabIndex ? ' active' : ''}${this.tabs[i].isModified ? ' modified' : ''}${this.tabs[i].pendingExternalChange ? ' external-change' : ''}`;
+          if (tab.className !== cls) tab.className = cls;
+          const name = this.tabs[i].name;
+          const nameEl = tab.querySelector('.tab-name');
+          if (nameEl && nameEl.textContent !== name) nameEl.textContent = name;
         });
       },
       async closeOtherTabs(keepIndex) {
