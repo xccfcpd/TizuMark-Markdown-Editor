@@ -17,6 +17,12 @@
     return null;
   }
 
+  // docx 的 ImageRun 只接受这四种（svg 还需 fallback 才能构造，未知类型会让
+  // [Content_Types].xml 缺该扩展名声明 → 整包被 Word 判为损坏）。上游 export.js 会把
+  // .svg/.webp 等栅格化成 PNG；这里是最后防线：类型不在白名单或字节为空就跳过该图，
+  // 绝不中止整篇 —— 与「非法 OMML 降级为纯文本」同一原则（2026-09-26）。
+  const DOCX_IMAGE_TYPES = new Set(['png', 'jpg', 'gif', 'bmp']);
+
   // run → docx 子元素：omml run（可编辑公式）经 ImportedXmlComponent 注入 oMath；普通 run 转 TextRun。
   // 放在模块级是因为表格单元格 / 列表项也要用它（此前只在段落分支里内联，
   // 单元格与列表项只能退化成 textContent 纯文本，公式被拼成 "α\alphaα"）。
@@ -196,13 +202,24 @@
           }));
         });
       } else if (node.type === 'image') {
-        children.push(new Paragraph({
-          children: [new D.ImageRun({
-            type: node.imageType || 'png',
-            data: Uint8Array.from(node.data || []),
-            transformation: { width: node.width, height: node.height },
-          })]
-        }));
+        // 最后防线（见 DOCX_IMAGE_TYPES）：类型不合法或字节为空就跳过该图，绝不中止整篇。
+        // 宽高缺失/NaN 时兜底 100px —— transformation 是必填项，写进 NaN 会产出非法 twips。
+        const itype = String(node.imageType || '').toLowerCase();
+        const bytes = node.data ? Uint8Array.from(node.data) : null;
+        if (DOCX_IMAGE_TYPES.has(itype) && bytes && bytes.length) {
+          const iw = Number(node.width);
+          const ih = Number(node.height);
+          children.push(new Paragraph({
+            children: [new D.ImageRun({
+              type: itype,
+              data: bytes,
+              transformation: {
+                width: (Number.isFinite(iw) && iw > 0) ? iw : 100,
+                height: (Number.isFinite(ih) && ih > 0) ? ih : 100,
+              },
+            })]
+          }));
+        }
       } else if (node.type === 'hr') {
         // 水平线：段落底边框。
         children.push(new Paragraph({

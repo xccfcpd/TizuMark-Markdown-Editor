@@ -10,14 +10,25 @@
     try { return Uint8Array.from(atob(m[1]), c => c.charCodeAt(0)); } catch (e) { return null; }
   }
 
-  // data: URL → docx 的 ImageRun type（docx 9.x 需要 png/jpg/gif/bmp/svg 之一）。
-  function mimeToImageType(dataUrl) {
+  // docx 的 ImageRun 只认这四种（svg 必须额外给 fallback 才能构造，其它字符串会让
+  // [Content_Types].xml 缺该扩展名声明 → 整包 OPC 不合法）。
+  const DOCX_IMAGE_MIME_TO_TYPE = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/bmp': 'bmp',
+  };
+  function mimeFromDataUrl(dataUrl) {
     const m = /^data:([^;,]+)/.exec(String(dataUrl || ''));
-    const mime = (m ? m[1] : '').toLowerCase();
-    if (mime === 'image/jpeg' || mime === 'image/jpg') return 'jpg';
-    if (mime === 'image/gif') return 'gif';
-    if (mime === 'image/bmp') return 'bmp';
-    return 'png';
+    return (m ? m[1] : '').toLowerCase();
+  }
+  // data: URL → docx 的 ImageRun type。**不再用 'png' 冒充不支持的格式**：此前 svg/webp/avif/ico
+  // 一律被标成 png，字节与声明不符 → Word 按 PNG 解码失败（坏图，最坏提示"文档需要修复"）。
+  // 返回空串表示「docx 不认这个格式」，交给导出侧的栅格化（export.js
+  // _rasterizeUnsupportedImagesForWord）转成 PNG；转换失败则整张图丢弃，绝不放坏图进文档。
+  function mimeToImageType(dataUrl) {
+    return DOCX_IMAGE_MIME_TO_TYPE[mimeFromDataUrl(dataUrl)] || '';
   }
 
   // CSS 命名色 → 6 位大写 HEX。只收常用色；未收录的写法交给下面的 DOM 探针解析。
@@ -98,7 +109,12 @@
     const h = parseInt(hSrc, 10) || 100;
     // data 用 Uint8Array 而非 Array.from 的普通数组：postMessage 的 structuredClone
     // 对 typed array 是整块内存拷贝，对普通数组则是逐元素克隆（大图时会明显拖慢导出）。
-    return { type: 'image', data, imageType: mimeToImageType(dataUrl), width: w, height: h };
+    // srcMime 如实保留原始 mime：栅格化与诊断要据此判断"这张图是否被换过格式"；
+    // imageType 只写 docx 认得的类型（不支持的格式给空串，由 builder 侧白名单挡下）。
+    return {
+      type: 'image', data, imageType: mimeToImageType(dataUrl),
+      srcMime: mimeFromDataUrl(dataUrl), width: w, height: h,
+    };
   }
 
   // 收集一个块元素内所有 <img> 为顶层 image 节点（块级，DocxLib 落图）。

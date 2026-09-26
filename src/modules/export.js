@@ -950,6 +950,82 @@
           img.style.height = 'auto';
         }
       },
+      // Word 的两条落图路径（真 OOXML 的 ImageRun、html-docx 的 HTML 导入器）都只认
+      // png/jpg/gif/bmp。预览里的 .svg/.webp/.avif/.ico 内联成 data URL 后，此前会被结构层
+      // 冒充成 png —— 字节与声明不符，Word 按 PNG 解码失败（坏图，最坏弹"文档需要修复"）；
+      // 类型如实传上去则 [Content_Types].xml 缺该扩展名声明，整包不合法（2026-09-26 实测）。
+      // 所以导出前用 canvas 栅格化成 PNG：
+      //   · 按 _applyWordImgSize 定好的显示尺寸 ×2 取样（Word 里放大/高 DPI 不发虚）；
+      //   · 长边上限 1600px，避免一张 SVG 把 docx 撑爆；
+      //   · 失败（canvas 被污染 / 解码失败）就移除该图并记告警 —— 少一张图远好过坏图或坏包。
+      async _rasterizeUnsupportedImagesForWord(imgs, ctl) {
+        const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/bmp']);
+        const mimeOf = (src) => ((/^data:([^;,]+)/.exec(src) || [])[1] || '').toLowerCase();
+        const RENDER_SCALE = 2;
+        const MAX_EDGE = 1600;
+        const CONCURRENCY = 4;
+        const pending = (imgs || []).filter((img) => {
+          const src = img.getAttribute('src') || '';
+          if (!/^data:/i.test(src)) return false; // 未内联（远程/未保存）：结构层本就拿不到字节
+          return !SUPPORTED.has(mimeOf(src));
+        });
+        if (!pending.length) return;
+        // 复用 _inlineImagesForExport 的告警通道，导出结束时统一提示用户（不阻断导出）。
+        const warn = (msg) => {
+          if (!Array.isArray(this._lastExportImageWarnings)) this._lastExportImageWarnings = [];
+          this._lastExportImageWarnings.push(msg);
+        };
+        const rasterize = async (img) => {
+          const src = img.getAttribute('src') || '';
+          const mime = mimeOf(src);
+          try {
+            const el = new Image();
+            await new Promise((resolve, reject) => {
+              el.onload = resolve;
+              el.onerror = () => reject(new Error('图片解码失败'));
+              el.src = src;
+            });
+            // 尺寸优先取 _applyWordImgSize 写好的 width/height 属性（即最终显示尺寸）；
+            // 缺失时才退回导出前采集的 dataset → naturalWidth（SVG 的 naturalWidth 常为 0）。
+            const ds = img.dataset || {};
+            const wRef = parseInt(img.getAttribute('width') || '0', 10)
+              || parseInt(ds.dispW || ds.dispw || ds.natW || '0', 10) || el.naturalWidth || 300;
+            const hRef = parseInt(img.getAttribute('height') || '0', 10)
+              || parseInt(ds.dispH || ds.disph || ds.natH || '0', 10) || el.naturalHeight || 200;
+            let w = Math.max(1, Math.round(wRef * RENDER_SCALE));
+            let h = Math.max(1, Math.round(hRef * RENDER_SCALE));
+            const over = Math.max(w, h) / MAX_EDGE;
+            if (over > 1) { w = Math.max(1, Math.round(w / over)); h = Math.max(1, Math.round(h / over)); }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('canvas 2d 不可用');
+            // SVG 是矢量：按目标矩形重绘，不依赖它自身的固有 width/height。
+            ctx.drawImage(el, 0, 0, w, h);
+            // 被污染的 canvas（SVG 里引用外部资源）会在这里抛 SecurityError → 走 catch 丢弃。
+            const png = canvas.toDataURL('image/png');
+            if (!/^data:image\/png/i.test(png)) throw new Error('toDataURL 未产出 PNG');
+            img.src = png;
+          } catch (e) {
+            console.warn('[export] 图片栅格化为 PNG 失败，已从 Word 导出中移除：', mime, e);
+            warn(`图片格式 ${mime || '未知'} 无法转为 Word 支持的 PNG，已跳过该图：` + src.slice(0, 48));
+            img.remove();
+          }
+        };
+        // 有界并发 4：单张要等解码，串行会让多图文档线性变慢；全并发又会一次占满内存。
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < pending.length) {
+            if (ctl && typeof ctl.isCancelled === 'function' && ctl.isCancelled()) return;
+            await rasterize(pending[cursor++]);
+          }
+        };
+        const pool = [];
+        for (let k = 0; k < Math.min(CONCURRENCY, pending.length); k++) pool.push(worker());
+        // allSettled：单张异常不得中断整批（rasterize 内已 try/catch，这里再兜一层）。
+        await Promise.allSettled(pool);
+      },
       // 把 canvas 像素宽度限制在 maxPxW 以内（等比缩小），返回新 canvas；无需缩放时原样返回。
       // 用于避免 html2canvas 2× 截图后像素过大导致 docx 膨胀、且 Word 按原始大像素渲染溢出页面。
       _scaleCanvasDown(canvas, maxPxW) {
@@ -1465,6 +1541,10 @@
           img.style.display = 'inline-block';
           img.style.maxWidth = '100%';
         }));
+
+        // 11. Word 不认的内联图片格式（SVG / WebP / AVIF / ICO…）栅格化成 PNG。
+        //     必须放在 _applyWordImgSize 之后：栅格化按「最终显示尺寸」取样。
+        await this._rasterizeUnsupportedImagesForWord(plainImages, ctl);
   
         } finally {
           holder.remove();
@@ -2343,6 +2423,8 @@
             },
           });
           if (prep === 'cancelled') return null;
+          // 栅格化阶段（_prepareWordDOM 内）可能新增告警：此处补一次 flush，否则静默丢失。
+          this._flushExportImageWarnings();
           return clone;
           };
           let clone = await buildPreparedClone();

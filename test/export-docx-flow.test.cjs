@@ -530,6 +530,153 @@ test('docx-builder: CSS text-align 正确落到 w:jc；空表格不抛错不产�
   assert.ok(xml.includes('表格之后的正文'), '空表格被跳过后，后续正文必须仍在（构建未中断）');
 });
 
+// 回归（2026-09-26）：builder 层图片最后防线。docx 的 ImageRun 只接受 png/jpg/gif/bmp
+// （svg 还需 fallback 才能构造，未知类型会让 [Content_Types].xml 缺声明 → 整包 OPC 不合法）。
+// 上游 export.js 已把 svg/webp 栅格化成 PNG，这里守住 Worker/上游漏传的情况：类型不在白名单
+// 或字节为空就跳过该图，绝不中止整篇（与「非法 OMML 降级」「非法颜色丢弃」同一原则）。
+// 另外宽高必须落成正整数：transformation 是必填项，undefined/NaN 会写进非法尺寸。
+test('docx-builder: 非白名单图片格式/空字节被跳过，合法 png 仍嵌入且宽高为正整数', async () => {
+  const path = require('path');
+  const JSZip = require('jszip');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  // 1×1 真 PNG：docx 会把字节原样放进 word/media
+  const pngBytes = Array.from(Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64'));
+  // 非法节点用与合法图完全不同的字节：一旦漏进 zip，媒体文件名/扩展名会立刻暴露
+  const junkBytes = [1, 2, 3, 4];
+  let xml;
+  let zip;
+  try {
+    const blob = await builder([
+      { type: 'paragraph', runs: [{ text: '图片之前的正文' }] },
+      { type: 'image', imageType: 'svg', data: junkBytes, width: 20, height: 20, srcMime: 'image/svg+xml' }, // 漏栅格化
+      { type: 'image', imageType: 'webp', data: junkBytes, width: 20, height: 20, srcMime: 'image/webp' },   // 漏栅格化
+      { type: 'image', imageType: 'png', data: [], width: 20, height: 20 },                                  // 空字节
+      { type: 'image', data: junkBytes, width: 20, height: 20 },                                             // 老结构漏传 imageType
+      { type: 'image', imageType: 'png', data: pngBytes, width: 80, height: 40 },                            // 合法
+      { type: 'image', imageType: 'png', data: pngBytes },                                                   // 宽高缺失 → 兜底
+      { type: 'paragraph', runs: [{ text: '图片之后的正文' }] },
+    ], {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+    });
+    const ab = await blob.arrayBuffer();
+    assert.ok(ab.byteLength > 0, '含非法图片节点的文档也应成功构建（不拖垮整篇）');
+    zip = new JSZip();
+    zip.load(Buffer.from(ab));
+    xml = zip.file('word/document.xml').asText();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  const drawings = xml.match(/<w:drawing\b/g) || [];
+  assert.strictEqual(drawings.length, 2, '只有两张合法 png 应产出 drawing，其余四张必须被跳过');
+  // 注意排除目录条目自身（zip.files 里含 'word/media/' 这个 dir）。docx 会按图片字节去重：
+  // 两张同字节的 png 只落 1 个 media（实测），所以这里只要求"不多于落地图片数"。
+  const media = Object.keys(zip.files).filter(f => f.startsWith('word/media/') && !zip.files[f].dir);
+  assert.ok(media.length >= 1 && media.length <= 2,
+    '只有落地的图片才应有媒体文件（被跳过的不得留残留）：' + media.join(','));
+  for (const f of media) assert.ok(f.endsWith('.png'), '媒体文件应是 png：' + f);
+  const extents = [...xml.matchAll(/<wp:extent cx="([^"]+)" cy="([^"]+)"/g)];
+  assert.strictEqual(extents.length, 2, '每张落地的图都应有 extent');
+  for (const [, cx, cy] of extents) {
+    assert.ok(/^\d+$/.test(cx) && Number(cx) > 0 && /^\d+$/.test(cy) && Number(cy) > 0,
+      `【关键断言】宽高必须落成正整数（transformation 必填，NaN/undefined 会写坏文档）：cx=${cx} cy=${cy}`);
+  }
+  assert.ok(xml.includes('图片之前的正文') && xml.includes('图片之后的正文'),
+    '跳图不得中断构建，前后正文必须都在');
+});
+
+// 回归（2026-09-26）：Word 不认的内联图片格式（SVG/WebP/AVIF/ICO）在导出前栅格化成 PNG。
+// 此前结构层把 svg/webp 的字节直接标成 png —— 字节与声明不符，Word 按 PNG 解码失败（坏图）。
+// jsdom 没有 canvas、也不解码图片，这里桩掉 Image 与 canvas，只验证控制流：
+// 转换必须发生在 exportWord 主流程内（产物 imageType/srcMime 都变成 png）、原生支持格式不动、
+// 转换失败只丢该图并进告警通道（不中断导出）。
+test('exportWord: 非 png/jpg/gif/bmp 的内联图栅格化成 PNG 后交给构建器', async () => {
+  const warnings = [];
+  const drawSizes = [];
+  let captured = null;
+  await withEditor({ invokeImpl: (cmd) => {
+    if (cmd === 'plugin:dialog|save') return '/tmp/out.docx';
+    if (cmd === 'write_binary_file') return undefined;
+    return null;
+  } }, async (w, ed) => {
+    ed._confirmDocxExport = async () => true;
+    ed.showConfirmDialog = async () => true;
+    ed._buildDocxBuffer = async (structure) => { captured = structure; return new Uint8Array([0x50, 0x4b]).buffer; };
+    // 捕获告警通道（jsdom 里 showToast 无意义，改为记录）
+    ed._flushExportImageWarnings = function () {
+      if (Array.isArray(this._lastExportImageWarnings)) warnings.push(...this._lastExportImageWarnings);
+      this._lastExportImageWarnings = null;
+    };
+    // 桩 Image：同步触发 onload（jsdom 不解码图片）；ICO 那张故意失败 → 走丢弃分支
+    const BAD_SRC = 'data:image/vnd.microsoft.icon;base64,AAABAA';
+    w.Image = class {
+      set src(v) {
+        this._v = v;
+        if (v === BAD_SRC) { if (this.onerror) this.onerror(new Error('decode failed')); }
+        else if (this.onload) this.onload({});
+      }
+      get src() { return this._v; }
+      get naturalWidth() { return 40; }
+      get naturalHeight() { return 20; }
+    };
+    // 桩 canvas：只记录取样尺寸
+    w.HTMLCanvasElement.prototype.getContext = function () {
+      return { drawImage: (el, x, y, cw, ch) => drawSizes.push([cw, ch]) };
+    };
+    w.HTMLCanvasElement.prototype.toDataURL = function () { return 'data:image/png;base64,R0FUSVpFRA=='; };
+
+    ed.activeTab.filePath = '/docs/note.md';
+    ed.activeTab.name = '我的笔记';
+    w.editor.preview.innerHTML =
+      '<p><img src="data:image/svg+xml;base64,PHN2Zy8+" width="60" height="30"></p>' +
+      '<p><img src="data:image/webp;base64,UklGRg==" width="60" height="30"></p>' +
+      '<p><img src="data:image/png;base64,iVBORw0KGgo=" width="60" height="30"></p>' +
+      '<p><img src="' + BAD_SRC + '" width="60" height="30"></p>';
+    // 导出尺寸来自预览侧采集的 dataset（jsdom 里 naturalWidth 恒为 0），固定成 60×30 让断言可预测
+    Array.from(w.editor.preview.querySelectorAll('img')).forEach((el) => {
+      el.dataset.natW = '60'; el.dataset.natH = '30'; el.dataset.dispW = '60'; el.dataset.dispH = '30';
+    });
+
+    await ed.exportWord();
+  });
+
+  const collectImages = (nodes) => {
+    const out = [];
+    const walk = (list) => {
+      for (const n of list || []) {
+        if (!n || typeof n !== 'object') continue;
+        if (n.type === 'image') out.push(n);
+        if (Array.isArray(n.children)) walk(n.children);
+        if (Array.isArray(n.runs)) walk(n.runs);
+        if (Array.isArray(n.rows)) n.rows.forEach((r) => walk(r && r.cells));
+      }
+    };
+    walk(nodes);
+    return out;
+  };
+  const imgs = collectImages(captured);
+  assert.strictEqual(imgs.length, 3, '栅格化失败的那张应被丢弃，其余三张保留：' + JSON.stringify(imgs.map(i => i.srcMime)));
+  assert.strictEqual(imgs[0].imageType, 'png', 'svg 应被栅格化成 png 交给构建器');
+  assert.strictEqual(imgs[0].srcMime, 'image/png', 'srcMime 应反映转换后的格式');
+  assert.strictEqual(imgs[1].imageType, 'png', 'webp 应被栅格化成 png');
+  assert.strictEqual(imgs[2].imageType, 'png', '原生 png 不动');
+  assert.deepStrictEqual(drawSizes, [[120, 60], [120, 60]], '应按显示尺寸 ×2 取样（60×30 → 120×60）');
+  assert.strictEqual(warnings.length, 1, '栅格化失败必须进告警通道（此前该阶段告警会被静默丢弃）');
+  assert.ok(warnings[0].includes('image/vnd.microsoft.icon'), '告警要指明是哪个格式：' + warnings[0]);
+});
+
 // 回归（2026-09-09）：Word/WPS 的东亚排版会把「<w:br/> 软换行结尾的行」按两端对齐强行
 // 拉伸到整行宽（即便全文无一处 w:jc，实测仍拉伸），导出的代码块每行被扯出巨大空隙。
 // 修复：代码块每行一个独立段落 + 显式左对齐——段落末行永不被拉伸；相邻段落

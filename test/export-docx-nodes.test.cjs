@@ -126,6 +126,28 @@ test('domToDocxStructure: 图片 data 为 Uint8Array 且带 imageType', () => {
   assert.strictEqual(img.imageType, 'jpg', 'mime 应映射为 docx 的 imageType');
 });
 
+// 回归（2026-09-26）：docx 的 ImageRun 只认 png/jpg/gif/bmp。此前 mimeToImageType() 对
+// svg+xml / webp / avif / ico 一律返回默认值 'png' —— 字节与声明不符，Word 按 PNG 解码失败
+//（坏图，最坏弹"文档需要修复"）；类型如实直传又会让 [Content_Types].xml 缺该扩展名声明。
+// 现在结构层如实标成空串 + 用 srcMime 保留源格式，交给导出侧栅格化成 PNG。
+test('domToDocxStructure: 不支持的图片格式不再冒充 png（imageType 空串 + srcMime 如实）', () => {
+  const dom = new JSDOM('<div id="root">' +
+    '<img src="data:image/svg+xml;base64,PHN2Zy8+" width="60" height="30">' +
+    '<img src="data:image/webp;base64,UklGRg==" width="60" height="30">' +
+    '<img src="data:image/gif;base64,R0lGOD" width="60" height="30">' +
+    '</div>', { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const imgs = fn(w.document.getElementById('root')).filter(n => n.type === 'image');
+  assert.strictEqual(imgs.length, 3, '三张图都应有节点（不支持的格式由后续栅格化兜底，不是在这里丢）');
+  assert.strictEqual(imgs[0].imageType, '', 'svg 不得再被标成 png');
+  assert.strictEqual(imgs[0].srcMime, 'image/svg+xml', 'srcMime 应如实保留源格式');
+  assert.strictEqual(imgs[1].imageType, '', 'webp 不得再被标成 png');
+  assert.strictEqual(imgs[1].srcMime, 'image/webp');
+  assert.strictEqual(imgs[2].imageType, 'gif', '原生支持的格式不受影响');
+  assert.strictEqual(imgs[2].srcMime, 'image/gif');
+});
+
 test('domToDocxStructure: 图片映射为 image 节点（带 data 与宽高）', () => {
   const dom = new JSDOM('<div id="root"><p><img src="data:image/png;base64,iVBORw0KGgo=" data-natW="100" data-natH="50" data-dispW="100" data-dispH="50"></p></div>', { runScripts: 'dangerously' });
   const w = dom.window;
