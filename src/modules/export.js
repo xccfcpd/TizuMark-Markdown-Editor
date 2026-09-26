@@ -2150,10 +2150,12 @@
             hideOverlay();
           }, 120000);
   
+          // 预览克隆 + 预处理（图片尺寸采集/图表快照/图片内联/Word DOM 预处理）包成局部函数，
+          // 可重复调用：主路径前释放克隆以降内存峰值，Worker/docx 失败需兜底时再重建一份。
+          const buildPreparedClone = async () => {
           const clone = await this._clonePreviewForExport();
-          // 大文档：用户在确认框里取消了导出。watchdog 已启动，必须一并清掉，
-          // 否则 120s 后它会误报「导出失败」。
-          if (!clone) { clearTimeout(watchdog); hideOverlay(); return; }
+          // 大文档：用户在确认框里取消了导出。
+          if (!clone) return null;
           // 预告工作量：让用户对"要等多久"有预期（图表数 × 经验系数，仅提示不阻塞）
           const diagramTotal = clone.querySelectorAll('.mermaid-container').length;
           if (diagramTotal > 0 && progressText) {
@@ -2219,10 +2221,15 @@
               },
             },
           });
-          if (prep === 'cancelled') {
+          if (prep === 'cancelled') return null;
+          return clone;
+          };
+          let clone = await buildPreparedClone();
+          // 用户取消（全量渲染确认框 / 取消按钮）：watchdog 已启动，必须一并清掉，否则 120s 后误报失败。
+          if (!clone) {
             clearTimeout(watchdog);
             hideOverlay();
-            this.setStatus(this.t('exportLargeDocCancelled'));
+            if (exportCancelled) this.setStatus(this.t('exportLargeDocCancelled'));
             return;
           }
   
@@ -2258,14 +2265,21 @@
               structureNodes: structure ? structure.length : 0,
               mathConverted,
             };
+            let fallbackClone = null; // 兜底用 prepared clone（Worker 失败 / docx 失败时重建）
             try {
               // 进入 docx 库最终构建（同步大调用）前再让出主线程，确保 spinner 完成一帧渲染、
               // 并使取消按钮在构建开始前可响应。
               await new Promise(r => setTimeout(r, 0));
               if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
+              // 主路径只需 structure：先释放预览克隆，降低 Worker 构建期（耗时较长）的内存峰值。
+              // Worker 失败 / docx 失败需兜底时，rebuild 会重建一份 prepared clone（仅失败路径付代价）。
+              clone = null;
               // 传入 rebuild：Worker 路径会把图片字节 transfer 走，若其失败需重建一份等价结构再走主线程兜底。
               const arrayBufferDocx = await this._buildDocxBuffer(structure, page, async () => {
-                const s = (typeof window.domToDocxStructure === 'function') ? await window.domToDocxStructure(clone) : null;
+                const c2 = await buildPreparedClone();
+                fallbackClone = c2;
+                if (!c2) throw new Error('重建导出结构失败（用户取消或克隆失败）');
+                const s = (typeof window.domToDocxStructure === 'function') ? await window.domToDocxStructure(c2) : null;
                 if (s && Array.isArray(s)) await this._structureMathmlToOmmlChunked(s);
                 return s;
               });
@@ -2274,6 +2288,7 @@
               await TauriApi.writeBinaryFile({ path, contents: bufDocx });
               this.setStatus(`${this.t('exportedWord')}: ${path}`);
               exported = true;
+              fallbackClone = null; // 已落盘：释放可能存在的兜底克隆
             } catch (docxErr) {
               // 明确暴露主路径失败原因（之前静默降级，公式/图片全废却看不出为什么）。
               console.error('[export] docx 主路径失败，降级 html-docx：', docxErr);
@@ -2292,7 +2307,11 @@
                 await TauriApi.writeFile({ path: diagPath, content: diagText });
                 this.showToast('公式导出失败，已生成诊断文件：' + diagPath, 'warning');
               } catch (e) { /* 写诊断文件失败也不阻塞回退 */ }
-              await this._fallbackWordHtmlExport(clone, path, watchdog, (ok) => { exported = ok; });
+              // 兜底需要 prepared clone：rebuild 若已重建则复用，否则再重建一份（主路径已释放 clone）。
+              let fc = fallbackClone;
+              if (!fc) { try { fc = await buildPreparedClone(); } catch (_) { fc = null; } }
+              if (fc) await this._fallbackWordHtmlExport(fc, path, watchdog, (ok) => { exported = ok; });
+              else { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportFailed')); }
             }
           } else {
             // 主路径前置条件不满足（structure 空 / 公式未转换）：写诊断帮助定位。
