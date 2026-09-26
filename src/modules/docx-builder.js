@@ -57,7 +57,7 @@
     const color = (r && typeof r.color === 'string' && /^[0-9A-Fa-f]{6}$/.test(r.color))
       ? r.color.toUpperCase()
       : undefined;
-    return new D.TextRun({
+    const textOpts = {
       text: (r && r.text) || '',
       bold,
       italics: r && r.italics,
@@ -67,7 +67,19 @@
       highlight,
       superScript: (r && r.superScript) ? true : undefined,
       subScript: (r && r.subScript) ? true : undefined,
-    });
+      // 下划线（<u> / text-decoration:underline）：docx 的 underline 是**对象**不是布尔，
+      // 传 true 不会被序列化 → Word 里下划线静默丢失。枚举缺失时用 OOXML 字面值 'single'。
+      underline: (r && r.underline) ? { type: (D.UnderlineType && D.UnderlineType.SINGLE) || 'single' } : undefined,
+    };
+    // 超链接：docx 用 ExternalHyperlink 包一个 TextRun，并自动建 External 关系（rels）。
+    // 库缺失 / href 非法时退化成普通文本 run —— 一条坏链接绝不能拖垮整篇
+    //（与「非法 OMML 降级为纯文本」「非法颜色丢弃」同一原则）。
+    if (r && r.link && typeof D.ExternalHyperlink === 'function') {
+      try {
+        return new D.ExternalHyperlink({ children: [new D.TextRun(textOpts)], link: String(r.link) });
+      } catch (e) { /* 退化到下面的普通 TextRun */ }
+    }
+    return new D.TextRun(textOpts);
   }
 
   // CSS text-align → docx AlignmentType。
@@ -99,18 +111,33 @@
     // 表格单元格行距跟随预览「行高」（theme 即 page 配置），与正文 docDefaults 保持一致；
     // 之前硬编码 line:276（≈1.15 倍），导致表格内行距比正文（1.7）明显更紧。
     const tableLineH = (theme && Number(theme.lineHeight)) ? Number(theme.lineHeight) : 1.7;
+    // 表头底纹：预览 .preview-content th 是 --bg-secondary 底 + 600 字重；此前 th 与 td 完全
+    // 一样 → Word 里看不出哪行是表头。底色由 export.js 的 _docxPageConfig 从主题变量读出。
+    const headerBg = (theme && theme.tableHeaderBg) || 'EEEDEC';
     const rows = rowsIn.map(row => new D.TableRow({
-      children: row.cells.map(cell => new D.TableCell({
-        children: (cell.paragraphs || []).map(p => new D.Paragraph({
-          // 单元格段落优先用 runs（公式/高亮/加粗/上标在里面）；没有 runs 才退回纯文本。
-          ...(Array.isArray(p.runs) && p.runs.length
-            ? { children: p.runs.map(r => toChild(r)) }
-            : { text: p.text || '' }),
-          // 行高调高：before/after 由 20 提升到 60 让表格每行更舒展（用户反馈"每行高度调高一点"）
-          spacing: { before: 60, after: 60, line: Math.round(tableLineH * 240), lineRule: 'auto' },
-        })),
-        width: { size: (cell.width && cell.width > 0) ? cell.width : colW, type: D.WidthType.PERCENTAGE },
-      }))
+      // 表头行跨页重复（OOXML w:tblHeader）：长表格在 Word 里翻页后仍看得懂列含义
+      ...(row.header ? { tableHeader: true } : {}),
+      children: row.cells.map(cell => {
+        // 表头单元格：自身是 <th>，或整行被标为表头行 → 加粗 + 底纹
+        const header = !!(cell.header || row.header);
+        const cellAlign = alignmentOf(D.AlignmentType, cell.align);
+        return new D.TableCell({
+          children: (cell.paragraphs || []).map(p => new D.Paragraph({
+            // 单元格段落优先用 runs（公式/高亮/加粗/上标在里面）；没有 runs 才退回纯文本。
+            ...(Array.isArray(p.runs) && p.runs.length
+              ? { children: p.runs.map(r => toChild(r, header ? { bold: true } : undefined)) }
+              : { children: [new D.TextRun({ text: p.text || '', bold: header || undefined })] }),
+            // 列对齐（Markdown 的 :---: 渲染成 <th align="center">，是 align **属性**而非内联
+            // style，故结构层读属性）：走 CSS→枚举映射，不能用 AlignmentType[值]
+            //（键大写/值小写，查不到就静默丢）
+            ...(cellAlign ? { alignment: cellAlign } : {}),
+            // 行高调高：before/after 由 20 提升到 60 让表格每行更舒展（用户反馈"每行高度调高一点"）
+            spacing: { before: 60, after: 60, line: Math.round(tableLineH * 240), lineRule: 'auto' },
+          })),
+          width: { size: (cell.width && cell.width > 0) ? cell.width : colW, type: D.WidthType.PERCENTAGE },
+          ...(header ? { shading: { type: D.ShadingType.CLEAR, fill: headerBg } } : {}),
+        });
+      })
     }));
     return new D.Table({
       rows,
@@ -172,7 +199,9 @@
             spacing: { before: 20, after: 20 },
           }));
         } else {
-          children.push(new Paragraph({ children: runs.map(r => toChild(r)), bullet: { level } }));
+          // OOXML 的 w:ilvl 只有 0–8 九级：再深就夹到 8，避免写出 Word 不认的层级
+          //（结构层已能递归出任意深度，夹取放在这里收口）。
+          children.push(new Paragraph({ children: runs.map(r => toChild(r)), bullet: { level: Math.max(0, Math.min(Number(level) || 0, 8)) } }));
         }
       } else if (node.type === 'table') {
         // buildTable 对「无有效行」的表格返回 null（空 rows 会让 new D.Table 抛 RangeError 中止整篇）

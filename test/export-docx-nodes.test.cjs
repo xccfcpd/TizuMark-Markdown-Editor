@@ -336,3 +336,100 @@ test('domToDocxStructure: 有 <tr> 的表格仍正常产出（不误伤）', () 
   assert.strictEqual(table.rows.length, 2, '两行都要保留');
   assert.strictEqual(table.rows[0].cells[0].paragraphs[0].text, '列一');
 });
+
+// 回归（2026-09-26，P1）：3 层列表此前只导出前两层（level 写死 0/1），第 3 层及以后的条目
+// 整项丢失；而 collectRuns 对未白名单标签一律递归，会把子项/孙项文字折进父项 runs ——
+// 实测 3 层列表产出 [{level:0,runs:[父项,子项A,孙项X,子项B]}, ...]，Word 里子项在父项行内重复。
+// 修法：liRuns 先摘掉本项自己的嵌套列表再收集文字 + walkList 递归下探。
+test('domToDocxStructure: 嵌套列表逐层独立成项，父项不吞子项、第 3 层不丢（P1）', () => {
+  const md = '<div id="root"><ul>'
+    + '<li>父项<ul><li>子项A<ol><li>孙项X</li><li>孙项Y</li></ol></li><li>子项B</li></ul></li>'
+    + '</ul></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const items = structure.filter((n) => n.type === 'bullet');
+  // 注意：domToDocxStructure 是在 jsdom realm 里 eval 的，它返回的是 **jsdom 的 Array**；
+  // 直接对它 .map 得到的仍是 jsdom 数组 → deepStrictEqual 会因原型不同而"内容一样却失败"。
+  // 这里用主 realm 的 Array.from 重新组装，顺带把断言写成一眼可读的表格。
+  const summary = Array.from(items, (i) => [i.level, i.ordered === true, i.runs.map((r) => r.text).join('')]);
+  assert.deepStrictEqual(
+    summary,
+    [[0, false, '父项'], [1, false, '子项A'], [2, true, '孙项X'], [2, true, '孙项Y'], [1, false, '子项B']],
+    '【关键断言】5 个条目逐层独立：父项不得吞掉子/孙项文字，第 3 层（level=2）不得整项丢失');
+  assert.strictEqual(items[2].marker, '1.', '有序子列表应带序号 1.');
+  assert.strictEqual(items[3].marker, '2.', '有序子列表应带序号 2.');
+  assert.strictEqual(items[0].marker, '', '无序列表不产出序号文本');
+});
+
+// 回归（2026-09-26，P2）：<a> 此前不在任何分支里 → 落到兜底递归，文字保留但 href 丢失，
+// Word 里所有链接都退化成纯文本。只接受绝对可点击协议（相对路径/#锚点/javascript: 不放链接，
+// 免得在 Word 里写出点不动的坏链接）。
+test('domToDocxStructure: 超链接保留 href，非法协议不产出链接（P2）', () => {
+  const md = '<div id="root"><p>见 <a href="https://example.com/a?b=1&amp;c=2">官网</a>'
+    + ' 与 <a href="#top">锚点</a> 与 <a href="javascript:void(0)">脚本</a>'
+    + ' 与 <a href="mailto:a@b.c">邮箱</a> 与 <a>无 href</a>。</p></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const runs = structure[0].runs;
+  const at = (t) => runs.find((r) => r.text === t);
+  assert.strictEqual(at('官网').link, 'https://example.com/a?b=1&c=2', '【关键断言】href 必须原样带上（含 query）');
+  assert.strictEqual(at('邮箱').link, 'mailto:a@b.c', 'mailto: 应可点');
+  for (const bad of ['锚点', '脚本', '无 href']) {
+    assert.ok(at(bad), '链接文字不得丢：' + bad);
+    assert.strictEqual(at(bad).link, undefined, '不可点协议/无 href 不得产出链接：' + bad);
+  }
+});
+
+// 回归（2026-09-26，P3）：th/td 此前同等对待 → Word 里看不出哪行是表头；列对齐只读
+// style.textAlign，而渲染器输出的是 align **属性**（表格插件产出 <th align="center">，
+// styles.css 也按 th[align=...] 选择）→ Markdown 的 :---: 在 Word 里全丢。
+test('domToDocxStructure: 表头单元格与列对齐被保留（P3）', () => {
+  const md = '<div id="root"><table>'
+    + '<thead><tr><th align="left">左列</th><th align="center">中列</th></tr></thead>'
+    + '<tbody><tr><td align="right">右值</td><td>默认值</td></tr></tbody></table></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const table = structure.find((n) => n.type === 'table');
+  assert.strictEqual(table.rows[0].header, true, '【关键断言】表头行应带 header 标记');
+  assert.strictEqual(table.rows[0].cells[0].header, true, 'th 单元格应带 header 标记');
+  assert.strictEqual(table.rows[1].cells[0].header, false, 'td 单元格不得被当成表头');
+  assert.strictEqual(table.rows[0].cells[0].align, 'left');
+  assert.strictEqual(table.rows[0].cells[1].align, 'center');
+  assert.strictEqual(table.rows[1].cells[0].align, 'right');
+  assert.strictEqual(table.rows[1].cells[1].align, undefined, '无对齐信息不得凭空产出 align');
+  assert.strictEqual(table.rows[1].header, false, '数据行不得被当成表头');
+});
+
+test('domToDocxStructure: 内联 style 的 text-align 作为列对齐兜底（P3）', () => {
+  const md = '<div id="root"><table><tr><td style="text-align:center">居中值</td></tr></table></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const table = structure.find((n) => n.type === 'table');
+  assert.strictEqual(table.rows[0].cells[0].align, 'center', 'style 里的对齐应被读到');
+});
+
+// 回归（2026-09-26，P4）：<u> 由渲染层净化白名单显式放开（用户手写 <u> 可达），预览有
+// text-decoration: underline，但导出层此前不认 → 兜底递归保住文字、丢掉下划线语义。
+// <ins>/<del> 会被 _prepareWordDOM 改写成带 text-decoration 的 <span>（Word 会把原生
+// <ins>/<del> 当修订追踪），所以标签名之外的**内联样式**路径也必须认。
+test('domToDocxStructure: 下划线按标签名与内联样式两条路径都能认到（P4）', () => {
+  const md = '<div id="root"><p><u>u 标签</u> 与 <span style="text-decoration: underline">样式下划线</span></p></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const runs = structure[0].runs;
+  for (const t of ['u 标签', '样式下划线']) {
+    const r = runs.find((x) => x.text === t);
+    assert.ok(r, '文字不得丢：' + t);
+    assert.strictEqual(r.underline, true, '【关键断言】应带 underline 标记：' + t);
+  }
+});

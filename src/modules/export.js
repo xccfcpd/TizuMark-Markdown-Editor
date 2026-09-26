@@ -1988,6 +1988,9 @@
           marginTop: margins.top, marginBottom: margins.bottom,
           marginLeft: margins.left, marginRight: margins.right,
           codeBg: hex('--code-bg', 'F6F5F4'),
+          // 表格表头底纹：预览 .preview-content th 用的是 --bg-secondary（docx-builder 用它
+          // 给表头单元格铺底，此前 th 与 td 在 Word 里完全一样、看不出表头）。
+          tableHeaderBg: hex('--bg-secondary', 'EEEDEC'),
           accent: hex('--accent-color', '2563EB'),
           border: hex('--border-color', 'D4D4D8'),
           headingColor: hex('--text-primary', '2C2C2E'),

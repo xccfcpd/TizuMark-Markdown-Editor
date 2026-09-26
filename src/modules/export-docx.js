@@ -140,9 +140,22 @@
         let runBase = {};
         if (tag === 'strong' || tag === 'b') runBase.bold = true;
         else if (tag === 'em' || tag === 'i') runBase.italics = true;
-        else if (tag === 'del' || tag === 's') runBase.strike = true;
+        // <strike> 是 <s> 的废弃别名，但它仍在渲染层净化白名单里（用户手写 HTML 可达）：
+        // 浏览器按 UA 样式显示删除线，导出层不认就会「字在、线没了」（2026-09-26 遍历测试发现）。
+        else if (tag === 'del' || tag === 's' || tag === 'strike') runBase.strike = true;
         else if (tag === 'code') runBase.codeStyle = true;
         else if (tag === 'mark') { runBase.highlight = true; }
+        // 下划线：<u> 由 unified-renderer 的 tagNames 白名单显式放开（用户手写 <u> 可达），
+        // 必须按标签名单独认 —— <u> 的下划线来自 UA 样式表，元素的内联 style 是空的。
+        else if (tag === 'u') runBase.underline = true;
+        // 超链接：此前 <a> 不在任何分支里 → 落到下面的递归，链接【文字】保留但 href 丢失
+        //（docx-builder 也没有 Hyperlink 映射），Word 里所有链接都退化成纯文本。
+        // 只接受绝对可点击协议；javascript: / 相对路径 / #锚点 不放链接，
+        // 免得在 Word 里写出点不动的坏链接。
+        else if (tag === 'a') {
+          const href = String(child.getAttribute('href') || '').trim();
+          if (/^(https?:|mailto:|tel:)/i.test(href)) runBase.link = href;
+        }
         // 上标/下标：脚注引用 <sup class="footnote-ref">[1]</sup> 此前退化成普通文本 "[1]"
         else if (tag === 'sup') runBase.superScript = true;
         else if (tag === 'sub') runBase.subScript = true;
@@ -173,6 +186,12 @@
           if (images) { const img = imageToNode(child); if (img) images.push(img); }
           continue;
         }
+        // 下划线 / 删除线：除按标签名（<u> / <del>）认之外，还必须认内联 text-decoration ——
+        // _prepareWordDOM 会把 <ins>/<del> 改写成带 text-decoration 的 <span>（Word 会把原生
+        // <ins>/<del> 当成修订追踪），只匹配标签名的话这两条路径的下划线/删除线在 Word 里会丢。
+        const deco = String((style.textDecorationLine || style.textDecoration) || '');
+        if (/underline/.test(deco)) runBase.underline = true;
+        if (/line-through/.test(deco)) runBase.strike = true;
         // 行内文字颜色：必须归一成 6 位 HEX 才能交给 docx（它只接受 6 位 HEX，其余值会抛
         // Invalid hex value 并中止整篇导出）。此前只识别 rgb(…)，其它一律「去掉 # 转大写」，
         // 于是命名色 red → "RED"、rgba(…) / var(--x) / currentColor 全部原样送进 docx 直接炸。
@@ -258,38 +277,53 @@
     if (tag === 'ul' || tag === 'ol') {
       // 有序（ol）与无序（ul）必须区分：此前两者都产出 {type:'bullet'}，
       // 导致预览里的 "1. 2. 3." 在 Word 里全变成圆点。这里带上 ordered + 序号文本。
-      const ordered = tag === 'ol';
       const nodes = [];
-      let idx = 0;
       // 列表项内容走 runs：脚注定义就在 <ol><li> 里，用 textContent 会把公式三重化
       //（"E=mc2E = mc^2E=mc2"），高亮/加粗也一并丢失。
+      // 【2026-09-26 修复】必须先摘掉本项自己的嵌套列表再收集文字：collectRuns 对未白名单
+      // 标签一律递归，嵌套 <ul>/<ol> 的文字会被折进父项 runs —— 实测 3 层列表会产出
+      // [{level:0,runs:[父项,子项A,孙项X,子项B]}, {level:1,runs:[子项A,孙项X]}, {level:1,runs:[子项B]}]，
+      // 于是 Word 里子项/孙项在父项行里【重复出现】。
       const liRuns = (li, prefix) => {
         const inner = li.cloneNode(true);
-        const cbIn = inner.querySelector('input[type="checkbox"]');
-        if (cbIn && cbIn.parentNode) cbIn.parentNode.removeChild(cbIn);
+        inner.querySelectorAll(':scope > ul, :scope > ol').forEach((n) => n.remove());
+        inner.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.remove());
         const runs = collectInlineRuns(inner);
         if (prefix) runs.unshift({ text: prefix });
         if (!runs.length) runs.push({ text: '' });
         return runs;
       };
-      for (const li of el.querySelectorAll(':scope > li')) {
-        idx += 1;
-        const cb = li.querySelector('input[type="checkbox"]');
-        const prefix = cb ? (cb.checked ? '☑ ' : '☐ ') : '';
-        nodes.push({ type: 'bullet', ordered, marker: ordered ? `${idx}.` : '', level: 0, runs: liRuns(li, prefix) });
-        const nestedUl = li.querySelector(':scope > ul, :scope > ol');
-        if (nestedUl) {
-          const nOrdered = nestedUl.tagName.toLowerCase() === 'ol';
-          let nidx = 0;
-          for (const nli of nestedUl.querySelectorAll(':scope > li')) {
-            nidx += 1;
-            nodes.push({
-              type: 'bullet', ordered: nOrdered, marker: nOrdered ? `${nidx}.` : '', level: 1,
-              runs: liRuns(nli, ''),
-            });
-          }
+      // 任务项 checkbox 只认【本项自己的】（直接子级，或本项 <p> 里的）：此前用
+      // li.querySelector 会命中嵌套子项里的 checkbox，把父项误判成任务项、多出 ☑/☐ 前缀。
+      const ownCheckbox = (li) => {
+        for (const c of li.children) {
+          if (c.tagName === 'INPUT' && String(c.type).toLowerCase() === 'checkbox') return c;
         }
-      }
+        for (const p of li.querySelectorAll(':scope > p')) {
+          const cb = p.querySelector('input[type="checkbox"]');
+          if (cb) return cb;
+        }
+        return null;
+      };
+      // 递归下探所有层级：此前只写到第 2 层（level 写死 0/1），**第 3 层及以后的条目整项丢失**
+      //（文字只以「被父项吞掉」的形式残留）。预览侧明确支持 3 层以上
+      //（见 test/list-indent-normalize.test.cjs 断言 3 层 ul/ol），必须递归。
+      const walkList = (listEl, level) => {
+        const isOrdered = listEl.tagName.toLowerCase() === 'ol';
+        let idx = 0;
+        for (const li of listEl.querySelectorAll(':scope > li')) {
+          idx += 1;
+          const cb = ownCheckbox(li);
+          const prefix = cb ? (cb.checked ? '☑ ' : '☐ ') : '';
+          nodes.push({
+            type: 'bullet', ordered: isOrdered, marker: isOrdered ? `${idx}.` : '', level,
+            runs: liRuns(li, prefix),
+          });
+          const sub = li.querySelector(':scope > ul, :scope > ol');
+          if (sub) walkList(sub, level + 1);
+        }
+      };
+      walkList(el, 0);
       return [{ type: 'list', children: nodes }];
     }
     // 定义列表 <dl>：<dt> 加粗段落 + <dd> 缩进段落（对齐预览 .preview-content dt/dd）。
@@ -313,15 +347,28 @@
       const rows = [];
       for (const tr of el.querySelectorAll('tr')) {
         const cells = [];
+        let hasHeader = false;
         for (const td of tr.querySelectorAll('th, td')) {
           const runs = collectInlineRuns(td);
           // text 保留（无 runs 时的兜底 + 既有结构契约），但必须由 runs 拼接 ——
           // 用 textContent 会把公式的 MathML/LaTeX 源码/可见文本拼成 "α\alphaα"。
           const text = runs.map((r) => (typeof r.text === 'string' ? r.text : '')).join('');
           const para = runs.length ? { text, runs } : { text };
-          cells.push({ paragraphs: [para], width: 0 });
+          // 表头：<th>（预览里 .preview-content th 是 600 字重 + --bg-secondary 底色），
+          // 此前 th/td 同等对待 → Word 里看不出哪行是表头。
+          const header = td.tagName.toLowerCase() === 'th';
+          if (header) hasHeader = true;
+          // 列对齐：渲染器输出的是 align **属性**（表格插件产出 <th align="center">，
+          // styles.css 也按 th[align="center"] 选择），不是内联 style ——
+          // 只读 style.textAlign 会永远取空，Markdown 的 :---: 在 Word 里丢。
+          const rawAlign = td.getAttribute('align') || (td.style ? td.style.textAlign : '') || '';
+          const align = String(rawAlign).trim().toLowerCase();
+          cells.push({
+            paragraphs: [para], width: 0, header,
+            ...(align ? { align } : {}),
+          });
         }
-        rows.push({ cells });
+        rows.push({ cells, header: hasHeader });
       }
       // <table> 里一条 <tr> 都没有（原始 HTML 很常见，例如只有 <caption>/<colgroup>）：绝不能
       // 产出空表格 —— docx 的 Table 构造器算 Array(Math.max(...rows.map(r => r.CellCount)))，

@@ -1056,3 +1056,88 @@ test('_structureMathmlToOmmlChunked: 分块版与同步版产出逐位一致（>
     assert.ok(chunkStruct[0].runs.some((r) => typeof r.omml === 'string' && r.omml.includes('oMath')), '应产出 OMML run');
   });
 });
+
+// 回归（2026-09-26，P1–P4 的**终点**断言）：「中间结构对、终点丢」是导出类需求最常见的失败形态 ——
+// 结构层用例（export-docx-nodes）只能证明中间结构对，这里用真实 docx 打包 + 解
+// word/document.xml 与 rels，证明这四条能力真的写进了 OOXML：
+//    P1 列表层级 → w:ilvl    P2 超链接 → w:hyperlink + TargetMode="External"
+//    P3 表头     → w:tblHeader + 底色 + 加粗 + w:jc    P4 下划线 → w:u
+test('docx-builder: P1–P4 在 OOXML 里落地（ilvl / hyperlink+External / tblHeader / w:u）', async () => {
+  const path = require('path');
+  const JSZip = require('jszip');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  let xml;
+  let rels = '';
+  try {
+    const blob = await builder([
+      // P1：第 3 层（level=2）此前整项丢失。两条路径都要能看出层级：
+      // 无序项走 docx 的 bullet level（→ w:ilvl），有序项走「序号 + 悬挂缩进」
+      //（docx 的 bullet 没有内置编号样式，builder 用 marker + indent 呈现，见其注释）。
+      { type: 'bullet', ordered: false, marker: '', level: 0, runs: [{ text: '父项' }] },
+      { type: 'bullet', ordered: false, marker: '', level: 2, runs: [{ text: '孙项' }] },
+      { type: 'bullet', ordered: true, marker: '1.', level: 2, runs: [{ text: '有序孙项' }] },
+      // P2 + P4：链接与下划线
+      { type: 'paragraph', runs: [
+        { text: '官网', link: 'https://example.com/a?b=1' },
+        { text: '下划线', underline: true },
+      ] },
+      // P3：表头行 + 三列对齐
+      { type: 'table', rows: [
+        { header: true, cells: [
+          { paragraphs: [{ text: '左', runs: [{ text: '左' }] }], width: 0, header: true, align: 'left' },
+          { paragraphs: [{ text: '中', runs: [{ text: '中' }] }], width: 0, header: true, align: 'center' },
+        ] },
+        { header: false, cells: [
+          { paragraphs: [{ text: '右' }], width: 0, align: 'right' },
+          { paragraphs: [{ text: '默认' }], width: 0 },
+        ] },
+      ] },
+    ], {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+    });
+    const ab = await blob.arrayBuffer();
+    assert.ok(ab.byteLength > 0, '应成功构建 docx');
+    const zip = new JSZip();
+    zip.load(Buffer.from(ab));
+    xml = zip.file('word/document.xml').asText();
+    const relFile = zip.file('word/_rels/document.xml.rels');
+    rels = relFile ? relFile.asText() : '';
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  // P1：无序项的层级必须写进 w:ilvl（此前第 3 层整项丢失，只剩前两层）
+  assert.ok(/<w:ilvl w:val="2"\/>/.test(xml), '【P1】第 3 层无序项应写 <w:ilvl w:val="2"/>');
+  assert.ok(xml.includes('孙项'), '【P1】第 3 层文字必须在 document.xml 里');
+  // P1：有序项的层级靠缩进量表达（360 + level*360），否则第 3 层在 Word 里与第 1 层齐平
+  assert.ok(xml.includes('有序孙项'), '【P1】第 3 层有序项文字必须在');
+  const inds = xml.match(/<w:ind\b[^>]*\/>/g) || [];
+  assert.ok(inds.some((s) => s.includes('w:left="1080"') && s.includes('w:hanging="240"')),
+    '【P1】第 3 层有序项应带 1080 悬挂缩进，实际 w:ind=' + JSON.stringify(inds));
+  // P2：正文是可点链接，且关系表必须是 External（漏了 TargetMode，Word 打开就是死链）
+  assert.ok(/<w:hyperlink\b/.test(xml), '【P2】应产出 <w:hyperlink>（此前退化成纯文本）');
+  assert.ok(xml.includes('官网'), '【P2】链接文字不得丢');
+  assert.ok(/TargetMode="External"/.test(rels), '【P2】超链接关系必须是 External');
+  assert.ok(rels.includes('https://example.com/a?b=1'), '【P2】href 应原样进关系表');
+  // P3：表头行标记（跨页重复）+ 底色 + 加粗，三列对齐各落一条 w:jc
+  assert.ok(/<w:tblHeader\b/.test(xml), '【P3】表头行应带 <w:tblHeader/>');
+  assert.ok(/<w:shd\b[^>]*w:fill="EEEDEC"/.test(xml), '【P3】表头单元格应有表头底色 EEEDEC');
+  assert.ok(/<w:b\/>/.test(xml), '【P3】表头文字应加粗');
+  const jcs = (xml.match(/<w:jc w:val="[^"]+"\/>/g) || []).map((s) => s.replace(/.*w:val="([^"]+)".*/, '$1'));
+  for (const want of ['left', 'center', 'right']) {
+    assert.ok(jcs.includes(want), '【P3】列对齐缺 ' + want + '，实际 w:jc=' + JSON.stringify(jcs));
+  }
+  // P4：下划线必须落成 w:u（此前只留文字、丢了下划线）
+  assert.ok(/<w:u\b[^>]*w:val="single"/.test(xml), '【P4】下划线应落成 <w:u w:val="single"/>');
+});
