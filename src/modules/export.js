@@ -1881,21 +1881,33 @@
       // 生成 docx（真 OOXML）：主线程直构建（lib/docx.min.js 常驻加载，缺失时按需补加载）。
       // 曾走 Web Worker，但真机上 Worker 不可用会导致整条导出退化成 altChunk（公式全变文字），
       // 可用性优先，直接主线程构建。
-      async _buildDocxBuffer(structure, page) {
-        await this._ensureDocxLibLoaded();
-        if (typeof window.buildDocxFromStructure !== 'function') {
-          throw new Error('导出组件未加载（docx-builder 未加载）');
-        }
+      async _buildDocxBuffer(structure, page, rebuild) {
         // 优先用 Web Worker 离主线程构建：彻底消除「导出时界面独占」，并把构建内存压力隔离在
-        // Worker 线程（Worker 终止后即回收，不拖累主线程）。Worker 不可用/加载失败/超时/报错时，
-        // 自动回退到当前稳定的主线程真 OOXML 路径——因此最坏情况与现在一致，不会更差。
+        // Worker 线程（Worker 终止后即回收）。Worker 自带 docx 库与 builder，故**先试 Worker**，
+        // 成功时不必在主线程再加载一份 docx 库（省一份库内存）。失败再回退主线程真 OOXML 路径。
+        const workerState = { transferred: false };
         try {
-          const buf = await this._buildDocxInWorker(structure, page);
+          const buf = await this._buildDocxInWorker(structure, page, workerState);
           if (buf) return buf;
         } catch (e) {
           console.warn('[export] docx Worker 构建失败，回退主线程：', e);
         }
-        // 主线程兜底（当前稳定路径）
+        // 主线程兜底：此时才需要 docx 库与 builder（缺失时按需补加载）。
+        await this._ensureDocxLibLoaded();
+        if (typeof window.buildDocxFromStructure !== 'function') {
+          throw new Error('导出组件未加载（docx-builder 未加载）');
+        }
+        // Worker 可能已把图片字节 transfer 走（主线程侧 buffer 已 detached）→ 用调用方提供的
+        // rebuild 重新生成一份等价结构，否则主线程构建会拿到空图片。
+        let buildStructure = structure;
+        if (workerState.transferred && typeof rebuild === 'function') {
+          try {
+            buildStructure = await rebuild();
+          } catch (e) {
+            console.warn('[export] 兜底重建结构失败，改回原结构：', e);
+            buildStructure = structure;
+          }
+        }
         // 构建若卡住（极端环境缺 Blob 等）不能让导出永远悬着，超时后仍回退 html-docx，保证「导出一定有结果」。
         const MAIN_BUILD_TIMEOUT = 60000;
         let timer = null;
@@ -1903,7 +1915,7 @@
           timer = setTimeout(() => rej(new Error('主线程 docx 构建超时')), MAIN_BUILD_TIMEOUT);
         });
         try {
-          const blob = await Promise.race([window.buildDocxFromStructure(structure, page), timeout]);
+          const blob = await Promise.race([window.buildDocxFromStructure(buildStructure, page), timeout]);
           return await blob.arrayBuffer();
         } finally {
           clearTimeout(timer);
@@ -1913,7 +1925,7 @@
       // Worker 内 importScripts」方式，规避老 Tauri/WebView 下直接 importScripts 绝对 URL 不稳
       // 的问题，最大化 Worker 真正生效的概率。Worker 不可用/依赖加载失败/超时/报错时，抛错交给
       // _buildDocxBuffer 的主线程兜底——最坏情况与现在一致，不会更差。
-      _buildDocxInWorker(structure, page) {
+      _buildDocxInWorker(structure, page, state) {
         return new Promise((resolve, reject) => {
           if (typeof Worker === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL || typeof fetch === 'undefined') {
             return reject(new Error('Web Worker / fetch 不可用'));
@@ -1999,8 +2011,29 @@
               try { URL.revokeObjectURL(url); } catch (_) {}
               reject(new Error('docx Worker 错误: ' + (err && err.message ? err.message : err)));
             };
-            // structure 含 Uint8Array 图片数据：structured clone 拷贝即可（不 transfer，避免主线程侧被置空）。
-            worker.postMessage({ structure, page });
+            // 图片字节零拷贝 transfer 给 Worker：structure 里的 image.data 是各图解码后的 Uint8Array，
+            // 默认 structured clone 会把整份图片内存再复制一遍 —— 图片/图表(PNG)多的大文档下，这正是
+            // 主线程内存峰值的主要来源。改 transfer 后主线程侧这些 buffer 变为 detached（不再占用），
+            // 故 Worker 失败时调用方须重建 structure 再走主线程兜底（见 _buildDocxBuffer）。
+            const transfers = [];
+            const seen = new Set();
+            const collectImageBuffers = (arr) => {
+              if (!Array.isArray(arr)) return;
+              for (const n of arr) {
+                if (!n) continue;
+                if (n.type === 'image' && n.data && n.data.buffer && !seen.has(n.data.buffer)) {
+                  seen.add(n.data.buffer);
+                  transfers.push(n.data.buffer);
+                } else if (n.type === 'table') {
+                  for (const row of (n.rows || [])) {
+                    for (const cell of (row.cells || [])) collectImageBuffers(cell.paragraphs);
+                  }
+                }
+              }
+            };
+            collectImageBuffers(structure);
+            if (state) state.transferred = transfers.length > 0;
+            worker.postMessage({ structure, page }, transfers);
           }).catch((err) => {
             // 依赖 fetch 失败：回退主线程。
             reject(new Error('docx 依赖加载失败，回退主线程: ' + (err && err.message ? err.message : err)));
@@ -2187,7 +2220,12 @@
               // 并使取消按钮在构建开始前可响应。
               await new Promise(r => setTimeout(r, 0));
               if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
-              const arrayBufferDocx = await this._buildDocxBuffer(structure, page);
+              // 传入 rebuild：Worker 路径会把图片字节 transfer 走，若其失败需重建一份等价结构再走主线程兜底。
+              const arrayBufferDocx = await this._buildDocxBuffer(structure, page, async () => {
+                const s = (typeof window.domToDocxStructure === 'function') ? await window.domToDocxStructure(clone) : null;
+                if (s && Array.isArray(s)) await this._structureMathmlToOmmlChunked(s);
+                return s;
+              });
               clearTimeout(watchdog);
               const bufDocx = new Uint8Array(arrayBufferDocx);
               await TauriApi.writeBinaryFile({ path, contents: bufDocx });

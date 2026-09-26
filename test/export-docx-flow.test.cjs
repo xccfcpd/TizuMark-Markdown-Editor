@@ -562,6 +562,51 @@ test('_buildDocxBuffer: DocxLib 缺失时按需加载后再构建', async () => 
   });
 });
 
+// 回归：Worker 路径会把图片字节 transfer 走（主线程侧 buffer 变 detached），若其失败，
+// 主线程兜底必须先重建一份等价结构，否则会拿到空图片。未 transfer（如 Worker 不可用）则不必重建。
+test('_buildDocxBuffer: Worker 已 transfer 图片且失败时，先重建结构再走主线程构建', async () => {
+  await withEditor({}, async (w, ed) => {
+    w.DocxLib = {};
+    let rebuildCalled = 0;
+    let builtWith = null;
+    w.buildDocxFromStructure = async (structure) => {
+      builtWith = structure;
+      return { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+    };
+    ed._buildDocxInWorker = async (structure, page, state) => {
+      if (state) state.transferred = true; // 模拟图片已被 transfer（主线程 buffer detached）
+      throw new Error('worker fail');
+    };
+    const rebuilt = [{ type: 'paragraph', runs: [{ text: 'rebuilt' }] }];
+    const original = [{ type: 'paragraph', runs: [{ text: 'original' }] }];
+    const ab = await ed._buildDocxBuffer(original, {
+      pageWidth: 1, pageHeight: 1, marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+    }, async () => { rebuildCalled++; return rebuilt; });
+    assert.strictEqual(rebuildCalled, 1, '已 transfer 时应调用 rebuild 重建结构');
+    assert.strictEqual(builtWith, rebuilt, '主线程构建应使用重建后的结构');
+    assert.ok(new Uint8Array(ab).length > 0, '应返回构建字节');
+  });
+});
+
+test('_buildDocxBuffer: Worker 未 transfer（不可用等）时，不重建、直接用原结构', async () => {
+  await withEditor({}, async (w, ed) => {
+    w.DocxLib = {};
+    let rebuildCalled = 0;
+    let builtWith = null;
+    w.buildDocxFromStructure = async (structure) => {
+      builtWith = structure;
+      return { arrayBuffer: async () => new Uint8Array([1]).buffer };
+    };
+    ed._buildDocxInWorker = async () => { throw new Error('no worker'); }; // 不设 transferred
+    const original = [{ type: 'paragraph', runs: [{ text: 'original' }] }];
+    await ed._buildDocxBuffer(original, {
+      pageWidth: 1, pageHeight: 1, marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+    }, async () => { rebuildCalled++; return [{ type: 'paragraph' }]; });
+    assert.strictEqual(rebuildCalled, 0, '未 transfer 不应重建');
+    assert.strictEqual(builtWith, original, '应直接用原结构构建');
+  });
+});
+
 // 回归（2026-09-14 用户第二次验证 docx）：
 // ① 【修复被静默跳过】mml2omml 不转义 <m:t> 文本，公式含裸 <（i<j、0<i<n）时 OMML 非良构，
 //    DOMParser 报 parsererror → 旧实现直接 return，空槽规则/错位上提全部失效、虚线框残留。
