@@ -401,6 +401,9 @@
           }
   
           if (!this.settings.scrollSync || !this._canScroll.editor) return;
+          // 程序化定位窗口（大纲跳转等，见 layout.js）：时间戳是硬锁，渲染收尾的
+          // _resumeScroll 无法把它解除（2026-09-26 实测的"点完大纲编辑区没停在标题行"）。
+          if (Date.now() < (this._scrollSuppressUntil || 0)) return;
           if (container.classList.contains('preview-collapsed') || container.classList.contains('preview-mode')) return;
   
           this._canScroll.preview = false;
@@ -433,6 +436,8 @@
             return;
           }
           if (!this.settings.scrollSync || !this._canScroll.preview) return;
+          // 同上：程序化定位窗口内不接受预览反向联动（否则落定中的预览滚动会把编辑器拽走）。
+          if (Date.now() < (this._scrollSuppressUntil || 0)) return;
           if (container.classList.contains('preview-collapsed')) return;
   
           this._canScroll.editor = false;

@@ -40,7 +40,7 @@
       return this.render();
     }
 
-    async render(suppressLoading = false) {
+    async render(suppressLoading = false, contentIn) {
       // 防御：若被勾选抑制标记触发（应已被 debounceUpdatePreview 拦截），直接轻量返回，杜绝全量重渲染
       if (this.app._suppressNextPreviewRerender) {
         this.app._suppressNextPreviewRerender = false;
@@ -49,6 +49,9 @@
         return;
       }
     const gen = ++this.app._renderGeneration;
+    // contentIn：调用方已知编辑器内容时传入，省掉本函数内部一次 O(N) 的 cm.getValue()
+    // （切标签 / 防抖键入都会走到这里）。只接受字符串，其余一律回退为自行读取。
+    const _contentIn = (typeof contentIn === 'string') ? contentIn : null;
     let needLoad = false;
     const _tab = this.app.activeTab;
     const _tabKind = _tab ? _tab.kind : 'markdown';
@@ -90,7 +93,7 @@
     }
     // 明文：按原始文本显示（不做 Markdown 渲染）
     if (_tabKind === 'text') {
-      const content = this.app.cm.getValue();
+      const content = (_contentIn !== null) ? _contentIn : this.app.cm.getValue();
       this.app.preview.style.position = '';
       this.app.preview.style.padding = '';
       this.app.preview.innerHTML = '<pre class="plaintext-view">' + this.app.escapeHtml(content) + '</pre>';
@@ -98,10 +101,12 @@
       return;
     }
     try {
-      const content = this.app.cm.getValue();
+      // 调用方已给出内容时不重复序列化整篇（见上 contentIn）
+      const content = (_contentIn !== null) ? _contentIn : this.app.cm.getValue();
         // 行数按换行符扫描计数：大文档下 split('\n') 会生成 N 个子串（明显开销），这里只数不分配。
+        // 用原生 indexOf 数换行（比逐字符 charCodeAt 快一个量级）：本函数每次重渲染都会走到。
         let totalLines = 1;
-        for (let i = 0; i < content.length; i++) if (content.charCodeAt(i) === 10) totalLines++;
+        { let at = -1; while ((at = content.indexOf('\n', at + 1)) !== -1) totalLines++; }
         // _previewForceFull：导出等场景临时要求**全量渲染**（见 export.js 的 _preparePreviewForExport）。
         // 不加这个开关，大文档会走下面的滑动窗口只渲染约 1200 行，而导出基于
         // preview.cloneNode(true) → 导出的 HTML/PDF/Word 只会包含那一段（2026-09-23 用户报障）。

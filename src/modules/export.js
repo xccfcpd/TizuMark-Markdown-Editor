@@ -583,7 +583,11 @@
       // ECharts 是 <canvas> 渲染：cloneNode 不复制 canvas 像素（HTML/PDF 克隆后空白），
       // html2canvas 对 echarts canvas 也常捕不到（DOCX 丢失）。导出前用实例 getDataURL 截成
       // PNG，替换容器内 canvas 为 <img>，使三端都能稳定显示且与预览一致（含主题配色）。
-      async _snapshotEchartsForExport() {
+      async _snapshotEchartsForExport(clone) {
+        // 大文档：快照已在「全量渲染仍生效」时随克隆一起采集（见 _clonePreviewForExport），
+        // 这里直接用附带结果 —— 此刻 this.preview 已被恢复成窗口渲染（约 1200 行），
+        // 再按索引从实时预览取会和全文 clone 整体错位（审计发现，2026-09-26）。
+        if (clone && clone._tizuEchSnaps) return Array.from(clone._tizuEchSnaps);
         const snaps = [];
         const containers = Array.from(this.preview.querySelectorAll('.diagram-container[data-diagram-type="echarts"]'));
         const ec = (typeof window !== 'undefined' && window.echarts)
@@ -602,6 +606,33 @@
           }
         }
         return snaps;
+      },
+
+      // 采集实时预览中每张图片的渲染尺寸，供导出侧写入 clone 的同源 <img>。
+      // ⚠ 必须在预览**处于全量渲染**时调用：大文档下预览平时只渲染滑动窗口，
+      // 采集结果要按索引对齐全文 clone，窗口数据一用就整体错位
+      //（窗口外的图片会拿到窗口内前几张的尺寸，其余尺寸缺失 → Word 里被放大/跨页裁切）。
+      _collectExportImgMeta() {
+        const out = [];
+        try {
+          const imgs = this.preview ? this.preview.querySelectorAll('img') : [];
+          imgs.forEach((simg) => {
+            // 若预览元素已带 dataset（测试模拟已渲染），优先使用；否则取真实布局尺寸。
+            const dw = simg.dataset.dispW ? parseInt(simg.dataset.dispW, 10)
+              : (Math.round(simg.getBoundingClientRect().width) || 0);
+            const dh = simg.dataset.dispH ? parseInt(simg.dataset.dispH, 10)
+              : (Math.round(simg.getBoundingClientRect().height) || 0);
+            out.push({
+              natW: simg.naturalWidth || 0,
+              natH: simg.naturalHeight || 0,
+              dispW: dw || (simg.naturalWidth || 0),
+              dispH: dh || (simg.naturalHeight || 0),
+            });
+          });
+        } catch (e) {
+          console.warn('[export] 采集图片渲染尺寸失败：', e);
+        }
+        return out;
       },
 
       // 把 ECharts 快照（取自真实预览）按索引替换到 clone 的对应容器里。
@@ -1059,6 +1090,22 @@
           if (expandDetails) {
             clone.querySelectorAll('details:not([open])').forEach((el) => { el.open = true; });
           }
+          // ⚠ 下面两类数据只能从**真实预览 DOM** 采集，且必须趁「全量渲染仍挂在预览上」时采集：
+          //   · 图片渲染尺寸（naturalWidth / getBoundingClientRect 只对文档流内元素可靠）
+          //   · ECharts 快照（canvas 像素不在 cloneNode 副本里，只能对实时实例 getDataURL）
+          // 二者都是**按索引**对齐到 clone 的查询结果，而 finally 里的 prep.restore() 会把预览恢复
+          // 成窗口渲染（大文档只剩约 1200 行）→ 调用方之后采集必然与全文 clone 整体错位：
+          // 图表快照贴到错误的容器上、图片尺寸错配（审计发现，2026-09-26）。
+          // 故在此处采完挂到 clone 上，调用方优先取用（见 _snapshotEchartsForExport / _collectExportImgMeta）。
+          if (prep.full) {
+            try {
+              clone._tizuImgMeta = this._collectExportImgMeta();
+              clone._tizuEchSnaps = await this._snapshotEchartsForExport();
+            } catch (e) {
+              // 采集失败不阻断导出：调用方会回退为自己采集（小文档语义完全不变）
+              console.warn('[export] 采集导出源数据失败，回退调用方采集：', e);
+            }
+          }
           return clone;
         } finally {
           if (prep.full) await prep.restore();
@@ -1472,7 +1519,7 @@
           if (abbrData) abbrData.remove();
 
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，三端稳定显示。
-          const echSnapsHtml = await this._snapshotEchartsForExport();
+          const echSnapsHtml = await this._snapshotEchartsForExport(clone);
           this._applyEchartsSnapshots(clone, echSnapsHtml);
           await this._inlineImagesForExport(clone, this.activeTab.filePath);
           this._flushExportImageWarnings();
@@ -1969,6 +2016,9 @@
           if (buf) return buf;
         } catch (e) {
           console.warn('[export] docx Worker 构建失败，回退主线程：', e);
+          // 记下失败原因：主路径若随后也失败，会写诊断文件，把这条一起带上 ——
+          // 否则「静默回退到 altChunk（公式全变文字）」在现场无从定位（真机拿不到 console）。
+          this._docxWorkerFailReason = (e && e.message) ? e.message : String(e);
         }
         // 主线程兜底：此时才需要 docx 库与 builder（缺失时按需补加载）。
         await this._ensureDocxLibLoaded();
@@ -2136,7 +2186,11 @@
         // 给用户一个明确的等待反馈；60s watchdog 兜底防止 overlay 永远不消失。
         const overlay = document.createElement('div');
         overlay.innerHTML = `<div class="pdf-loading-spinner"></div><div class="pdf-loading-text">${this.t('preparingWordExport')}</div>`;
-        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.35);font-family:-apple-system,sans-serif;';
+        // 全屏阻塞态样式单独抽出：打包阶段要临时换成右下角非阻塞小条、结束后必须精确还原。
+        // 注意遮罩外观全部是**内联**样式（内联优先级高于类名规则），所以只能用内联方式切换，
+        // 写 CSS 类去覆盖是无效的。
+        const OVERLAY_BLOCKING_CSS = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.35);font-family:-apple-system,sans-serif;';
+        overlay.style.cssText = OVERLAY_BLOCKING_CSS;
         if (!document.getElementById('pdf-loading-style')) {
           const s = document.createElement('style');
           s.id = 'pdf-loading-style';
@@ -2169,6 +2223,30 @@
           if (overlayDone) return;
           overlayDone = true;
           if (overlay.parentNode) overlay.remove();
+        };
+
+        // 打包阶段（Worker 构建 DOCX）主线程是空闲的，用户正是趁这时去切标签；而遮罩此前
+        // 全程 inset:0 拦下所有鼠标事件 —— 这就是「导出时无法切换标签」的直接原因（用户 2026-09-26）。
+        // 本函数只在 Worker 在跑的那一段把遮罩缩成右下角小条并放行指针事件（取消按钮仍可点），
+        // Worker 一返回立刻还原全屏阻塞态 —— 之后的写盘与回退仍是主线程同步工作，遮罩必须继续拦。
+        const setOverlayCompact = (on) => {
+          if (!overlay || !overlay.parentNode) return;
+          const sp = overlay.querySelector('.pdf-loading-spinner');
+          if (on) {
+            overlay.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:9999;display:flex;' +
+              'align-items:center;gap:10px;padding:10px 14px;border-radius:10px;' +
+              'background:rgba(0,0,0,0.78);font-family:-apple-system,sans-serif;pointer-events:none;';
+            if (sp) sp.style.display = 'none';
+            if (progressText) progressText.textContent = this.t('exportPackagingHint');
+            cancelBtn.style.marginTop = '0';
+            cancelBtn.style.pointerEvents = 'auto';
+          } else {
+            overlay.style.cssText = OVERLAY_BLOCKING_CSS;
+            if (sp) sp.style.display = '';
+            if (progressText) progressText.textContent = this.t('preparingWordExport');
+            cancelBtn.style.marginTop = '';
+            cancelBtn.style.pointerEvents = '';
+          }
         };
   
         let watchdog = null;
@@ -2226,25 +2304,24 @@
           // 图片未成功内联、或加载超时时会读取失败 → natW=0 → 所有图片退化为 width=500
           // （小图被放大、超高图因不设 height 而跨页被裁）。
           {
-            const srcImgs = Array.from(this.preview.querySelectorAll('img'));
+            // 大文档：尺寸已在全量渲染仍生效时随克隆一并采集（见 _clonePreviewForExport 的说明）。
+            // 此处**不能**再读 this.preview —— 它此刻已被恢复为窗口渲染，按索引对齐会整体错位。
+            const srcMeta = (clone._tizuImgMeta && clone._tizuImgMeta.length)
+              ? clone._tizuImgMeta
+              : this._collectExportImgMeta();
             const dstImgs = Array.from(clone.querySelectorAll('img'));
             dstImgs.forEach((dimg, i) => {
-              const simg = srcImgs[i];
-              if (!simg) return;
-              // 若预览元素已带 dataset（测试模拟已渲染），优先使用；否则取真实布局尺寸。
-              const dw = simg.dataset.dispW ? parseInt(simg.dataset.dispW, 10)
-                : (Math.round(simg.getBoundingClientRect().width) || 0);
-              const dh = simg.dataset.dispH ? parseInt(simg.dataset.dispH, 10)
-                : (Math.round(simg.getBoundingClientRect().height) || 0);
-              dimg.dataset.natW = String(simg.naturalWidth || 0);
-              dimg.dataset.natH = String(simg.naturalHeight || 0);
-              dimg.dataset.dispW = String(dw || (simg.naturalWidth || 0));
-              dimg.dataset.dispH = String(dh || (simg.naturalHeight || 0));
+              const m = srcMeta[i];
+              if (!m) return;
+              dimg.dataset.natW = String(m.natW || 0);
+              dimg.dataset.natH = String(m.natH || 0);
+              dimg.dataset.dispW = String(m.dispW || (m.natW || 0));
+              dimg.dataset.dispH = String(m.dispH || (m.natH || 0));
             });
           }
   
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，三端稳定显示。
-          const echSnapsDocx = await this._snapshotEchartsForExport();
+          const echSnapsDocx = await this._snapshotEchartsForExport(clone);
           this._applyEchartsSnapshots(clone, echSnapsDocx);
           await this._inlineImagesForExport(clone, exportTab.filePath);
           this._flushExportImageWarnings();
@@ -2318,15 +2395,21 @@
               // 主路径只需 structure：先释放预览克隆，降低 Worker 构建期（耗时较长）的内存峰值。
               // Worker 失败 / docx 失败需兜底时，rebuild 会重建一份 prepared clone（仅失败路径付代价）。
               clone = null;
-              // 传入 rebuild：Worker 路径会把图片字节 transfer 走，若其失败需重建一份等价结构再走主线程兜底。
-              const arrayBufferDocx = await this._buildDocxBuffer(structure, page, async () => {
-                const c2 = await buildPreparedClone();
-                fallbackClone = c2;
-                if (!c2) throw new Error('重建导出结构失败（用户取消或克隆失败）');
-                const s = (typeof window.domToDocxStructure === 'function') ? await window.domToDocxStructure(c2) : null;
-                if (s && Array.isArray(s)) await this._structureMathmlToOmmlChunked(s);
-                return s;
-              });
+              setOverlayCompact(true);
+              let arrayBufferDocx;
+              try {
+                // 传入 rebuild：Worker 路径会把图片字节 transfer 走，若其失败需重建一份等价结构再走主线程兜底。
+                arrayBufferDocx = await this._buildDocxBuffer(structure, page, async () => {
+                  const c2 = await buildPreparedClone();
+                  fallbackClone = c2;
+                  if (!c2) throw new Error('重建导出结构失败（用户取消或克隆失败）');
+                  const s = (typeof window.domToDocxStructure === 'function') ? await window.domToDocxStructure(c2) : null;
+                  if (s && Array.isArray(s)) await this._structureMathmlToOmmlChunked(s);
+                  return s;
+                });
+              } finally {
+                setOverlayCompact(false);
+              }
               clearTimeout(watchdog);
               const bufDocx = new Uint8Array(arrayBufferDocx);
               await TauriApi.writeBinaryFile({ path, contents: bufDocx });
@@ -2340,6 +2423,7 @@
               // 写诊断文件到 docx 同目录，便于用户反馈精准定位（真机上拿不到 console）。
               try {
                 const diagText = `TizuMark 导出诊断\n代码版本: ${diag.build}\n\n` +
+                  `Worker 构建: ${this._docxWorkerFailReason || '成功'}\n` +
                   `window.DocxLib: ${diag.hasDocxLib}\n` +
                   `window.buildDocxFromStructure: ${diag.hasBuilder}\n` +
                   `window.domToDocxStructure: ${diag.hasDomToDocx}\n` +
@@ -2424,6 +2508,9 @@
           const buf = new Uint8Array(arrayBuffer);
           await TauriApi.writeBinaryFile({ path, contents: buf });
           this.setStatus(`${this.t('exportedWord')}: ${path}`);
+          // 补上 clearTimeout（2026-09-26 审计）：成功分支此前只调 onDone(true)，120s watchdog
+          // 仍挂着 → 导出早已成功，两分钟后却会凭空 setStatus('导出失败') 并撤掉遮罩，误导用户。
+          clearTimeout(watchdog);
           onDone(true);
         } catch (error) {
           clearTimeout(watchdog);
@@ -2459,7 +2546,7 @@
           // → 导出长图时 ECharts 图表整块空白。HTML / Word / PDF 三路都已做「快照 → 替换成 <img>」，
           // 唯独 PNG 这一路漏了（审计发现，2026-09-24）。
           try {
-            const echSnapsImg = await this._snapshotEchartsForExport();
+            const echSnapsImg = await this._snapshotEchartsForExport(clone);
             this._applyEchartsSnapshots(clone, echSnapsImg);
           } catch (e) {
             console.warn('[export] ECharts 快照失败（不影响其它内容）:', e);
@@ -2586,7 +2673,7 @@
           clone.querySelectorAll('.copy-btn, #abbr-data').forEach(el => el.remove());
 
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，PDF 稳定显示。
-          const echSnapsPdf = await this._snapshotEchartsForExport();
+          const echSnapsPdf = await this._snapshotEchartsForExport(clone);
           this._applyEchartsSnapshots(clone, echSnapsPdf);
           // 图片内联：把预览里的 blob:/file:///相对路径图片全部转内联 base64，
           // 使打印帧自包含（不受 blob LRU 回收 / 源解析影响，根除 PDF 空白图）。

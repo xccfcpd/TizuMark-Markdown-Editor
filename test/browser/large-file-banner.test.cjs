@@ -13,24 +13,19 @@
 'use strict';
 const fs = require('fs');
 
-const CHROME_PATH = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+// 驱动已改为零依赖 CDP（见 _cdp.cjs）：不再需要 puppeteer-core，Chrome / Edge 都能跑
+//（此前把可执行文件写死成 Chrome 默认路径，本机只有 Edge → 恒跳过，回归毫无关卡）。
+const { launch, findBrowser, skipReason } = require('./_cdp.cjs');
+const CHROME_PATH = process.env.CHROME_PATH || findBrowser();
 const URL = 'http://localhost:1420/';
-
-// 浏览器测试是本地范式：依赖系统 Chrome + 本机 node_modules 中的 puppeteer-core。
-// CI（ubuntu）或缺少该环境的机器上直接运行时应优雅跳过，而非崩溃。
-try {
-  require('puppeteer-core');
-} catch (_) {
-  console.log('SKIP: puppeteer-core 不可用（浏览器回归测试需系统 Chrome + puppeteer-core，属本地范式）。');
-  process.exit(0);
-}
-if (!fs.existsSync(CHROME_PATH)) {
-  console.log('SKIP: 未找到系统 Chrome：' + CHROME_PATH);
-  console.log('      设置 CHROME_PATH 环境变量指向本机 Chrome 可执行文件即可运行本测试。');
+const SKIP_REASON = skipReason();
+if (SKIP_REASON || !CHROME_PATH || !fs.existsSync(CHROME_PATH)) {
+  console.log('SKIP: ' + (SKIP_REASON || '未探测到 Chrome / Edge'));
+  console.log('      设置 CHROME_PATH 环境变量指向本机 Chromium 系浏览器即可运行本测试。');
   process.exit(0);
 }
 
-const puppeteer = require('puppeteer-core');
+const puppeteer = { launch };
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -48,6 +43,16 @@ const puppeteer = require('puppeteer-core');
   try {
     await page.goto(URL, { waitUntil: 'networkidle0', timeout: 30000 });
     await page.waitForFunction("window.editor && window.editor.preview", { timeout: 30000 });
+
+    // 前置：切到「编辑+预览」双栏。默认 viewMode='preview' 时 showLargeFileNotice 按设计
+    // 直接隐藏横幅（纯预览用虚拟滚动，可拖到全文，不需要提示，见 app.js:190），
+    // 本用例验证的却是**编辑态**的大文档提示 —— 此前缺这一步，3 项断言在本机恒失败
+    //（该文件此前从未真正执行过，2026-09-26 才被启用）。另两支浏览器用例同样有此前置。
+    await page.evaluate(() => { window.editor.setViewMode('edit'); });
+    await page.waitForFunction(
+      "(() => { const e = document.querySelector('.CodeMirror'); return !!e && e.getBoundingClientRect().width > 50; })()",
+      { timeout: 8000 }
+    );
 
     // 1) 横幅与按钮初始存在
     const hasBtn = await page.evaluate(() => !!document.getElementById('large-file-banner-dont-remind'));
@@ -80,10 +85,12 @@ const puppeteer = require('puppeteer-core');
     assert('点击「不再提醒」后横幅立即隐藏', afterClick.hidden === true);
 
     // 4) 会话标志为 true 后，再次打开大文件不再弹（本次应用运行期间）
+    //    注意：这里不再手动摘掉 hidden。抑制态下横幅本就应当是隐身的（点「不再提醒」时已隐藏），
+    //    人为显示它属于不可达状态；从真实状态出发断言依然有效力 —— 抑制一旦失效，
+    //    showLargeFileNotice 会 remove('hidden') 把它显示出来，断言随即失败。
     const staysHidden = await page.evaluate(() => {
       const ed = window.editor;
       const banner = document.getElementById('large-file-banner');
-      banner.classList.remove('hidden');
       ed.showLargeFileNotice('perf-banner', 60000, 1024 * 1024 * 9);
       return banner.classList.contains('hidden');
     });

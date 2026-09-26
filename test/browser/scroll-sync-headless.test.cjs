@@ -17,22 +17,17 @@
 const path = require('path');
 const fs = require('fs');
 
-const CHROME_PATH = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+// 驱动已改为零依赖 CDP（见 _cdp.cjs）：不再需要 puppeteer-core，Chrome / Edge 都能跑
+//（此前把可执行文件写死成 Chrome 默认路径，本机只有 Edge → 恒跳过，回归毫无关卡）。
+const { launch, findBrowser, skipReason } = require('./_cdp.cjs');
+const CHROME_PATH = process.env.CHROME_PATH || findBrowser();
 const URL = 'http://localhost:1420/';
-
-// 浏览器测试是本地范式：依赖系统 Chrome + 本机 node_modules 中的 puppeteer-core。
-// CI（ubuntu）或缺少该环境的机器上直接运行时应优雅跳过，而非崩溃。
-try {
-  require('puppeteer-core');
-} catch (_) {
-  console.log('SKIP: puppeteer-core 不可用（浏览器回归测试需系统 Chrome + puppeteer-core，属本地范式）。');
+const SKIP_REASON = skipReason();
+if (SKIP_REASON || !CHROME_PATH || !fs.existsSync(CHROME_PATH)) {
+  console.log('SKIP: ' + (SKIP_REASON || '未探测到 Chrome / Edge'));
   process.exit(0);
 }
-if (!fs.existsSync(CHROME_PATH)) {
-  console.log('SKIP: 未找到系统 Chrome：' + CHROME_PATH);
-  process.exit(0);
-}
-const puppeteer = require('puppeteer-core');
+const puppeteer = { launch };
 
 // 足够长、含中部的任务列表（勾选框测试需要），行数足以滚动
 function buildDemo() {

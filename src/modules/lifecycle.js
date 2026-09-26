@@ -37,6 +37,7 @@
                 }
               }
               this.cm.setValue(this.activeTab.content);
+              this._syncEditorModeFor(this.activeTab);
               this.updateTabBar();
               this.updatePreview();
             }

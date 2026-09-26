@@ -32,11 +32,12 @@
           // 重新加载：markdown 和图片都可能在外部被改动，清图片 base64 缓存强制重读
           this._imageBase64Cache.clear();
           this.cm.setValue(content);
+          this._syncEditorModeFor(tab);
           // 取消 change 事件调度的 debounced 预览更新，后续显式调用 updatePreview 替代
           clearTimeout(this.debounceTimer);
           this.cm.setCursor(cursorPos);
           this.cm.clearHistory();
-          await this.updatePreview();
+          await this.updatePreview(false, content);
           // 统一恢复该 tab 记忆的编辑器/预览滚动位置（临时关闭滚动同步避免互相重定位）
           this._restoreSwitchScroll(scrollInfo, previewScrollTop);
           this.updateWordCount();
@@ -204,12 +205,15 @@
         const restorePreviewTop = (active && active.previewScrollTop) || 0;
   
         this.cm.setValue(this.activeTab.content || '');
+        // 会话恢复是「重启后打开大文件仍然卡」的直接来源：这条路径不经过 switchTab，
+        // 因此从不调用 _applyCodeMode —— 大文档降级在这里必须补上（审计发现，2026-09-26）。
+        this._syncEditorModeFor(active);
         this.cm.setCursor(restoreCursor);
         this.cm.clearHistory();
         this.updateTabBar();
         this.updateTabDisplay();
         this.syncViewModeToTab();
-        await this.updatePreview();
+        await this.updatePreview(false, this.activeTab.content || '');
         // 统一恢复该 tab 记忆的编辑器/预览滚动位置（临时关闭滚动同步避免互相重定位）
         this._restoreSwitchScroll(restoreScroll, restorePreviewTop);
         this.updateOutline();
@@ -292,6 +296,19 @@
           this._endPaneLoad();
         }
       },
+      // 「写入编辑器后同步语法高亮模式」的统一入口（2026-09-26 审计补齐）。
+      // 起因：`mode` 是**编辑器级**选项而非每文档属性，凡是自行 cm.setValue(...) 的路径若不
+      // 同步它，模式就会停留在上一个文档上；而大文档降级（见 _applyCodeMode）也随之一并失效
+      // —— 这正是「重启后打开大文件仍然卡」的根因：会话恢复（restoreSession）直接 setValue，
+      // 从不经过 switchTab，也就从不调用 _applyCodeMode。
+      // 走 switchTab 的路径已由 tabs.js 内部调用（重复调用会被 _applyCodeMode 的去重挡住，无副作用）。
+      _syncEditorModeFor(tab) {
+        if (!tab) return;
+        const ext = (tab.kind === 'markdown' || !tab.filePath)
+          ? 'md'
+          : ((window.FileTypes && window.FileTypes.extOf) ? window.FileTypes.extOf(tab.filePath) : '');
+        this._applyCodeMode(ext, tab.content || '');
+      },
       // 非 Markdown 明文文件：按扩展名选择 CodeMirror 语法高亮模式（仅高亮，不改变编辑行为）
       // 第 2 参 content：大文档降级判定的依据（见下）。
       _applyCodeMode(ext, content) {
@@ -323,8 +340,12 @@
         if (C && typeof content === 'string' && content.length) {
           let huge = content.length > C.MAX_PREVIEW_CHARS;
           if (!huge) {
+            // 数行数走原生 indexOf（比逐字符 charCodeAt 快一个量级）：本函数在**每次切标签**都会
+            // 被调用，扫描成本直接叠在切换耗时上；且此处的 mode 常常与上次相同（随后即被去重返回），
+            // 所以这里只求「够快」—— 上限已被上面的 MAX_PREVIEW_CHARS 挡住。
             let lines = 1;
-            for (let i = 0; i < content.length; i++) { if (content.charCodeAt(i) === 10) { lines++; } }
+            let at = -1;
+            while ((at = content.indexOf('\n', at + 1)) !== -1) { lines++; }
             huge = lines > C.MAX_PREVIEW_LINES;
           }
           if (huge) {

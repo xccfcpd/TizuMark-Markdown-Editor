@@ -185,8 +185,10 @@ function runBrowserOne(file) {
     env,
   });
   const out = (res.stdout || '') + (res.stderr || '');
-  const passCount = (out.match(/✅\s*PASS/g) || []).length;
-  const failCount = (out.match(/❌\s*FAIL/g) || []).length;
+  // 两种断言标记都要数：大部分用例用 ✅ PASS / ❌ FAIL，large-file-banner 用 ✓ / ✗。
+  // 只数前者会让后者恒显示 "(0/0 passed)" —— 失败文件看起来像"没跑用例"（2026-09-26 修）。
+  const passCount = (out.match(/✅\s*PASS/g) || []).length + (out.match(/^\s+✓/gm) || []).length;
+  const failCount = (out.match(/❌\s*FAIL/g) || []).length + (out.match(/^\s+✗/gm) || []).length;
   const tests = passCount + failCount;
   return {
     file: path.relative(TEST_DIR, file),
@@ -229,26 +231,17 @@ function main() {
   }
   const browserFiles = files.filter(isBrowserTest);
   const normalFiles = files.filter((f) => !isBrowserTest(f));
-  // 浏览器测试依赖系统 Chrome + 本机 node_modules 中的 puppeteer-core（本地范式，
-  // 见 ADR-7）。CI（ubuntu）/ 任何缺少该环境的机器上自动跳过，避免「找不到
-  // puppeteer-core」直接崩溃导致整批测试失败。
+  // 浏览器测试的驱动已换成零依赖 CDP（test/browser/_cdp.cjs，Node 内置 WebSocket），
+  // 判定条件因此从「装了 puppeteer-core 吗」变为「有 Chromium 系浏览器吗」——
+  // 本机只有 Edge 也能跑（此前写死 Chrome 路径 → 恒跳过，等于没有关卡；审计发现 2026-09-26）。
   if (browserFiles.length) {
-    const mods = resolvePuppeteerModules();
-    let hasPuppeteer = false;
-    try { require.resolve('puppeteer-core'); hasPuppeteer = true; } catch (_) {}
-    if (!hasPuppeteer && mods) {
-      try { hasPuppeteer = fs.existsSync(path.join(mods, 'puppeteer-core', 'package.json')); } catch (_) {}
-    }
-    if (!hasPuppeteer) {
-      console.log(`⚠ 跳过 ${browserFiles.length} 个浏览器测试（环境缺少 puppeteer-core / 系统 Chrome；属本地范式）。\n`);
-      if (!mods) {
-        console.log('  未配置 puppeteer-core 所在目录。需要运行这批用例时：\n' +
-          '      PUPPETEER_MODULES=<装有 puppeteer-core 的目录> npm test\n' +
-          '  （也可导出为 NODE_PATH。运行器不再内置本机路径猜测。）\n');
-      }
-      // 显式提示覆盖缺口（审计发现，2026-09-24）：CI（ubuntu）恒定缺该环境，于是这批用例
-      // 永远不跑且没有任何汇总痕迹 —— 涉及浏览器行为的回归只能在本地被发现。
-      if (process.env.CI) console.log('⚠ 注意：CI 环境同样缺少该依赖，这批浏览器用例不会执行（已知测试缺口）。\n');
+    let skipWhy = null;
+    try { skipWhy = require(path.join(TEST_DIR, 'browser', '_cdp.cjs')).skipReason(); }
+    catch (e) { skipWhy = 'CDP 驱动不可用：' + e.message; }
+    if (skipWhy) {
+      console.log(`⚠ 跳过 ${browserFiles.length} 个浏览器测试：${skipWhy}\n`);
+      console.log('  需要运行这批用例时：设置 CHROME_PATH 指向 Chrome/Edge 可执行文件即可。\n');
+      if (process.env.CI) console.log('⚠ 注意：CI 环境同样没有浏览器，这批用例不会执行（已知测试缺口）。\n');
       browserFiles.length = 0;
     }
   }

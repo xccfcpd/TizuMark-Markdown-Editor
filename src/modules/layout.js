@@ -630,42 +630,68 @@
           this._viewModeRestoreTimer = null;
           this._canScroll.editor = false;
           this._canScroll.preview = false;
-          // 编辑区始终跳转到该标题行（与文档大小无关，大文件预览只渲染头部时也能跳）
-          if (!isNaN(line)) {
-            this.cm.setCursor({ line, ch: 0 });
-            // 显式滚动到标题行顶部留 80px 余量：scrollIntoView 在某些 WebView 下不触发实际滚动，
-            // 导致「光标到了标题行、可视区仍停在顶部」；scrollTo 直接生效且不受上方 _canScroll 抑制影响。
-            const targetTop = this.cm.heightAtLine(line, 'local') - 80;
-            this.cm.scrollTo(0, Math.max(0, targetTop));
-          }
-          // 预览区跳转（仅当该标题已渲染在预览中时）
-          // 守卫：纯符号标题（如 `# ===`）headingToId 会产出空串，querySelector('#') 抛
-          // SyntaxError（历史 bug），跳过预览跳转仅保留编辑区跳转
-          if (id) {
-            const target = this.preview.querySelector(`#${CSS.escape(id)}`);
-            if (target) {
-              const previewHeight = this.preview.clientHeight;
-              const targetRect = target.getBoundingClientRect();
-              const previewRect = this.preview.getBoundingClientRect();
-              // 顶部对齐：标题行与预览视口顶部对齐（余量 0），与编辑区跳转（顶部 -80px）一致，
-              // 符合用户预期「点大纲即定位到标题顶部」，且不依赖居中逻辑、不影响滚动同步。
-              const top = targetRect.top - previewRect.top + this.preview.scrollTop;
-              this.preview.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
-            } else if (this.previewWindow) {
-              // 大文档窗口模式：目标标题尚未渲染在预览中，以该行为焦点重渲染预览窗口，使其落点
-              this._previewScrollDriven = false;
-              if (Number.isFinite(line)) this._previewFocusLine = line;
-              this.updatePreview();
+          // 定位窗口用**时间戳**兜底，不能只靠上面两个 bool：跳转后预览通常还要再落定一次
+          //（代码高亮/图表/图片改变上方高度，Chrome 滚动锚定随之调整 scrollTop），而每次预览渲染
+          // 收尾都会 rAF 调用 _resumeScroll() 无条件复位这两个 bool（preview-controller）→ 跳转设下的
+          // 锁会被中途完成的渲染提前解除，落定中的预览滚动随即反向把编辑器拽到错误位置。
+          // 实测（2026-09-26）：+0ms 编辑器落点正确且标题可见(4811/目标4855)，+80ms 被拽到 3253，
+          // 同时预览自身从 15630 漂到 18518 —— 即「点大纲后编辑区没停在标题行」的真实成因。
+          const until = Date.now() + 420;
+          this._scrollSuppressUntil = until;
+          let appliedEd = null, appliedPv = null;
+          const applyJump = () => {
+            // 编辑区始终跳转到该标题行（与文档大小无关，大文件预览只渲染头部时也能跳）
+            if (!isNaN(line)) {
+              this.cm.setCursor({ line, ch: 0 });
+              // 显式滚动到标题行顶部留 80px 余量：scrollIntoView 在某些 WebView 下不触发实际滚动，
+              // 导致「光标到了标题行、可视区仍停在顶部」；scrollTo 直接生效且不受上方 _canScroll 抑制影响。
+              const targetTop = Math.max(0, this.cm.heightAtLine(line, 'local') - 80);
+              this.cm.scrollTo(0, targetTop);
+              appliedEd = targetTop;
             }
-          }
-          // 安全网：120ms 后恢复滚动同步（此时两个面板均已停在标题位置，无在途滚动事件）。
-          // 直接还原为可用状态，避免把上一轮滚动同步残留的 false 标志固化下来。
+            // 预览区跳转（仅当该标题已渲染在预览中时）
+            // 守卫：纯符号标题（如 `# ===`）headingToId 会产出空串，querySelector('#') 抛
+            // SyntaxError（历史 bug），跳过预览跳转仅保留编辑区跳转
+            if (id) {
+              const target = this.preview.querySelector(`#${CSS.escape(id)}`);
+              if (target) {
+                const targetRect = target.getBoundingClientRect();
+                const previewRect = this.preview.getBoundingClientRect();
+                // 顶部对齐：标题行与预览视口顶部对齐（余量 0），与编辑区跳转（顶部 -80px）一致，
+                // 符合用户预期「点大纲即定位到标题顶部」，且不依赖居中逻辑、不影响滚动同步。
+                const top = Math.max(0, targetRect.top - previewRect.top + this.preview.scrollTop);
+                this.preview.scrollTo({ top, behavior: 'auto' });
+                appliedPv = top;
+              } else if (this.previewWindow) {
+                // 大文档窗口模式：目标标题尚未渲染在预览中，以该行为焦点重渲染预览窗口，使其落点
+                this._previewScrollDriven = false;
+                if (Number.isFinite(line)) this._previewFocusLine = line;
+                this.updatePreview();
+              }
+            }
+          };
+          applyJump();
+          // 落定后重定位：跳转瞬间预览内部各块高度尚未定型，同一标题的目标偏移会变
+          //（实测 15630 → 18518px），只定位一次必然停偏。窗口内重算重设两次即可收敛。
+          // 若期间用户自己滚过（当前值与上次写入相差 >40px），立刻让位，绝不抢用户的位置。
+          // 另：仅当窗口仍属于本次跳转时才动作，避免连点两次时旧定时器干扰新的目标。
+          const reassert = () => {
+            if (this._scrollSuppressUntil !== until) return;
+            if (appliedEd != null && Math.abs(this.cm.getScrollInfo().top - appliedEd) > 40) return;
+            if (appliedPv != null && Math.abs(this.preview.scrollTop - appliedPv) > 40) return;
+            applyJump();
+          };
+          setTimeout(reassert, 150);
+          setTimeout(reassert, 330);
+          // 窗口结束：直接还原为可用状态（时间戳置零必须在复位 bool 之前），
+          // 避免把上一轮滚动同步残留的 false 标志固化下来。
           setTimeout(() => {
+            if (this._scrollSuppressUntil === until) this._scrollSuppressUntil = 0;
             if (this._canScroll) {
               this._canScroll.editor = true;
               this._canScroll.preview = true;
             }
-          }, 120);
+          }, 420);
           outlineContent.querySelectorAll('.outline-item').forEach(el => el.classList.remove('active'));
           item.classList.add('active');
         };

@@ -15,9 +15,13 @@
         }
         clearTimeout(this.debounceTimer);
         this.debounceTimer = setTimeout(() => {
-          this.updatePreview(true);
-          this.updateWordCount();
-          this.updateOutline();
+          // 一次防抖只读一次全文（2026-09-26 审计）：此前 updatePreview / updateWordCount /
+          // updateOutline 各自 cm.getValue() —— 停键一次就是**三遍整篇字符串重建 + 三遍 O(N) 扫描**
+          // （预览侧还要再数一遍行数）。三者都接受 content 参数，这里统一读一次传下去。
+          const content = this.cm.getValue();
+          this.updatePreview(true, content);
+          this.updateWordCount(content);
+          this.updateOutline(content);
         }, 300);
       },
       // 从预览元素获取对应的源文件行号（通过 unified 嵌入的 data-source-line）
@@ -234,6 +238,13 @@
       },
       // demo 风格：恢复滚动（重置双标志锁）
       _resumeScroll() {
+        // 程序化定位（大纲跳转等）设下的时间戳窗口内**不复位**。本函数在每次预览渲染收尾的
+        // rAF 里被调用（见 preview-controller），而跳转后预览往往还要再落定一次（高亮/图表/图片
+        // 改变上方高度 → Chrome 滚动锚定调整 scrollTop）。若无视窗判断，跳转设下的锁会被中途
+        // 完成的渲染提前解除，落定中的预览滚动便反向把编辑器拽到错误位置 —— 实测「点大纲后
+        // 编辑区没停在标题行」正是此路径：+0ms 编辑器落点正确(标题可见)，+80ms 被拽走（2026-09-26）。
+        // 窗口过期由跳转方负责，这里只负责不提前解锁。
+        if (Date.now() < (this._scrollSuppressUntil || 0)) return;
         this._canScroll.editor = true;
         this._canScroll.preview = true;
       },
@@ -374,9 +385,11 @@
       _syncPreviewVirtualScroll() {
         return this.previewController._syncPreviewVirtualScroll();
       },
-        async updatePreview(suppressLoading = false) {
+        // content 可选：调用方已知编辑器当前内容时传入，省去 render() 内部一次 O(N) 的
+        // cm.getValue()（切标签 / 防抖键入路径上尤其关键，2026-09-26）。
+        async updatePreview(suppressLoading = false, content) {
           // P2-1 Strangler（ADR-3）：编排逻辑已迁至 PreviewController.render()，此处保留薄委托。
-          return this.previewController.render(suppressLoading);
+          return this.previewController.render(suppressLoading, content);
         },
       // P1-1：逻辑已抽到 src/modules/image-processor.js（纯函数 + 依赖注入）。
       // 这里只做 DI 适配：把实例字段/方法包成注入项，错误仍上交调用方（6772 处的 try/catch）。

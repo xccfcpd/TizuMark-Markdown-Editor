@@ -181,6 +181,7 @@
           tab.pendingExternalChange = false;
           if (tab === this.activeTab) {
             this.cm.setValue(content);
+            this._syncEditorModeFor(tab);
             this.updatePreview();
             this.updateOutline();
             this.updateWordCount();

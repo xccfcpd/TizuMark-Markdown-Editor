@@ -118,7 +118,9 @@
           this.cm.clearHistory();
   
           this.updateTabDisplay();
-          await this.updatePreview();
+          // 编辑器此刻内容 === newTab.content（上面刚 setValue），直接传入，省掉 render() 内部的
+          // 一次 O(N) cm.getValue()（大文档切 tab 的成本放大器，2026-09-26）。
+          await this.updatePreview(false, newTab.content || '');
           // 统一恢复该 tab 记忆的编辑器/预览滚动位置。临时关闭滚动同步，避免恢复过程中
           // 程序化滚动事件互相重定位（分屏 + 滚动同步开启时预览会被编辑器同步覆盖，
           // 表现为「切换后预览/页面跳到别处」）。
@@ -213,6 +215,7 @@
         if (this.tabs.length > 0) {
           await this.ensureTabLoaded(this.activeTab);
           this.cm.setValue(this.activeTab.content || '');
+          this._syncEditorModeFor(this.activeTab);
           this.cm.setCursor(this.activeTab.cursorPos || { line: 0, ch: 0 });
           this.updatePreview();
         }
@@ -640,6 +643,7 @@
         this._editorTab = tab; // 其余标签已移除，编辑器承载的就是保留的这个
         await this.ensureTabLoaded(tab);
         this.cm.setValue(tab.content || '');
+        this._syncEditorModeFor(tab);
         this.cm.setCursor(tab.cursorPos || { line: 0, ch: 0 });
         this.updateTabBar();
         this.updatePreview();
@@ -663,6 +667,7 @@
         this.activeTabIndex = 0;
         this._editorTab = this.tabs[0]; // 全部替换为新空标签，编辑器承载它
         this.cm.setValue('');
+        this._syncEditorModeFor(this.tabs[0]);
         this.updateTabBar();
         this.updatePreview();
         this.saveSession();
