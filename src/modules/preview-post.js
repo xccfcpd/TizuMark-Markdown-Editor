@@ -808,10 +808,19 @@ async function processDiagrams(preview, opts) {
 // 长会话里编辑大量互不相同的图表会把它撑大（字符串常驻内存），这里加个简易上限：Map 保持插入序，
 // 超限删最旧的一条（审计发现，2026-09-24）。
 const CACHE_MAX_ENTRIES = 300;
+// 同时按「总字节」封顶：SVG/HTML 每条可达百 KB~MB，仅按条数(300)封顶最坏会保留几十~上百 MB。
+const CACHE_MAX_BYTES = 32 * 1024 * 1024; // 32MB
 function capCache(cache) {
-  if (!cache || cache.size <= CACHE_MAX_ENTRIES) return;
-  const oldest = cache.keys().next().value;
-  if (oldest !== undefined) cache.delete(oldest);
+  if (!cache) return;
+  let total = 0;
+  for (const v of cache.values()) total += (typeof v === 'string' ? v.length : 0);
+  while (cache.size > CACHE_MAX_ENTRIES || total > CACHE_MAX_BYTES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    const v = cache.get(oldest);
+    total -= (typeof v === 'string' ? v.length : 0);
+    cache.delete(oldest);
+  }
 }
 
 // 主题切换后重绘**原生引擎**图表：它们的产物里烘焙了配色（Graphviz 的线色、ECharts 的 dark

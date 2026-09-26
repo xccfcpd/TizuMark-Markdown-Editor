@@ -186,10 +186,15 @@
           });
           if (_tab) {
             this._previewCache.set(_tab, { key: _cacheKey, html });
-            // LRU：最多缓存 12 个标签的渲染结果，超出淘汰最早的一个（Map 保持插入序）
-            if (this._previewCache.size > 12) {
+            // LRU：条数上限 12 + 总字节上限 24MB（HTML 字符串可达数百 KB~MB，仅按条数会保留过多）。
+            let _total = 0;
+            for (const _e of this._previewCache.values()) _total += (_e && typeof _e.html === 'string') ? _e.key.length + _e.html.length : 0;
+            while (this._previewCache.size > 12 || _total > 24 * 1024 * 1024) {
               const _oldest = this._previewCache.keys().next().value;
-              if (_oldest !== undefined) this._previewCache.delete(_oldest);
+              if (_oldest === undefined) break;
+              const _e = this._previewCache.get(_oldest);
+              _total -= (_e && typeof _e.html === 'string') ? _e.key.length + _e.html.length : 0;
+              this._previewCache.delete(_oldest);
             }
           }
         }

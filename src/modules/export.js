@@ -1592,6 +1592,22 @@
         };
         return map[preset] || map.normal;
       },
+      // structure 中是否存在需要 MathML→OMML 转换的公式 run（决定是否需要按需加载 mathml2omml 库）。
+      _structureHasMathml(structure) {
+        const scan = (runs) => Array.isArray(runs) && runs.some((r) => r && typeof r.mathml === 'string');
+        for (const n of (structure || [])) {
+          if (!n) continue;
+          if (scan(n.runs)) return true;
+          if (n.type === 'table') {
+            for (const row of (n.rows || [])) {
+              for (const cell of (row.cells || [])) {
+                for (const p of (cell.paragraphs || [])) if (scan(p.runs)) return true;
+              }
+            }
+          }
+        }
+        return false;
+      },
       // 把 DOM→structure 中的 mathml run 转成 OMML（Word 可编辑公式）。
       // KaTeX 渲染的 <math>（export-docx.js 收集为 { mathml } run）经 MathML2OMML.mml2omml
       // 转成 OMML 字符串，主线程构建时用 ImportedXmlComponent 注入 <m:oMath>。
@@ -1875,6 +1891,29 @@
           const done = (ok) => { if (settled) return; settled = true; clearTimeout(timer); resolve(ok); };
           s.onload = () => done(!!window.DocxLib);
           s.onerror = () => { clearTimeout(timer); reject(new Error('docx 库加载失败')); };
+          document.head.appendChild(s);
+        });
+      },
+      // 确保 lib/mathml2omml.min.js 已加载（定义 window.MathML2OMML）。仅 Word 导出需要，启动期不加载。
+      // 找不到/加载失败/超时一律 resolve(false)（不抛错）：调用方据此走 html-docx 回退（公式降级 LaTeX 文本）。
+      _ensureMathmlLibLoaded(timeoutMs = 8000) {
+        const ready = () => (typeof MathML2OMML !== 'undefined' && MathML2OMML && !!MathML2OMML.mml2omml);
+        if (ready()) return Promise.resolve(true);
+        if (typeof document === 'undefined') return Promise.resolve(false);
+        const src = 'lib/mathml2omml.min.js';
+        if (document.querySelector('script[src="lib/mathml2omml.min.js"]')) {
+          // 标签在但还没定义全局：等 onload（理论不该发生，等 1.5s 兜底）。
+          return new Promise((resolve) => setTimeout(() => resolve(ready()), 1500));
+        }
+        return new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = src;
+          let settled = false;
+          let timer = null;
+          const done = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(ready()); };
+          timer = setTimeout(done, timeoutMs); // 超时按失败处理（不抛错）
+          s.onload = done;
+          s.onerror = done;
           document.head.appendChild(s);
         });
       },
@@ -2200,6 +2239,10 @@
             : null;
           await new Promise(r => setTimeout(r, 0));
           if (exportCancelled) { clearTimeout(watchdog); hideOverlay(); this.setStatus(this.t('exportLargeDocCancelled')); return; }
+          // 公式转换库（mathml2omml）启动期不加载：仅当确有公式时才按需加载（失败则走 html-docx 回退）。
+          if (structure && Array.isArray(structure) && this._structureHasMathml(structure)) {
+            await this._ensureMathmlLibLoaded();
+          }
           // 用异步分块版：公式多时每 20 个让出主线程一帧，避免 MathML→OMML 逐条转换整段同步卡死。
           const mathConverted = (structure && Array.isArray(structure))
             ? await this._structureMathmlToOmmlChunked(structure)

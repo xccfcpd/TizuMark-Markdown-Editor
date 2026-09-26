@@ -666,36 +666,34 @@
       // 与面包屑共用 computeBreadcrumbPath，保证二者指向同一当前标题。
       // 用于：编辑器滚动、光标移动、内容/标签页切换后保持大纲与文档/面包屑一致。
       updateOutlineActive(line) {
+        const headings = this._breadcrumbHeadings;
+
+        // 先算目标 key（纯数组运算，不碰 DOM）：key 未变则直接返回，避免每次滚动 tick 都
+        // querySelectorAll('.outline-item') + 多次 querySelector（多标题文档滚动更顺）。
+        // 安全性：outline DOM 重建时 updateOutline 会把 _outlineActiveKey 置 null，故跳过是安全的。
+        const current = (headings && headings.length && typeof line === 'number')
+          ? (() => { const p = Outline.computeBreadcrumbPath(headings, line); return p.length ? p[p.length - 1] : null; })()
+          : null;
+        const key = current ? (current.line + ':' + current.id) : '';
+        if (this._outlineActiveKey === key) return;
+        this._outlineActiveKey = key;
+
         const outlineContent = document.getElementById('outline-content');
         if (!outlineContent) return;
         const items = outlineContent.querySelectorAll('.outline-item');
-        const headings = this._breadcrumbHeadings;
-  
-        if (!headings || !headings.length || typeof line !== 'number') {
+
+        if (!current) {
           items.forEach(el => el.classList.remove('active'));
-          this._outlineActiveKey = null;
           return;
         }
-  
-        // 当前标题 = 面包屑路径最后一个（最深、且行号 <= line 的标题），与面包屑完全一致
-        const path = Outline.computeBreadcrumbPath(headings, line);
-        const current = path.length ? path[path.length - 1] : null;
-  
-        let target = null;
-        if (current) {
-          target = outlineContent.querySelector(`.outline-item[data-line="${current.line}"][data-id="${CSS.escape(String(current.id))}"]`)
+
+        let target = outlineContent.querySelector(`.outline-item[data-line="${current.line}"][data-id="${CSS.escape(String(current.id))}"]`)
                || outlineContent.querySelector(`.outline-item[data-line="${current.line}"]`);
-        }
-  
-        const key = current ? (current.line + ':' + current.id) : '';
-        // diff guard：当前标题未变时跳过 DOM 写入与滚动，避免同段内滚动抖动
-        if (this._outlineActiveKey === key && target) return;
-        this._outlineActiveKey = key;
-  
+
         items.forEach(el => el.classList.remove('active'));
         if (!target) return;
         target.classList.add('active');
-  
+
         // 纵向跟随：仅当该标题离开 outline 视口时才滚动其回可见区域（不改横向滚动）
         // 若标题因父级折叠而隐藏（offsetParent 为 null），仅保留高亮、跳过滚动
         if (target.offsetParent === null) return;

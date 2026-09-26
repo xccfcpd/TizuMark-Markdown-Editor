@@ -1442,9 +1442,9 @@
 
 <script src="lib/unified-bundle.js"></script>
 <script src="lib/md-links.js"></script>
-<!-- docx 真 OOXML 库：主线程常驻加载（导出优先在 Web Worker 内联此库构建，失败回退主线程直构建） -->
-<script src="lib/docx.min.js"></script>
-<script src="lib/mathml2omml.min.js"></script>
+<!-- docx 真 OOXML 库 / mathml2omml：**不在启动期加载**（仅 Word 导出需要，合计约 1MB），
+     改由 export.js 在首次导出时按需加载（_ensureDocxLibLoaded / _ensureMathmlLibLoaded）：
+     不用 Word 导出的用户免付启动解析与常驻内存成本；Worker 路径自带 docx 库、不依赖主线程加载。 -->
 <script src="modules/code-block.js"></script>
 <script src="modules/preview-post.js"></script>
 <script src="modules/diagram-converters.js"></script>
