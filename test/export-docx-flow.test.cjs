@@ -434,6 +434,53 @@ test('docx-builder: runToChild 对非法 OMML 降级为纯文本不抛错', asyn
   });
 });
 
+// 回归（2026-09-26，用户报障「导出 Word 失败」）：builder 层最后防线。
+// docx 的颜色字段只接受恰好 6 位 HEX，上游若漏出命名色（"RED"）/ rgba() / var()，
+// new TextRun(...) 会直接抛 "Invalid hex value 'RED'. Expected 6 digit hex value" 并中止
+// **整篇**导出。runToChild 必须丢弃非法颜色（与上面非法 OMML「降级不抛错」同一原则），
+// 同时不能误伤合法 HEX —— 这里用真实 docx 打包 + 解 XML 验证两头都对。
+test('docx-builder: runToChild 丢弃非法颜色不抛错，合法 HEX 仍写进 w:color', async () => {
+  const path = require('path');
+  const JSZip = require('jszip');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  // 同上游测试：屏蔽 jsdom 泄漏的 window（其 toBlob 被桩成 3 字节），强制走真实 docx 打包
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  let ab;
+  try {
+    const blob = await builder([{ type: 'paragraph', runs: [
+      { text: '命名色', color: 'RED' },        // 旧行为：原样下传 → 抛错中止整篇
+      { text: '半透明', color: 'rgba(1,2,3,0.5)' },
+      { text: '变量', color: 'var(--x)' },
+      { text: '合法', color: 'FF0000' },
+    ] }], {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+    });
+    ab = await blob.arrayBuffer();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  assert.ok(ab.byteLength > 0, '含非法颜色的文档也应成功构建（不拖垮整篇）');
+  const zip = new JSZip();
+  zip.load(Buffer.from(ab));
+  const xml = zip.file('word/document.xml').asText();
+  assert.strictEqual((xml.match(/<w:color\b/g) || []).length, 1, '只有合法 HEX 的那个 run 应带颜色');
+  assert.ok(xml.includes('w:val="FF0000"'), '合法 6 位 HEX 必须保留');
+  for (const bad of ['RED', 'rgba(', 'var(--x', 'currentColor']) {
+    assert.ok(!xml.includes(bad), '非法颜色不得进入 document.xml：' + bad);
+  }
+});
+
 // 回归（2026-09-09）：Word/WPS 的东亚排版会把「<w:br/> 软换行结尾的行」按两端对齐强行
 // 拉伸到整行宽（即便全文无一处 w:jc，实测仍拉伸），导出的代码块每行被扯出巨大空隙。
 // 修复：代码块每行一个独立段落 + 显式左对齐——段落末行永不被拉伸；相邻段落

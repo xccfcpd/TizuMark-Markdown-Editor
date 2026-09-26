@@ -43,12 +43,20 @@
     // 导致预览里的黄底高亮在 Word 里变成普通文字。这里落到 TextRun 的 highlight。
     const highlight = (r && r.highlight) ? 'yellow' : undefined;
     // 上标/下标（脚注引用 [1] 等）：collectRuns 标了 superScript/subScript
+    // 颜色：docx 的颜色字段只接受 6 位 HEX，其余值（命名色 / 3 位 HEX / rgba() / var()）
+    // 会让 `new TextRun(...)` 直接抛 "Invalid hex value 'XXX'. Expected 6 digit hex value"，
+    // 一个内联颜色就能让整篇导出失败（2026-09-26 实测）。上游 collectRuns 已把颜色归一成
+    // 6 位 HEX，这里是最后防线：不合法就丢弃颜色 —— 与上面非法 OMML「降级为纯文本不抛错」
+    // 同一原则（坏输入绝不中止整篇）。
+    const color = (r && typeof r.color === 'string' && /^[0-9A-Fa-f]{6}$/.test(r.color))
+      ? r.color.toUpperCase()
+      : undefined;
     return new D.TextRun({
       text: (r && r.text) || '',
       bold,
       italics: r && r.italics,
       strike: r && r.strike,
-      color: r && r.color,
+      color,
       font,
       highlight,
       superScript: (r && r.superScript) ? true : undefined,

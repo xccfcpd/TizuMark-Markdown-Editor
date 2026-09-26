@@ -469,7 +469,10 @@
         if (gen !== this.app._renderGeneration) return;
         this.app._resumeScroll();
         const msg = String(error).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        this.app.preview.innerHTML = `<p style="color: red;">预览错误: ${msg}</p>`;
+        // 用 class 而非内联 style：内联命名色（color: red）会被导出时的 DOM→docx 颜色收集
+        // 读到并原样交给 docx，构造 TextRun 时抛 Invalid hex value 导致整篇导出失败（2026-09-26）。
+        // 样式统一放 styles.css 的 .preview-error（样式表里的颜色不进入内联 style，不参与收集）。
+        this.app.preview.innerHTML = `<p class="preview-error">预览错误: ${msg}</p>`;
       } finally {
         // 渲染收尾时间戳：供「代码块按需滚动」的 MutationObserver 兜底逻辑跳过本批变动 ——
         // 上面已同步做过同一件事、且此刻布局才定型，重复遍历整棵预览只是白付一次强制布局（P2-9b）。

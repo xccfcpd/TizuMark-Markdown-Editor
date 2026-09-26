@@ -247,3 +247,40 @@ test('domToDocxStructure: 未识别容器下探取回内容，但 style/script �
   assert.ok(!flat.includes('color:red'), '<style> 里的 CSS 不得当成正文');
   assert.ok(!flat.includes('abbrs'), 'abbr-data 隐藏容器不得入正文');
 });
+
+// 回归（2026-09-26，用户报障「导出 Word 失败 + 生成公式导出诊断文件」）：
+// docx 的颜色字段只接受恰好 6 位 HEX（校验器：长度必须等于 6 且 +('0x'+值) 不是 NaN），
+// 而这里此前只识别 rgb()，其余内联颜色一律「去掉 # 转大写」原样下传 —— 命名色 red 变成
+// "RED"、rgba(…) / var(--x) / currentColor 也照传，构造 TextRun 时直接抛
+// "Invalid hex value 'RED'. Expected 6 digit hex value"，**整篇**导出中止（回退成降级 HTML 版
+// docx）。现在行内颜色统一归一成 6 位 HEX，归一不出就丢弃颜色（丢一次颜色远好过整篇导不出）。
+test('domToDocxStructure: 行内颜色统一归一成 6 位 HEX（命名色 / rgba / var 不再拖垮导出）', () => {
+  const md = '<div id="root"><p>'
+    + '<span style="color:red">命名色</span>'
+    + '<span style="color:#abc">三位缩写</span>'
+    + '<span style="color:rgba(1, 2, 3, 0.5)">半透明</span>'
+    + '<span style="color:hsl(120, 100%, 25%)">hsl</span>'
+    + '<span style="color:var(--x)">自定义属性</span>'
+    + '<span style="color:currentColor">上下文色</span>'
+    + '</p></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const runs = fn(w.document.getElementById('root'))[0].runs;
+  const colorOf = (text) => {
+    const run = runs.find(r => r.text === text);
+    assert.ok(run, '应收集到 run: ' + text);
+    return run.color;
+  };
+  assert.strictEqual(colorOf('命名色'), 'FF0000', 'red 应转成 6 位 HEX（此前是 "RED" → docx 抛错中止整篇）');
+  assert.strictEqual(colorOf('三位缩写'), 'AABBCC', '3 位 HEX 应展开成 6 位');
+  assert.strictEqual(colorOf('半透明'), '010203', 'rgba() 应取 RGB 分量转 HEX（此前原样下传 → 抛错）');
+  assert.strictEqual(colorOf('hsl'), '008000', 'hsl() 应解析成 HEX（此前原样下传 → 抛错）');
+  assert.strictEqual(colorOf('自定义属性'), undefined, 'var() 解析不出颜色应丢弃，而不是原样交给 docx');
+  assert.strictEqual(colorOf('上下文色'), undefined, 'currentColor 依赖上下文，应丢弃');
+  for (const r of runs) {
+    if (r.color !== undefined) {
+      assert.match(r.color, /^[0-9A-F]{6}$/, '【关键断言】下传给 docx 的颜色必须恰好 6 位 HEX，实际: ' + r.color);
+    }
+  }
+});

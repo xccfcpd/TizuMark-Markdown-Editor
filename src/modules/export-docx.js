@@ -20,18 +20,68 @@
     return 'png';
   }
 
-  // CSS 颜色（#hex / rgb() / rgba()）→ docx 需要的 6 位大写 HEX（不带 #）；取不到返回 ''。
-  // 用途：blockquote / alert 在 _prepareWordDOM 里被写成内联 background / borderLeft，
-  // 这里转成 docx 段落的 shading / 左边框色，避免「预览有底色，Word 里只剩一条竖线」。
+  // CSS 命名色 → 6 位大写 HEX。只收常用色；未收录的写法交给下面的 DOM 探针解析。
+  const NAMED_COLORS = {
+    black: '000000', silver: 'C0C0C0', gray: '808080', grey: '808080', white: 'FFFFFF',
+    maroon: '800000', red: 'FF0000', purple: '800080', fuchsia: 'FF00FF', magenta: 'FF00FF',
+    green: '008000', lime: '00FF00', olive: '808000', yellow: 'FFFF00', navy: '000080',
+    blue: '0000FF', teal: '008080', aqua: '00FFFF', cyan: '00FFFF', orange: 'FFA500',
+    brown: 'A52A2A', pink: 'FFC0CB', gold: 'FFD700', indigo: '4B0082', violet: 'EE82EE',
+    crimson: 'DC143C', tomato: 'FF6347', salmon: 'FA8072', chocolate: 'D2691E',
+    coral: 'FF7F50', sienna: 'A0522D', peru: 'CD853F', wheat: 'F5DEB3', beige: 'F5F5DC',
+    khaki: 'F0E68C', tan: 'D2B48C', plum: 'DDA0DD', orchid: 'DA70D6', turquoise: '40E0D0',
+    lavender: 'E6E6FA', darkred: '8B0000', darkblue: '00008B', darkgreen: '006400',
+    darkorange: 'FF8C00', darkviolet: '9400D3', darkgray: 'A9A9A9', darkgrey: 'A9A9A9',
+    lightgray: 'D3D3D3', lightgrey: 'D3D3D3', slategray: '708090', slategrey: '708090',
+    dimgray: '696969', dimgrey: '696969', dodgerblue: '1E90FF', steelblue: '4682B4',
+    forestgreen: '228B22', seagreen: '2E8B57', firebrick: 'B22222', goldenrod: 'DAA520',
+    rebeccapurple: '663399',
+  };
+
+  // 这些写法解析不出绝对颜色，一律放弃（交给 docx 会直接抛错，硬写成黑色又是错的）：
+  // currentColor 依赖上下文、inherit/unset/initial 依赖层叠、var(--x) 是自定义属性引用
+  //（这里只有元素的内联声明，拿不到宿主元素的计算值）。
+  const UNRESOLVABLE_COLOR = /^(currentcolor|inherit|initial|unset|revert|revert-layer|transparent|var\(.*\))$/i;
+
+  function hexFromRgb(r, g, b) {
+    return ((1 << 24) + (parseInt(r, 10) << 16) + (parseInt(g, 10) << 8) + parseInt(b, 10)).toString(16).slice(1).toUpperCase();
+  }
+
+  let _colorProbeEl = null;
+  // 未收录的写法（hsl() / color(display-p3 …) / 罕见命名色 / rgb(100%,0%,0%)）交给浏览器
+  // 解析成 rgb()，保证「能识别的颜色按原色导出，识别不了才丢弃」。
+  function colorViaDom(s) {
+    if (typeof document === 'undefined' || !document.documentElement) return '';
+    if (typeof getComputedStyle !== 'function') return '';
+    try {
+      if (!_colorProbeEl) _colorProbeEl = document.createElement('span');
+      _colorProbeEl.style.color = '';
+      _colorProbeEl.style.color = s;
+      if (!_colorProbeEl.style.color) return ''; // CSSOM 本就拒绝该值
+      const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(getComputedStyle(_colorProbeEl).color || '');
+      return m ? hexFromRgb(m[1], m[2], m[3]) : '';
+    } catch (e) { return ''; }
+  }
+
+  // CSS 颜色（#hex / #rgb / rgb() / rgba() / 命名色 / hsl() 等）→ docx 需要的 6 位大写 HEX
+  //（不带 #）；无法解析成绝对颜色时返回 ''。
+  // 为什么必须收口（2026-09-26，用户报障「导出 Word 失败」）：docx 的颜色字段只接受 6 位 HEX，
+  // 把 'RED' / 'rgba(…)' / 'var(--x)' / '#abc' 原样传进去会抛
+  // "Invalid hex value 'RED'. Expected 6 digit hex value" 并中止**整篇**导出。
+  // 用途：blockquote / alert 的 shading / 左边框色（_prepareWordDOM 内联的 background /
+  // borderLeft），以及行内文字颜色（collectRuns 读到的内联 style.color）。
   function cssColorToHex(v) {
     const s = String(v || '').trim();
+    if (!s || UNRESOLVABLE_COLOR.test(s)) return '';
     let m = /^#([0-9a-fA-F]{6})$/.exec(s);
     if (m) return m[1].toUpperCase();
     m = /^#([0-9a-fA-F]{3})$/.exec(s);
     if (m) return m[1].split('').map((c) => c + c).join('').toUpperCase();
     m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(s);
-    if (m) return ((1 << 24) + (parseInt(m[1], 10) << 16) + (parseInt(m[2], 10) << 8) + parseInt(m[3], 10)).toString(16).slice(1).toUpperCase();
-    return '';
+    if (m) return hexFromRgb(m[1], m[2], m[3]);
+    const named = NAMED_COLORS[s.toLowerCase()];
+    if (named) return named;
+    return colorViaDom(s);
   }
 
   function imageToNode(el) {
@@ -107,17 +157,12 @@
           if (images) { const img = imageToNode(child); if (img) images.push(img); }
           continue;
         }
-        const color = style.color;
-        if (color) {
-          if (/^rgb\(/.test(color)) {
-            const m = /^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/.exec(color);
-            if (m) {
-              runBase.color = ((1 << 24) + (parseInt(m[1], 10) << 16) + (parseInt(m[2], 10) << 8) + parseInt(m[3], 10)).toString(16).slice(1).toUpperCase();
-            }
-          } else {
-            runBase.color = color.replace('#', '').toUpperCase();
-          }
-        }
+        // 行内文字颜色：必须归一成 6 位 HEX 才能交给 docx（它只接受 6 位 HEX，其余值会抛
+        // Invalid hex value 并中止整篇导出）。此前只识别 rgb(…)，其它一律「去掉 # 转大写」，
+        // 于是命名色 red → "RED"、rgba(…) / var(--x) / currentColor 全部原样送进 docx 直接炸。
+        // 现在统一走 cssColorToHex，解析不出来就丢弃颜色（丢一次颜色远好过整篇导不出）。
+        const hex = style.color ? cssColorToHex(style.color) : '';
+        if (hex) runBase.color = hex;
         const before = runs.length;
         collectRuns(child, runs, images);
         for (let i = before; i < runs.length; i++) {
