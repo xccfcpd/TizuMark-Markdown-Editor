@@ -111,7 +111,7 @@
             const newExt = (newTab.filePath && window.FileTypes && window.FileTypes.extOf)
               ? window.FileTypes.extOf(newTab.filePath)
               : (newTab.kind === 'markdown' ? 'md' : '');
-            this._applyCodeMode(newExt);
+            this._applyCodeMode(newExt, newTab.content || '');
           }
           clearTimeout(this.debounceTimer);
           this.cm.setCursor(restoreCursor);

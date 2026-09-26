@@ -275,9 +275,9 @@
           // 按扩展名设置编辑器语法高亮（image 不进入编辑器）
           if (kind === 'text') {
             const ext = (window.FileTypes && window.FileTypes.extOf) ? window.FileTypes.extOf(filePath) : '';
-            this._applyCodeMode(ext);
+            this._applyCodeMode(ext, content);
           } else {
-            this._applyCodeMode('md');
+            this._applyCodeMode('md', content);
           }
           // 视图模式：text 强制编辑；markdown 优先会话记忆（_sessionMdViewMode），其次设置默认视图
           this.viewMode = (kind === 'text') ? 'edit' : (this._sessionMdViewMode || this.settings.defaultView || 'preview');
@@ -293,7 +293,8 @@
         }
       },
       // 非 Markdown 明文文件：按扩展名选择 CodeMirror 语法高亮模式（仅高亮，不改变编辑行为）
-      _applyCodeMode(ext) {
+      // 第 2 参 content：大文档降级判定的依据（见下）。
+      _applyCodeMode(ext, content) {
         if (!this.cm || typeof this.cm.setOption !== 'function') return;
         const map = {
           js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
@@ -308,8 +309,47 @@
           sh: 'shell', bash: 'shell', zsh: 'shell',
           md: 'gfm', markdown: 'gfm',
         };
-        const mode = map[(ext || '').toLowerCase()] || 'gfm';
-        try { this.cm.setOption('mode', mode); } catch (e) { try { this.cm.setOption('mode', 'gfm'); } catch (_) {} }
+        let mode = map[(ext || '').toLowerCase()] || 'gfm';
+        // 大文档降级（2026-09-26，用户反复报「大文件切 tab 卡」的根因）：
+        // CM5 只要**整篇文档进入编辑器**就会把全文语法高亮重跑一遍 —— 走 setValue 或 swapDoc 都一样
+        // （两条路都经 attachDoc → loadMode → resetModeState，见 codemirror.js:4858 / 4764：那里把每行
+        // 的 stateAfter/styles 清空，并把高亮前沿拉回文档开头），且以 100ms 为一块**在主线程上连续占用**
+        // 直到全文高亮完成。大文档每次切 tab 都要重来一次 —— 这正是「切过去后卡很久」的来源，也是
+        // 预览侧早已用窗口切片规避、而编辑器侧一直没做的事。
+        // 故超过预览侧同一阈值（MAX_PREVIEW_LINES / MAX_PREVIEW_CHARS）时不给编辑器上模式：'null'
+        // 不启动高亮 worker，切 tab / 滚动的卡顿随之消失。代价是该文档没有配色 —— 不静默降级，
+        // 进入该状态时明确告知用户；离开后复位标记，下次再进大文件会重新提示。
+        const C = (typeof TMConst !== 'undefined' && TMConst) ? TMConst : null;
+        if (C && typeof content === 'string' && content.length) {
+          let huge = content.length > C.MAX_PREVIEW_CHARS;
+          if (!huge) {
+            let lines = 1;
+            for (let i = 0; i < content.length; i++) { if (content.charCodeAt(i) === 10) { lines++; } }
+            huge = lines > C.MAX_PREVIEW_LINES;
+          }
+          if (huge) {
+            mode = 'null';
+            if (!this._editorLargeMode) {
+              this._editorLargeMode = true;
+              if (typeof this.showToast === 'function') {
+                this.showToast(this.t('editorLargeFileNoHighlight'), 'info', { duration: 6000 });
+              }
+            }
+          } else if (this._editorLargeMode) {
+            this._editorLargeMode = false;
+          }
+        }
+        // 去重（2026-09-26，大文档切 tab 卡顿）：CM5 的 `mode` 选项处理器会把每一行的 stateAfter
+        // 置空、把高亮前沿拉回文档开头并重启高亮 worker —— 即**无条件**全文重高亮，同值也不早退。
+        // 而切 tab 每次都会走到这里（tabs.js:114），且紧邻的 setValue 刚刚做过一次全文失效，
+        // 于是同一份文档在一次切换里被"从头重高亮"两遍。mode 未变时纯属重复开销，直接返回。
+        if (this._appliedCodeMode === mode) return;
+        try {
+          this.cm.setOption('mode', mode);
+          this._appliedCodeMode = mode;
+        } catch (e) {
+          try { this.cm.setOption('mode', 'gfm'); this._appliedCodeMode = 'gfm'; } catch (_) {}
+        }
       },
       async openFolder() {
         try {

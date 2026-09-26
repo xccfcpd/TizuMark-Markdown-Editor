@@ -2119,6 +2119,11 @@
         });
       },
       async exportWord() {
+        // 本次导出锁定的目标标签：整个异步流程（含 Worker 打包与写盘）只用它，不再读
+        // this.activeTab —— 遮罩只拦鼠标，Ctrl+Tab 等快捷键仍能切标签，而打包阶段主线程空闲、
+        // 用户确实会去切；届时 this.activeTab 已指向另一篇文档（图片内联按错目录解析相对路径、
+        // 标题取错文件名）。捕获一次即与用户后续操作解耦（2026-09-26）。
+        const exportTab = this.activeTab;
         // 主路径：docx 库主线程直构建真 OOXML（可编辑公式 + 二进制图片）；
         // html-docx（altChunk）仅在主路径失败时兜底。
   
@@ -2172,8 +2177,8 @@
           await new Promise(r => requestAnimationFrame(r));
   
           const path = await dialogSave({
-            defaultPath: this.activeTab.filePath
-              ? this.activeTab.filePath.replace(/\.md$/, '.docx')
+            defaultPath: exportTab.filePath
+              ? exportTab.filePath.replace(/\.md$/, '.docx')
               : 'export.docx',
             filters: [{ name: 'Word 文档', extensions: ['docx'] }]
           });
@@ -2241,7 +2246,7 @@
           // ECharts 是 canvas，克隆会丢像素：先截成 <img> 再内联，三端稳定显示。
           const echSnapsDocx = await this._snapshotEchartsForExport();
           this._applyEchartsSnapshots(clone, echSnapsDocx);
-          await this._inlineImagesForExport(clone, this.activeTab.filePath);
+          await this._inlineImagesForExport(clone, exportTab.filePath);
           this._flushExportImageWarnings();
 
           // 把 Web 预览 DOM 预处理成 docx 兼容结构。
