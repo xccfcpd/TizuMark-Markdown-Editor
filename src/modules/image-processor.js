@@ -235,7 +235,8 @@ async function processImages(preview, deps) {
   const pool = [];
   const n = Math.min(CONCURRENCY, images.length);
   for (let k = 0; k < n; k++) pool.push(worker());
-  await Promise.all(pool);
+  // allSettled：单张图片处理异常不得中断整批（processOne 内部已 try/catch，这里再兜一层）。
+  await Promise.allSettled(pool);
 }
 
 // 浏览器：作为独立 <script> 加载，挂到全局 ImageProcessor（与 CodeBlock 一致）。

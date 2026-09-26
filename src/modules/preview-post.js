@@ -793,7 +793,8 @@ async function renderNativePlaceholders(preview, jobs, opts, isStale) {
   const rcPool = [];
   const rcn = Math.min(CONCURRENCY, staleContainers.length);
   for (let k = 0; k < rcn; k++) rcPool.push(rcWorker());
-  await Promise.all(rcPool);
+  // allSettled：单个图表重绘异常不得中断整批（repaintOne 内部已隔离，这里再兜一层）。
+  await Promise.allSettled(rcPool);
   if (staleHit || stale()) return;
 }
 

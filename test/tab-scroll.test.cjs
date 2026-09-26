@@ -102,3 +102,39 @@ test('tab-scroll: 关闭滚动同步时同样恢复预览滚动位置', async ()
     cleanup(w);
   }
 });
+
+// 滚动同步位置表缓存的失效契约（2026-09-25 优化）：仅当「预览重渲染置脏」或「行数变化」
+// 时重算；否则滚动 tick 复用缓存。这里用哨兵值直接钉住守卫，防止后续改动把它悄悄破坏。
+test('scroll-cache: 未置脏且行数未变时复用位置表；置脏或行数变化时重算', async () => {
+  const { w, ed } = await makeEditor();
+  try {
+    ed.cm.setValue('a\nb\nc');
+    const sentinelE = ['SE'];
+    const sentinelP = ['SP'];
+    ed._editorElementList = sentinelE;
+    ed._previewElementList = sentinelP;
+    ed._positionLineCount = ed.cm.lineCount();
+    ed._positionCacheDirty = false;
+
+    // 未置脏 + 行数未变 → 早退复用（jsdom 预览无 data-source-line，若重算会把列表置 null）
+    ed._computedPosition();
+    assert.strictEqual(ed._editorElementList, sentinelE, '未置脏且行数不变时应复用缓存（不重算）');
+    assert.strictEqual(ed._previewElementList, sentinelP, '预览位置表同样应复用');
+
+    // 置脏 → 必须重算（哨兵被替换）
+    ed._positionCacheDirty = true;
+    ed._computedPosition();
+    assert.notStrictEqual(ed._editorElementList, sentinelE, '置脏后应重算位置表');
+
+    // 行数变化 → 必须重算（即使未置脏）
+    ed._editorElementList = sentinelE;
+    ed._previewElementList = sentinelP;
+    ed._positionLineCount = ed.cm.lineCount();
+    ed._positionCacheDirty = false;
+    ed.cm.setValue('a\nb\nc\nd\ne');
+    ed._computedPosition();
+    assert.notStrictEqual(ed._editorElementList, sentinelE, '行数变化后应重算位置表');
+  } finally {
+    cleanup(w);
+  }
+});

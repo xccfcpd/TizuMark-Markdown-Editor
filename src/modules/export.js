@@ -562,7 +562,9 @@
         const pool = [];
         const n = Math.min(CONCURRENCY, imgs.length);
         for (let k = 0; k < n; k++) pool.push(worker());
-        await Promise.all(pool);
+        // allSettled：单张图片内联异常不得中断整批（inlineOne 内部虽已 try/catch，
+        // 这里再兜一层，避免将来新增逻辑抛错导致整批中断）。
+        await Promise.allSettled(pool);
         this._lastExportImageWarnings = warnings;
       },
 
@@ -1367,9 +1369,12 @@
           container.appendChild(img);
           // 让出主线程，使 loading spinner 与鼠标事件有机会处理。
           await new Promise((r) => setTimeout(r, 0));
-          // 进度回调（含"已用秒数"由调用方计算）——让用户看到它在干活
-          if (ctl && typeof ctl.onProgress === 'function') ctl.onProgress(mi + 1, mermaidContainers.length);
+          // 进度回调（含"已用秒数"由调用方计算）——让用户看到它在干活。
+          // 并发下按「已完成数」单调递增，避免多 worker 乱序导致进度数字来回跳。
+          progressDone++;
+          if (ctl && typeof ctl.onProgress === 'function') ctl.onProgress(progressDone, mermaidContainers.length);
         };
+        let progressDone = 0;
         let cursor = 0;
         const chartWorker = async () => {
           while (cursor < mermaidContainers.length && !cancelled) {
@@ -1380,7 +1385,8 @@
         const chartPool = [];
         const cpn = Math.min(CONCURRENCY, mermaidContainers.length);
         for (let k = 0; k < cpn; k++) chartPool.push(chartWorker());
-        await Promise.all(chartPool);
+        // allSettled：单个图表处理异常不得中断整批（processChart 内部已隔离，这里再兜一层）。
+        await Promise.allSettled(chartPool);
         if (cancelled) return 'cancelled';
   
         // 10. 普通图片：读取自然尺寸，按宽高比等比缩放到 500px，并设置 HTML width/height 属性，

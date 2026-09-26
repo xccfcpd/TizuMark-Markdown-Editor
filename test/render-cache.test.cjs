@@ -76,3 +76,37 @@ test('render cache: 缓存上限为 12 个标签（LRU 淘汰最早）', async (
   UR.renderMarkdown = orig;
   cleanup(w);
 });
+
+test('render cache: 影响渲染的设置变更后，同一内容应重新解析（缓存键含设置）', async () => {
+  const { w, tmp } = await buildEnv({ captureInitErr: true });
+  await delay(300);
+  const ed = w.editor;
+  const UR = w.UnifiedRenderer || globalThis.UnifiedRenderer;
+  if (!UR || typeof UR.renderMarkdown !== 'function') {
+    cleanup(w);
+    return;
+  }
+  const orig = UR.renderMarkdown;
+  let calls = 0;
+  UR.renderMarkdown = (...a) => { calls++; return orig(...a); };
+
+  const f = path.join(tmp, 's.md');
+  fs.writeFileSync(f, '# S\n\nbody');
+  await ed.addTab('s.md', '# S\n\nbody', f);
+  const afterOpen = calls;
+
+  // 同一内容、未改设置：复用缓存，不应重新解析
+  await ed.updatePreview();
+  assert.strictEqual(calls, afterOpen, '内容与设置均未变应复用缓存');
+
+  // 改一个影响渲染的设置 → 缓存键（renderSig）变化 → 必须重新解析，
+  // 否则会拿旧设置的产物（缓存键漏掉设置时的典型回归）。
+  const before = ed.settings.extendedSyntax;
+  ed.settings.extendedSyntax = !before;
+  await ed.updatePreview();
+  assert.strictEqual(calls, afterOpen + 1, '影响渲染的设置变更后应重新解析（缓存失效）');
+  ed.settings.extendedSyntax = before;
+
+  UR.renderMarkdown = orig;
+  cleanup(w);
+});
