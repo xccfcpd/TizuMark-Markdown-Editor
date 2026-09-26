@@ -877,6 +877,9 @@
       // 曾走 Web Worker：Worker 在部分 Tauri/WebView 环境下不可用（自定义协议对 Worker 脚本
       // 加载支持不稳），导致整条导出链静默降级、公式全变文字，故全部改为主线程直构建。
       async _convertHtmlToDocxBuffer(html) {
+        // html-docx 已从 index.html 常驻加载改为按需：先确保就绪，失败仍按原语义抛错
+        //（调用方已有降级处理，不改变既有行为）（2026-09-26）。
+        await this._ensureHtmlDocxLoaded();
         if (typeof htmlDocx === 'undefined' || !htmlDocx.asBlob) {
           throw new Error('导出组件未加载（html-docx 未加载）');
         }
@@ -1317,8 +1320,9 @@
             container.style.margin = '0';
             container.style.overflow = 'visible';
             container.style.textAlign = 'left';
-            // ② 兜底：没有 SVG（ECharts canvas 等）或快路失败时才用 html2canvas（慢）
-            if (!dataUrl && typeof html2canvas !== 'undefined') {
+            // ② 兜底：没有 SVG（ECharts canvas 等）或快路失败时才用 html2canvas（慢）。
+            //    该库已改为按需加载（启动不再常驻），故先确保就绪再判可用（2026-09-26）。
+            if (!dataUrl && await this._ensureHtml2CanvasLoaded()) {
               const canvas = await html2canvas(container, {
                 scale: 2,
                 backgroundColor: null,
@@ -1867,6 +1871,41 @@
           // 预览「行高」设置 → docx 全局行距（docx-builder 换算成 w:spacing/@w:line）
           lineHeight: Number(this.settings.lineHeight) || 1.7,
         };
+      },
+      // 按需加载 vendor 脚本的通用骨架（本地文件，正常几百毫秒）。
+      // 与 index.html 常驻 <script> 的区别只在「何时付加载成本」：导出才用到的库（html2canvas /
+      // html-docx）从启动期移到这里，冷启动不再解析它们（2026-09-26）。
+      // 关键点：成功与失败都缓存同一个 promise —— 若加载失败（文件缺失等）而每次都重试，
+      // 每次导出都要先干等一轮超时，属于最糟的失败模式。
+      _ensureVendorScript(src, isReady, timeoutMs) {
+        if (isReady()) return Promise.resolve(true);
+        if (typeof document === 'undefined' || !document.head) return Promise.resolve(false);
+        const cache = this._vendorScriptPromises || (this._vendorScriptPromises = {});
+        if (cache[src]) return cache[src];
+        cache[src] = new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = src;
+          let settled = false;
+          const done = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(isReady()); };
+          const timer = setTimeout(done, timeoutMs); // 超时按失败处理（不抛错）
+          s.onload = done;
+          s.onerror = done;
+          document.head.appendChild(s);
+        });
+        return cache[src];
+      },
+      // 确保 lib/html2canvas.min.js 已加载（定义全局 html2canvas）。仅 PNG 导出与
+      // 「图表转 PNG」路径需要；index.html 不再常驻加载。
+      _ensureHtml2CanvasLoaded(timeoutMs = 2000) {
+        return this._ensureVendorScript('lib/html2canvas.min.js', () => typeof html2canvas !== 'undefined', timeoutMs);
+      },
+      // 确保 lib/html-docx.min.js 已加载（定义全局 htmlDocx，altChunk 回退路径用）。
+      _ensureHtmlDocxLoaded(timeoutMs = 2000) {
+        return this._ensureVendorScript(
+          'lib/html-docx.min.js',
+          () => typeof htmlDocx !== 'undefined' && !!htmlDocx.asBlob,
+          timeoutMs
+        );
       },
       // 确保 lib/docx.min.js 已加载（定义 window.DocxLib）。
       // index.html 已常驻加载它，但用户若在改动 index.html 前就打开了 dev 页面且没刷新，
@@ -2454,6 +2493,12 @@
           await Promise.all(imagePromises);
           await new Promise(r => setTimeout(r, 300));
   
+          // html2canvas 按需加载：PNG 导出没有它就无法产出，加载失败要给出明确错误，
+          // 而不是抛 "html2canvas is not defined"（2026-09-26）。
+          if (!await this._ensureHtml2CanvasLoaded()) {
+            throw new Error('导出组件未加载（html2canvas 未加载）');
+          }
+
           const canvas = await html2canvas(clone, {
             scale: 2,
             useCORS: true,

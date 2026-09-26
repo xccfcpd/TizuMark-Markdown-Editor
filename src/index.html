@@ -550,17 +550,19 @@
   <script src="lib/katex/mhchem.min.js"></script>
   <script src="lib/katex/auto-render.min.js"></script>
   <script src="lib/mermaid/mermaid.min.js"></script>
-  <!-- 图表引擎（Mermaid 之外）：ECharts 图表 / WaveDrom 数字波形图。
-       wavedrom 的皮肤脚本给 window.WaveSkin 赋值，缺失时渲染会抛 "no skins found"，故必须随包内置。 -->
-  <script src="lib/echarts.min.js"></script>
-  <!-- Graphviz（DOT 语言）：WASM 以 base64 内联在文件内，无独立 .wasm 资源 -->
-  <script src="lib/graphviz.min.js"></script>
-  <script src="lib/wavedrom/wavedrom.min.js"></script>
-  <script src="lib/wavedrom/skins/default.js"></script>
-  <script src="lib/wavedrom/skins/dark.js"></script>
-  <script src="lib/html2canvas.min.js"></script>
+  <!-- 图表引擎（Mermaid 之外）：ECharts / Graphviz / WaveDrom 三个库**不在启动期加载**。
+       它们只在文档里真的出现对应代码块（```echarts / ```dot / ```wavedrom）时才用得到，
+       故改为首次遇到时按需加载（diagram-renderers.js: ensureEngine）。graphviz.min.js 把
+       WASM 以 base64 内联在文件内，启动就解析它最不划算。
+       wavedrom 的皮肤脚本（给 window.WaveSkin 赋值，缺失会抛 "no skins found"）由同一处按
+       「主库 → 皮肤」顺序一起加载，故这里不再常驻。
+       ⚠ mermaid 仍保持常驻：它的**同步占位阶段**（preview-post: prepareMermaidPlaceholders）
+       以「mermaid 全局是否存在」决定是否建占位容器，改懒加载须先重构该阶段（否则首次打开含
+       图文档时会整篇不渲染），收益/风险比不划算（2026-09-26）。 -->
+  <!-- html2canvas（PNG 导出 / 图表转 PNG）与 html-docx（Word 的 altChunk 回退路径）都只在
+       导出时才用得到，已改为导出时按需加载（export.js: _ensureHtml2CanvasLoaded /
+       _ensureHtmlDocxLoaded），不再占用冷启动解析时间（2026-09-26）。 -->
   <script src="lib/markdown-it.min.js"></script>
-  <script src="lib/html-docx.min.js"></script>
   <!-- 关于对话框 -->
   <div id="about-dialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <div class="dialog">

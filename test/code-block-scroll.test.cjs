@@ -21,11 +21,20 @@ test('styles.css: .code-scroll 默认 overflow-y: hidden（防短代码显示滚
 
 test('preview-controller.js: render 后处理 .code-scroll 按 scrollHeight/clientHeight 判溢出', () => {
   assert.match(pcSrc, /querySelectorAll\(['"]\.code-scroll['"]\)/, '应遍历 .code-scroll');
+  // 判据：scrollHeight > clientHeight + 1（+1 容忍亚像素误差）。
+  // ⚠ 只锁「判据本身 + 两个写值」，不再要求写成 `? 'auto' : 'hidden'` 三元式：实现已改为
+  // 「先只读收集 needAuto / needHidden，再批量只写」两趟式（读-写交替会让每个代码块各触发一次
+  // 强制布局，几十上百个块时是明显卡顿源，见 preview-controller.js 内注释）。两趟式的判据与
+  // 写入结果与三元式完全一致，故契约内容不变、只是不再耦合写法。
   assert.match(
     pcSrc,
-    /scrollHeight\s*>\s*el\.clientHeight\s*\+\s*1\s*\?\s*'auto'\s*:\s*'hidden'/,
-    '按 scrollHeight/clientHeight+1 判溢出，溢出显式 auto（覆盖 CSS hidden）否则 hidden；注意不能清空 inline 让 CSS 接管（CSS 已是 hidden）',
+    /el\.scrollHeight\s*>\s*el\.clientHeight\s*\+\s*1/,
+    '应按 scrollHeight > clientHeight+1 判溢出',
   );
+  // 溢出显式 auto（覆盖 CSS 的 overflow-y:hidden）；未溢出显式 hidden。
+  // 注意不能清空 inline 交给 CSS 接管 —— CSS 已是 hidden，清空后依然不会滚动。
+  assert.match(pcSrc, /el\.style\.overflowY\s*=\s*'auto'/, '溢出块应显式 overflowY=auto');
+  assert.match(pcSrc, /el\.style\.overflowY\s*=\s*'hidden'/, '未溢出块应显式 overflowY=hidden');
 });
 
 test('app.js: 注册 MutationObserver 监听 preview 子树，自动跑 .code-scroll 后处理（rAF debounce）', () => {

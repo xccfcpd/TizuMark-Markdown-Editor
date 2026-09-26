@@ -362,7 +362,15 @@
         // 跳过遍历并保留上次显示值，等预览重新可见后的下一次统计刷新（2026-09-26）。
         if (this.previewWordCountEl) {
           const pv = this.preview;
-          if (!pv || pv.offsetParent !== null) {
+          // ⚠「预览是否隐藏」的判据必须是**真实布局**下的 offsetParent：jsdom 等不做布局的宿主里
+          // offsetParent 恒为 null，会把「预览可见」一律误判成「已隐藏」→ 状态栏预览字数永不更新，
+          // 既有用例（word-count: 预览可见字符数应为 10）直接变红（2026-09-26 复核实测）。
+          // 故先用 documentElement 的布局宽度判断宿主是否真的在做布局；无布局时照常统计 ——
+          // 那种环境里不存在「元素被隐藏但 DOM 很大」的浪费场景，代价可忽略。
+          const docEl = (pv && pv.ownerDocument) ? pv.ownerDocument.documentElement : null;
+          const hasLayout = !!(docEl && typeof docEl.getBoundingClientRect === 'function' &&
+            docEl.getBoundingClientRect().width > 0);
+          if (!pv || !hasLayout || pv.offsetParent !== null) {
             const previewChars = (typeof WordCount.countPreviewText === 'function' && pv)
               ? WordCount.countPreviewText(pv)
               : 0;

@@ -452,6 +452,87 @@ function loadMarkmapVendor() {
   return markmapVendorPromise;
 }
 
+// ---- 引擎按需加载（ECharts / Graphviz / WaveDrom）----
+// 这三个库原由 index.html 常驻 <script> 在**启动时**加载，但它们只在文档里真的出现对应
+// 代码块（```echarts / ```dot / ```wavedrom）时才用得到 —— 每篇文档、每次冷启动都要先付一遍
+// 解析与编译成本（graphviz.min.js 更是把 WASM 以 base64 内联，等于启动就解析一个数 MB 的
+// 字符串）。故改为「首次遇到该类型图表时才加载」（2026-09-26）。
+//
+// 骨架与 loadMarkmapVendor 同构：promise 缓存 + onload/onerror/**超时兜底** + 失败可重试。
+// 时序安全性：图表的**同步占位阶段**（preview-post: prepareNativePlaceholders）只读代码块
+// 本身、不碰引擎全局，占位容器先立起来；到异步渲染阶段才由 renderInto await 本函数。
+// 期间用户看到的是「图表渲染中…」—— 既不闪源码，也不会丢图。
+const ENGINE_VENDORS = {
+  echarts: {
+    files: ['lib/echarts.min.js'],
+    ready: () => typeof echarts !== 'undefined' && typeof echarts.init === 'function',
+  },
+  graphviz: {
+    files: ['lib/graphviz.min.js'],
+    // @hpcc-js/wasm 的 UMD 全局名带 @ 与 /（见 hpccGraphvizModule）
+    ready: () => typeof window !== 'undefined' && !!window['@hpcc-js/wasm/graphviz'],
+  },
+  wavedrom: {
+    // 皮肤脚本给 window.WaveSkin 赋值，缺失时 renderWaveElement 会抛 "no skins found"，
+    // 故与主库一起加载；**顺序敏感**（主库 → 皮肤），靠 async=false 保证按序执行。
+    files: ['lib/wavedrom/wavedrom.min.js', 'lib/wavedrom/skins/default.js', 'lib/wavedrom/skins/dark.js'],
+    ready: () => typeof wavedrom !== 'undefined' && typeof window !== 'undefined' && !!window.WaveSkin,
+  },
+};
+
+// 引擎名 → 进行中/已完成的 promise。加载失败时置回 null，允许后续重试（同 loadMarkmapVendor）。
+const enginePromises = {};
+// 加载超时（ms）。jsdom 这类宿主**不执行外链脚本**、且 load / error 都不触发（与 loadMarkmapVendor
+// 注释所述同一坑）：此时唯一的出路是等满超时，6s × 引擎数会明显拖慢测试套件。故留一个显式的
+// 注入口 —— 生产代码从不调用它，测试里压到 10ms（语义不变：引擎仍判定为不可用）。
+let engineLoadTimeoutMs = 6000;
+function setEngineLoadTimeout(ms) {
+  engineLoadTimeoutMs = (typeof ms === 'number' && ms >= 0) ? ms : 6000;
+}
+
+// 动态插入单个脚本并等待 onload/onerror（超时兜底见上）。
+function loadVendorScript(src) {
+  return new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.async = false;   // 多文件按序执行（wavedrom 的皮肤必须在主库之后）
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), engineLoadTimeoutMs);
+    el.onload = () => finish(true);
+    el.onerror = () => finish(false);
+    document.head.appendChild(el);
+  });
+}
+
+// 确保某引擎的 vendor 已就绪。返回 true=可用。无需加载的引擎（tikz / plot）与
+// 自带懒加载的 markmap 直接返回 true。
+async function ensureEngine(type) {
+  const spec = ENGINE_VENDORS[type];
+  if (!spec) return true;
+  if (spec.ready()) return true;   // 已在（此前已加载，或测试环境注入过全局）
+  if (typeof document === 'undefined' || typeof window === 'undefined' || !document.head) return false;
+  if (!enginePromises[type]) {
+    enginePromises[type] = (async () => {
+      for (let i = 0; i < spec.files.length; i++) {
+        if (!(await loadVendorScript(spec.files[i]))) {
+          enginePromises[type] = null;   // 失败：允许下次重试
+          return false;
+        }
+      }
+      const ok = spec.ready();
+      if (!ok) enginePromises[type] = null;   // 文件到位但全局不认：同样允许重试
+      return ok;
+    })();
+  }
+  return enginePromises[type];
+}
+
 async function renderMarkmap(container, code, opts) {
   const source = String(code == null ? '' : code);
   if (!source.trim()) throw new Error('Markmap 内容为空（用 # / ## / 列表书写层级）');
@@ -596,7 +677,12 @@ async function renderInto(container, type, code, opts) {
     // **先登记再渲染**：引擎可能在 init 之后才抛错（典型：ECharts setOption 失败），此时实例与
     // canvas 已经挂在 DOM 上，只有登记过才能被 disposeDetachedDiagrams 回收到（审计发现，2026-09-24）。
     diagramContainers.add(container);
-    const ok = (await renderer(container, code, opts)) !== false;
+    // 引擎按需加载：ECharts / Graphviz / WaveDrom 已从 index.html 常驻改为首次使用时拉取
+    //（见本文件 ensureEngine）。**必须先等它就绪**再调渲染器 —— 否则首次打开含图文档时，
+    // 渲染器看到的只是「全局不存在」，会把「正在加载」误报成「引擎未就绪或资源未加载」。
+    // 加载失败同样返回 false，落到下面既有的错误框分支（说明 + 源码），行为与原先一致。
+    const engineReady = await ensureEngine(type);
+    const ok = engineReady && (await renderer(container, code, opts)) !== false;
     if (!ok) {
       diagramContainers.delete(container);   // 引擎缺失等完全失败：不必保留登记
       // 引擎"礼貌地失败"（vendor 未加载 / window.echarts 缺失 / markmap 懒包加载失败 …）原本
@@ -627,6 +713,7 @@ function hasRegisteredDiagrams() {
 if (typeof window !== 'undefined' && typeof module === 'undefined') {
   window.DiagramRenderers = {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams, hasRegisteredDiagrams,
+    setEngineLoadTimeout,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,
@@ -636,6 +723,7 @@ if (typeof window !== 'undefined' && typeof module === 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     diagramTypeFromLanguage, engineLabel, renderInto, disposeDetachedDiagrams, hasRegisteredDiagrams,
+    setEngineLoadTimeout,
     renderEcharts, renderWavedrom, renderGraphviz,
     renderTikz, renderPlot, renderMarkmap,
     extractDotEngine, quoteDotIds, LANGUAGE_MAP, GRAPHVIZ_ENGINES, DEFAULT_ECHARTS_HEIGHT,

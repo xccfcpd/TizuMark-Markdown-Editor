@@ -2556,7 +2556,10 @@ pre.diagram-src-pending::after {
   max-width: 100%;
   border-left: 4px solid;
   position: relative;
-  backdrop-filter: blur(8px);
+  /* 此处原本有 backdrop-filter: blur(8px)。.alert 位于**滚动正文内**，滚动时每帧都要对
+     下层重新做一次模糊合成，文档里 alert 越多滚动掉帧越明显；而它背后就是纯色页面背景，
+     模糊在视觉上等于没有 —— 属于「付了合成开销、看不出差别」的典型（2026-09-26）。
+     其余三处 backdrop-filter（.pane-loading / 图片灯箱 / 预览空态）都在低频或覆盖层，保留。 */
   overflow-wrap: break-word;
 }
 

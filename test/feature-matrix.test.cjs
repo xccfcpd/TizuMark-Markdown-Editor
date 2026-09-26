@@ -18,6 +18,13 @@ const { installGlobals, loadHljs } = require('./helpers/dom.js');
 const { renderMarkdown } = require('../src/unified-renderer.js');
 const PP = require('../src/modules/preview-post.js');
 const CodeBlock = require('../src/modules/code-block.js');
+const DR = require('../src/modules/diagram-renderers.js');
+
+// jsdom 不执行外链脚本 → 按需加载的图表引擎（ECharts / Graphviz / WaveDrom）只能等满超时才判定
+// 不可用，本文件的管线用例会把三种引擎都踩一遍。压到 10ms 免白等（语义不变）。
+// ⚠ 必须设在 PP **实际会取到**的那个实例上：getDiagramRenderers() 是「全局优先，否则 require」，
+// 故两者都考虑（本文件未注入全局 DiagramRenderers → 落到 require，与这里同一模块实例）。
+(global.DiagramRenderers || DR).setEngineLoadTimeout(10);
 
 const B = '`';
 

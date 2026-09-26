@@ -7,6 +7,8 @@ let __fs_allFiles = [];
 let __fs_filteredFiles = [];
 let __fs_selectedIndex = -1;
 let __fs_workspaceFolder = null;
+// 命中数是否已被 FS_MAX_SHOWN 截断（决定列表顶部是否显示提示行）。
+let __fs_truncated = false;
 // 扫描代次令牌：避免旧扫描（被用户新操作打断/取消）回写陈旧结果覆盖新列表。
 let __fs_scanToken = 0;
 // Ctrl+P 检索范围：按文件名搜全部「笔记类」文件。不跳过任何子目录（含 node_modules/.git/dist
@@ -14,6 +16,9 @@ let __fs_scanToken = 0;
 // 扩展名限制保留（仅 .md/.markdown/.txt），maxResults 兜底防止病态目录树失控。
 const FS_EXTENSIONS = ['md', 'markdown', 'txt'];
 const FS_MAX_RESULTS = 50000;
+// 结果展示上限：扫描上限是 5 万，但「有关键词」时原先**完全不截断**命中集 —— 搜 "a" / "md"
+// 这类短词命中上千项时会一次性拼进 innerHTML。超出上限时只渲染前 N 项并提示（2026-09-26）。
+const FS_MAX_SHOWN = 200;
 
 const FILE_ICON = '<svg class="fs-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /><path d="M14 2v5a1 1 0 0 0 1 1h5" /></svg>';
 
@@ -49,12 +54,12 @@ function initFileSearch() {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       __fs_selectedIndex = __fs_selectedIndex < 0 ? 1 : (__fs_selectedIndex + 1) % len;
-      fsRenderList(); fsScrollToSelected(); return;
+      fsSetSelectedIndex(__fs_selectedIndex); fsScrollToSelected(); return;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       __fs_selectedIndex = __fs_selectedIndex < 0 ? len - 1 : (__fs_selectedIndex - 1 + len) % len;
-      fsRenderList(); fsScrollToSelected(); return;
+      fsSetSelectedIndex(__fs_selectedIndex); fsScrollToSelected(); return;
     }
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -96,17 +101,44 @@ function fsScrollToSelected() {
   if (items[__fs_selectedIndex]) items[__fs_selectedIndex].scrollIntoView({ block: 'nearest' });
 }
 
+// 只切换选中态 class，不重建列表。原先「上下键 / 鼠标悬停」都调 fsRenderList() —— 每次
+// 都重建全部节点并重挂全部监听（上千项时明显卡，纯属白做）（2026-09-26）。
+function fsSetSelectedIndex(idx) {
+  if (!__fs_listEl) { __fs_selectedIndex = idx; return; }
+  const items = __fs_listEl.querySelectorAll('.file-search-item');
+  const prev = items[__fs_selectedIndex];
+  if (prev) prev.classList.remove('selected');
+  __fs_selectedIndex = idx;
+  const next = items[idx];
+  if (next) next.classList.add('selected');
+}
+
+// 预小写化：过滤在每次键入都执行，若在过滤循环里现算 toLowerCase，就是「每键 × 每文件 × 2 次」
+// 字符串分配（5 万文件时每键数万次）。改为扫描完成后算一次，过滤时只做 includes（2026-09-26）。
+function fsDecorate(files) {
+  return files.map(f => ({
+    ...f,
+    lname: String(f.name || '').toLowerCase(),
+    lpath: String(f.relativePath || '').toLowerCase(),
+  }));
+}
+
 // 依据当前输入框内容过滤并渲染。扫描完成或用户实时输入都走这里，
 // 保证「扫描期间输入的文字」在扫描结束后不会被丢弃（旧实现会覆盖成未过滤的前 50 项）。
 function fsApplyFilter() {
   const q = (__fs_inputEl ? __fs_inputEl.value : '').trim().toLowerCase();
+  __fs_truncated = false;
   if (!q) {
     __fs_filteredFiles = __fs_allFiles.slice(0, 50);
   } else {
-    __fs_filteredFiles = __fs_allFiles.filter(f =>
-      f.name.toLowerCase().includes(q) ||
-      (f.relativePath || '').toLowerCase().includes(q)
-    );
+    // 命中到上限即停：不再为了「完全没必要渲染」的后续几千项把 5 万文件全扫一遍。
+    const hits = [];
+    for (const f of __fs_allFiles) {
+      if (!((f.lname || '').includes(q) || (f.lpath || '').includes(q))) continue;
+      if (hits.length >= FS_MAX_SHOWN) { __fs_truncated = true; break; }
+      hits.push(f);
+    }
+    __fs_filteredFiles = hits;
   }
   __fs_selectedIndex = -1;
   fsRenderList();
@@ -121,7 +153,11 @@ function fsRenderList() {
     __fs_listEl.innerHTML = `<div class="file-search-empty">${msg}</div>`;
     return;
   }
-  __fs_listEl.innerHTML = __fs_filteredFiles.map((f, i) => {
+  // 截断提示行：class 刻意不叫 file-search-item —— 不参与选中导航，也不影响既有用例的计数。
+  const moreRow = __fs_truncated
+    ? `<div class="file-search-more">仅显示前 ${FS_MAX_SHOWN} 项匹配，请输入更具体的关键词</div>`
+    : '';
+  __fs_listEl.innerHTML = moreRow + __fs_filteredFiles.map((f, i) => {
     const cls = i === __fs_selectedIndex ? 'file-search-item selected' : 'file-search-item';
     return `<div class="${cls}" data-index="${i}">
       ${FILE_ICON}
@@ -137,7 +173,8 @@ function fsRenderList() {
     });
     el.addEventListener('mouseenter', () => {
       const idx = parseInt(el.dataset.index, 10);
-      if (idx !== __fs_selectedIndex) { __fs_selectedIndex = idx; fsRenderList(); }
+      if (idx === __fs_selectedIndex) return;
+      fsSetSelectedIndex(idx);
     });
   });
 }
@@ -171,7 +208,7 @@ async function fsScanWorkspace(dir) {
     await fsScanDirLegacy(dir, mdFiles, dir, 0, token);
     if (token !== __fs_scanToken) return;
     mdFiles.sort((a, b) => a.name.localeCompare(b.name));
-    __fs_allFiles = mdFiles;
+    __fs_allFiles = fsDecorate(mdFiles);
     fsApplyFilter();
     return;
   }
@@ -182,9 +219,9 @@ async function fsScanWorkspace(dir) {
       maxResults: FS_MAX_RESULTS,
     });
     if (token !== __fs_scanToken) return; // 已被更新的扫描取代，丢弃本次结果
-    __fs_allFiles = (entries || [])
+    __fs_allFiles = fsDecorate((entries || [])
       .map(e => ({ name: e.name, path: e.path, relativePath: e.relativePath || e.path }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => a.name.localeCompare(b.name)));
   } catch (e) {
     if (token !== __fs_scanToken) return;
     __fs_allFiles = [];

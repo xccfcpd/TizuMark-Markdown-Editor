@@ -24,6 +24,11 @@ const LOCK = path.join(ROOT, 'package-lock.json');
 const DR = require('../src/modules/diagram-renderers.js');
 const PP = require('../src/modules/preview-post.js');
 
+// jsdom（runScripts: 'outside-only'）**不执行外链脚本**，且 load / error 都不触发 —— 按需加载的
+// 图表引擎因此只能等满超时才会被判定为「不可用」（每个引擎 6s，本文件与 feature-matrix 各有用例
+// 会踩到）。压到 10ms：语义完全不变（引擎缺失 → 可读错误 + 源码），但不必白等（2026-09-26）。
+DR.setEngineLoadTimeout(10);
+
 // ---- ① 语言标记 → 引擎类型 ----
 
 test('diagramTypeFromLanguage：语言标记映射与别名', () => {
@@ -46,17 +51,25 @@ test('diagramTypeFromLanguage：语言标记映射与别名', () => {
 
 // ---- ② 入口清单与 vendor 清单 ----
 
-test('index.html 加载各引擎脚本与皮肤，且不含远程 CDN', () => {
+test('index.html 常驻脚本与「按需加载」清单一致，且不含远程 CDN', () => {
   const html = fs.readFileSync(INDEX, 'utf8');
+  // mermaid 仍**常驻**：它的同步占位阶段（preview-post: prepareMermaidPlaceholders）以
+  // 「mermaid 全局是否存在」决定是否建占位容器，改懒加载需先重构该阶段（见 index.html 注释）。
+  assert.ok(html.includes('src="lib/mermaid/mermaid.min.js"'), 'index.html 应常驻加载 mermaid');
+  assert.ok(html.includes('src="modules/diagram-renderers.js"'), 'index.html 缺少 <script src="modules/diagram-renderers.js">');
+  // ECharts / Graphviz / WaveDrom（含皮肤）自 2026-09-26 起改为「首次遇到该类型代码块才加载」：
+  // 入口**不得**再常驻这几个脚本，其路径改为在 diagram-renderers.js 的 ENGINE_VENDORS 里声明。
+  // 两侧必须同步 —— 只删入口不同步清单 = 图表彻底不渲染；只加清单不删入口 = 白付启动成本。
+  const drSrc = fs.readFileSync(path.join(ROOT, 'src', 'modules', 'diagram-renderers.js'), 'utf8');
   for (const src of [
     'lib/echarts.min.js',
     'lib/wavedrom/wavedrom.min.js',
     'lib/wavedrom/skins/default.js',
     'lib/wavedrom/skins/dark.js',
     'lib/graphviz.min.js',
-    'modules/diagram-renderers.js',
   ]) {
-    assert.ok(html.includes(`src="${src}"`), `index.html 缺少 <script src="${src}">`);
+    assert.ok(!html.includes(`src="${src}"`), `index.html 不应再常驻 <script src="${src}">（已改为按需加载）`);
+    assert.ok(drSrc.includes(src), `diagram-renderers.js 的 ENGINE_VENDORS 缺少按需加载路径：${src}`);
   }
   // 完全离线：这些脚本必须是本地路径，不能出现外链
   assert.ok(!/<script[^>]+src="https?:\/\//.test(html), 'index.html 不应引入远程脚本（离线要求）');
