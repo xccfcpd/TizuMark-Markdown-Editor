@@ -17,7 +17,7 @@ const fs = require('fs');
 
 // 驱动已改为零依赖 CDP（见 _cdp.cjs）：不再需要 puppeteer-core，Chrome / Edge 都能跑
 //（此前把可执行文件写死成 Chrome 默认路径，本机只有 Edge → 恒跳过，回归毫无关卡）。
-const { launch, findBrowser, skipReason } = require('./_cdp.cjs');
+const { launch, findBrowser, skipReason, openApp } = require('./_cdp.cjs');
 const CHROME_PATH = process.env.CHROME_PATH || findBrowser();
 const URL = 'http://localhost:1420/';
 
@@ -142,13 +142,13 @@ function assert(name, cond, detail) {
   await page.evaluateOnNewDocument(TauriMock);
 
   console.log('\n[启动] 打开 ' + URL + ' 并等待 app 初始化…');
-  await page.goto(URL, { waitUntil: 'networkidle2', timeout: 30000 });
-
+  // openApp 在首次失败后会重载一次再等（见 _cdp.cjs）：冷启动/满载机器上偶发的
+  // 「应用未在预期时间内初始化」属环境抖动，不该记成产品回归（2026-09-26）。
   try {
-    await page.waitForFunction(
-      "window.editor && window.editor.cm && window.editor.preview && document.querySelectorAll('#preview [data-source-line]').length > 5",
-      { timeout: 20000 }
-    );
+    await openApp(page, URL, {
+      ready: "window.editor && window.editor.cm && window.editor.preview && document.querySelectorAll('#preview [data-source-line]').length > 5",
+      timeout: 20000,
+    });
   } catch (e) {
     console.log('  ❌ FAIL  应用未在预期时间内初始化（预览未渲染）');
     console.log('  页面错误:', pageErrors.slice(0, 10).join(' | ') || '(无)');

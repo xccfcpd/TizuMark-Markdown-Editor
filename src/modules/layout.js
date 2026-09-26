@@ -631,14 +631,47 @@
           this._canScroll.editor = false;
           this._canScroll.preview = false;
           // 定位窗口用**时间戳**兜底，不能只靠上面两个 bool：跳转后预览通常还要再落定一次
-          //（代码高亮/图表/图片改变上方高度，Chrome 滚动锚定随之调整 scrollTop），而每次预览渲染
-          // 收尾都会 rAF 调用 _resumeScroll() 无条件复位这两个 bool（preview-controller）→ 跳转设下的
-          // 锁会被中途完成的渲染提前解除，落定中的预览滚动随即反向把编辑器拽到错误位置。
-          // 实测（2026-09-26）：+0ms 编辑器落点正确且标题可见(4811/目标4855)，+80ms 被拽到 3253，
-          // 同时预览自身从 15630 漂到 18518 —— 即「点大纲后编辑区没停在标题行」的真实成因。
-          const until = Date.now() + 420;
+          //（图表 / 图片 / 代码高亮改变上方高度，Chrome 滚动锚定随之调整 scrollTop），而每次预览
+          // 渲染收尾都会 rAF 调用 _resumeScroll() 无条件复位这两个 bool（preview-controller）→ 跳转
+          // 设下的锁会被中途完成的渲染提前解除，落定中的预览滚动随即反向把编辑器拽到错误位置。
+          // 实测（2026-09-26）：+0ms 编辑器落点正确且标题可见(4811/目标 4855)，+80ms 被拽到 3253
+          // —— 即「点大纲后编辑区没停在标题行」的真实成因。
+          //
+          // 收敛方式为**事件驱动**（取代原先 150/330/420ms 三个固定时刻）：
+          //   · 每帧重算重设落点，直到「预览内容高度 + 目标原点」连续两帧不变即收敛并解锁
+          //     （正常几十毫秒内完成；慢机器上 reflow 更久也不会提前放手，1.2s 硬上限兜底）；
+          //   · 「用户接管」用真实输入事件（wheel / touchstart / 滚动键）判定，而不是比较位置 ——
+          //     渲染自身的滚动恢复同样会改动位置，用位置比较会把程序的改动误判成用户滚动而提前放手，
+          //     那正是修复前被拽走的同一个坑。
+          const until = Date.now() + 1200;
           this._scrollSuppressUntil = until;
-          let appliedEd = null, appliedPv = null;
+          let rafId = 0, lastSig = null, stableFrames = 0, windowKicked = false;
+          const scrollers = [
+            this.preview,
+            (this.cm.getScrollerElement && this.cm.getScrollerElement()) || null,
+          ].filter(Boolean);
+          const SCROLL_KEYS = {
+            ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1,
+            PageUp: 1, PageDown: 1, Home: 1, End: 1, ' ': 1, Spacebar: 1,
+          };
+          const release = () => {
+            if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+            for (const el of scrollers) {
+              el.removeEventListener('wheel', onUserIntent);
+              el.removeEventListener('touchstart', onUserIntent);
+            }
+            document.removeEventListener('keydown', onKeydown, true);
+            // 时间戳置零必须在复位 bool 之前，避免把上一轮滚动同步残留的 false 标志固化下来
+            if (this._scrollSuppressUntil === until) this._scrollSuppressUntil = 0;
+            if (this._canScroll) {
+              this._canScroll.editor = true;
+              this._canScroll.preview = true;
+            }
+          };
+          const onUserIntent = () => release();
+          const onKeydown = (e) => {
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && SCROLL_KEYS[e.key]) release();
+          };
           const applyJump = () => {
             // 编辑区始终跳转到该标题行（与文档大小无关，大文件预览只渲染头部时也能跳）
             if (!isNaN(line)) {
@@ -647,7 +680,6 @@
               // 导致「光标到了标题行、可视区仍停在顶部」；scrollTo 直接生效且不受上方 _canScroll 抑制影响。
               const targetTop = Math.max(0, this.cm.heightAtLine(line, 'local') - 80);
               this.cm.scrollTo(0, targetTop);
-              appliedEd = targetTop;
             }
             // 预览区跳转（仅当该标题已渲染在预览中时）
             // 守卫：纯符号标题（如 `# ===`）headingToId 会产出空串，querySelector('#') 抛
@@ -661,37 +693,40 @@
                 // 符合用户预期「点大纲即定位到标题顶部」，且不依赖居中逻辑、不影响滚动同步。
                 const top = Math.max(0, targetRect.top - previewRect.top + this.preview.scrollTop);
                 this.preview.scrollTo({ top, behavior: 'auto' });
-                appliedPv = top;
-              } else if (this.previewWindow) {
-                // 大文档窗口模式：目标标题尚未渲染在预览中，以该行为焦点重渲染预览窗口，使其落点
+              } else if (this.previewWindow && !windowKicked) {
+                // 大文档窗口模式：目标标题尚未渲染在预览中，以该行为焦点重渲染预览窗口，使其落点。
+                // 只触发一次 —— 否则下面的每帧收敛会在整个窗口期内反复重排渲染（风暴）。
+                windowKicked = true;
                 this._previewScrollDriven = false;
                 if (Number.isFinite(line)) this._previewFocusLine = line;
                 this.updatePreview();
               }
             }
           };
-          applyJump();
-          // 落定后重定位：跳转瞬间预览内部各块高度尚未定型，同一标题的目标偏移会变
-          //（实测 15630 → 18518px），只定位一次必然停偏。窗口内重算重设两次即可收敛。
-          // 若期间用户自己滚过（当前值与上次写入相差 >40px），立刻让位，绝不抢用户的位置。
-          // 另：仅当窗口仍属于本次跳转时才动作，避免连点两次时旧定时器干扰新的目标。
-          const reassert = () => {
+          const tick = () => {
+            rafId = 0;
+            // 已被更晚的一次跳转接管（它的 release 会摘掉旧监听）：静默退出，别去动新目标
             if (this._scrollSuppressUntil !== until) return;
-            if (appliedEd != null && Math.abs(this.cm.getScrollInfo().top - appliedEd) > 40) return;
-            if (appliedPv != null && Math.abs(this.preview.scrollTop - appliedPv) > 40) return;
             applyJump();
-          };
-          setTimeout(reassert, 150);
-          setTimeout(reassert, 330);
-          // 窗口结束：直接还原为可用状态（时间戳置零必须在复位 bool 之前），
-          // 避免把上一轮滚动同步残留的 false 标志固化下来。
-          setTimeout(() => {
-            if (this._scrollSuppressUntil === until) this._scrollSuppressUntil = 0;
-            if (this._canScroll) {
-              this._canScroll.editor = true;
-              this._canScroll.preview = true;
+            const t = id ? this.preview.querySelector(`#${CSS.escape(id)}`) : null;
+            const sig = this.preview.scrollHeight + '@' + (t ? t.offsetTop : -1);
+            if (sig === lastSig) {
+              // 布局已静默两帧：收敛，立刻解锁（不再无谓地占着同步锁）
+              if (++stableFrames >= 2) { release(); return; }
+            } else {
+              stableFrames = 0;
+              lastSig = sig;
             }
-          }, 420);
+            if (Date.now() >= until) { release(); return; }
+            rafId = requestAnimationFrame(tick);
+          };
+          for (const el of scrollers) {
+            el.addEventListener('wheel', onUserIntent, { passive: true });
+            el.addEventListener('touchstart', onUserIntent, { passive: true });
+          }
+          document.addEventListener('keydown', onKeydown, true);
+          applyJump();
+          rafId = requestAnimationFrame(tick);
           outlineContent.querySelectorAll('.outline-item').forEach(el => el.classList.remove('active'));
           item.classList.add('active');
         };

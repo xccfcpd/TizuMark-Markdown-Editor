@@ -293,6 +293,11 @@ async function launch(opts = {}) {
     '--user-data-dir=' + userDataDir,
     '--no-first-run', '--no-default-browser-check', '--disable-extensions',
     '--disable-background-networking', '--disable-sync', '--disable-translate',
+    // 容器/CI 友好（2026-09-26 起本驱动要在 ubuntu runner 上真跑）：
+    //   --no-sandbox            容器内常因 setuid sandbox 不可用而直接启动失败
+    //   --disable-dev-shm-usage 容器 /dev/shm 默认仅 64MB，大文档渲染易崩渲染进程
+    // 均为测试专用无头浏览器，不涉及用户数据；调用方仍可通过 opts.args 覆盖或追加。
+    '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
     ...(opts.args || []),
   ];
 
@@ -349,4 +354,28 @@ async function launch(opts = {}) {
   };
 }
 
-module.exports = { launch, findBrowser, skipReason, candidates };
+/**
+ * 打开应用并等待就绪，失败后**重载一次**再等一轮（仍失败才抛出）。
+ * 背景（2026-09-26）：全量连跑时 outline-jump 出现过一次「应用未在预期时间内初始化」，
+ * 而单独跑恒 6/6 —— 属冷启动/机器负载导致的初始化偏慢，不是产品缺陷。三支浏览器用例
+ * 共用本函数，避免各自复制等待逻辑，也避免把偶发超时记成产品回归。
+ *   opts.ready：自定义就绪表达式；opts.timeout：单轮等待上限。
+ */
+async function openApp(page, url, opts = {}) {
+  const ready = opts.ready || 'window.editor && window.editor.cm && window.editor.preview';
+  const timeout = opts.timeout || 30000;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await page.goto(attempt === 1 ? url : url + (url.indexOf('?') < 0 ? '?' : '&') + 'retry=' + Date.now(),
+        { waitUntil: 'networkidle0', timeout });
+      await page.waitForFunction(ready, { timeout });
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+module.exports = { launch, findBrowser, skipReason, candidates, openApp };

@@ -15,7 +15,7 @@ const fs = require('fs');
 
 // 驱动已改为零依赖 CDP（见 _cdp.cjs）：不再需要 puppeteer-core，Chrome / Edge 都能跑
 //（此前把可执行文件写死成 Chrome 默认路径，本机只有 Edge → 恒跳过，回归毫无关卡）。
-const { launch, findBrowser, skipReason } = require('./_cdp.cjs');
+const { launch, findBrowser, skipReason, openApp } = require('./_cdp.cjs');
 const CHROME_PATH = process.env.CHROME_PATH || findBrowser();
 const URL = 'http://localhost:1420/';
 const SKIP_REASON = skipReason();
@@ -41,8 +41,8 @@ const puppeteer = { launch };
   };
 
   try {
-    await page.goto(URL, { waitUntil: 'networkidle0', timeout: 30000 });
-    await page.waitForFunction("window.editor && window.editor.preview", { timeout: 30000 });
+    // openApp：首次失败会重载一次再等（见 _cdp.cjs），消除冷启动偶发的初始化超时
+    await openApp(page, URL);
 
     // 前置：切到「编辑+预览」双栏。默认 viewMode='preview' 时 showLargeFileNotice 按设计
     // 直接隐藏横幅（纯预览用虚拟滚动，可拖到全文，不需要提示，见 app.js:190），

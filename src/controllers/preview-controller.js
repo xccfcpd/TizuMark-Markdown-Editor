@@ -188,10 +188,16 @@
           this.app.settings.equationSectionNumbering ? 'section' : 'global',
         ].join('|');
         const _cacheKey = _renderSig + ' ' + renderContent;
-        const _cached = _tab ? this._previewCache.get(_tab) : null;
+        // 二级缓存：tab → (切片键 → HTML)。命中即把它提到最新（Map 迭代序 = 插入序，即 LRU）。
+        // 原先每个 tab 只存「最后一次渲染的那一片」，滚动窗口来回移动（或打字后回退）就必然
+        // 整片重解析；改为每个 tab 保留最近几片，来回滚动即可命中（P2-8，2026-09-26）。
+        const _tabCache = _tab ? this._previewCache.get(_tab) : null;
+        const _cached = _tabCache ? _tabCache.get(_cacheKey) : null;
         let html;
-        if (_cached && _cached.key === _cacheKey) {
-          html = _cached.html;
+        if (_cached != null) {
+          html = _cached;
+          _tabCache.delete(_cacheKey);
+          _tabCache.set(_cacheKey, _cached);
         } else {
           // 过代即刻退出：快速连点标签时，旧代际不必再执行耗时的同步 renderMarkdown
           if (gen !== this.app._renderGeneration) return;
@@ -203,16 +209,24 @@
             equationNumbering: this.app.settings.equationSectionNumbering ? 'section' : 'global',
           });
           if (_tab) {
-            this._previewCache.set(_tab, { key: _cacheKey, html });
-            // LRU：条数上限 12 + 总字节上限 24MB（HTML 字符串可达数百 KB~MB，仅按条数会保留过多）。
+            let _sliceCache = this._previewCache.get(_tab);
+            if (!_sliceCache) { _sliceCache = new Map(); this._previewCache.set(_tab, _sliceCache); }
+            _sliceCache.set(_cacheKey, html);
+            // 每个 tab 只留最近 3 片：滚动窗口来回移动时，命中的基本就是相邻这几片；
+            // 超出即淘汰最旧（Map 迭代序 = 插入序）。
+            while (_sliceCache.size > 3) _sliceCache.delete(_sliceCache.keys().next().value);
+            // 再对整体封顶：tab 数上限 12 + 全部切片总字节上限 24MB（HTML 字符串可达数百 KB~MB，
+            // 仅按条数封顶会保留过多）。
             let _total = 0;
-            for (const _e of this._previewCache.values()) _total += (_e && typeof _e.html === 'string') ? _e.key.length + _e.html.length : 0;
+            for (const _m of this._previewCache.values()) {
+              for (const [_k, _h] of _m) _total += _k.length + (_h ? _h.length : 0);
+            }
             while (this._previewCache.size > 12 || _total > 24 * 1024 * 1024) {
-              const _oldest = this._previewCache.keys().next().value;
-              if (_oldest === undefined) break;
-              const _e = this._previewCache.get(_oldest);
-              _total -= (_e && typeof _e.html === 'string') ? _e.key.length + _e.html.length : 0;
-              this._previewCache.delete(_oldest);
+              const _oldestTab = this._previewCache.keys().next().value;
+              if (_oldestTab === undefined) break;
+              const _m = this._previewCache.get(_oldestTab);
+              for (const [_k, _h] of _m) _total -= _k.length + (_h ? _h.length : 0);
+              this._previewCache.delete(_oldestTab);
             }
           }
         }
@@ -457,6 +471,9 @@
         const msg = String(error).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         this.app.preview.innerHTML = `<p style="color: red;">预览错误: ${msg}</p>`;
       } finally {
+        // 渲染收尾时间戳：供「代码块按需滚动」的 MutationObserver 兜底逻辑跳过本批变动 ——
+        // 上面已同步做过同一件事、且此刻布局才定型，重复遍历整棵预览只是白付一次强制布局（P2-9b）。
+        this.app._lastRenderAt = Date.now();
         if (needLoad) this.app._endPaneLoad();
       }
     }

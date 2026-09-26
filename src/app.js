@@ -495,16 +495,33 @@ window.addEventListener('DOMContentLoaded', async () => {
     // 代码块按需滚动：preview 出现/替换 .code-scroll 时自动跑后处理（rAF 去抖）。
     // LiveReload 推新 JS 后已渲染的代码块不会重新触发 render，单靠 render 末尾调用
     // 会漏掉；MutationObserver 兜底所有时机（含初次加载、async 替换、LiveReload 后）。
+    // 去抖 + 两趟读写：本观察器对预览的每次子树变动都会触发（**打字时也是**），原实现每批变动
+    // 都对整棵预览查询、并逐块「读 scrollHeight → 写 style」交替执行，每个代码块各引发一次
+    // 强制布局（审计 P2-9b）。改法：合并连续变动为一次；先只读收集、再批量只写（整批只引发
+    // 一次强制布局）；并跳过「渲染刚结束」的批次 —— 那时 render() 末尾已做过同一件事，
+    // 而且布局才刚定型，重复遍历只是白付一次强制布局（2026-09-26）。
+    let pruneTimer = null;
     const pruneCodeScrolls = () => {
+      pruneTimer = null;
       if (!window.editor || !window.editor.preview) return;
-      window.editor.preview.querySelectorAll('.code-scroll').forEach((el) => {
-        // 必须显式 'auto'：CSS 默认是 hidden（防 Windows always-show 滚动条轨道），
-        // 清空 inline 会让 CSS 接管 → 仍 hidden → 永远没滚动条
-        el.style.overflowY = el.scrollHeight > el.clientHeight + 1 ? 'auto' : 'hidden';
+      if (Date.now() - (window.editor._lastRenderAt || 0) < 300) return;
+      const nodes = window.editor.preview.querySelectorAll('.code-scroll');
+      if (!nodes.length) return;
+      const toAuto = [];
+      const toHidden = [];
+      nodes.forEach((el) => {
+        if (el.scrollHeight > el.clientHeight + 1) toAuto.push(el);
+        else toHidden.push(el);
       });
+      // 必须显式 'auto'：CSS 默认是 hidden（防 Windows always-show 滚动条轨道），
+      // 清空 inline 会让 CSS 接管 → 仍 hidden → 永远没滚动条
+      for (const el of toAuto) if (el.style.overflowY !== 'auto') el.style.overflowY = 'auto';
+      for (const el of toHidden) if (el.style.overflowY !== 'hidden') el.style.overflowY = 'hidden';
     };
-    new MutationObserver(() => requestAnimationFrame(pruneCodeScrolls))
-      .observe(window.editor.preview, { childList: true, subtree: true });
+    new MutationObserver(() => {
+      if (pruneTimer) return;  // 已在去抖窗口内：合并进同一次处理
+      pruneTimer = setTimeout(() => requestAnimationFrame(pruneCodeScrolls), 120);
+    }).observe(window.editor.preview, { childList: true, subtree: true });
     await TauriApi.onEvent('close-requested', async () => {
       await window.editor.handleAppClose();
     });
