@@ -481,6 +481,55 @@ test('docx-builder: runToChild 丢弃非法颜色不抛错，合法 HEX 仍写�
   }
 });
 
+// 回归（2026-09-26）：对齐此前被【静默丢弃】—— AlignmentType 的属性名是大写、值是小写
+//（AlignmentType.CENTER === 'center'），而 CSS 读回来就是小写（el.style.textAlign === 'center'），
+// 所以 AlignmentType[node.align] 永远取到 undefined：独立公式的居中、text-align:center/right 的
+// 段落在 Word 里全部变左对齐（document.xml 里连 <w:jc> 都没有）。同时验证空表格不再抛错。
+test('docx-builder: CSS text-align 正确落到 w:jc；空表格不抛错不产出 tbl', async () => {
+  const path = require('path');
+  const JSZip = require('jszip');
+  if (!globalThis.DocxLib) globalThis.DocxLib = require('docx');
+  const D = globalThis.DocxLib;
+  if (!D.Packer.__toBufferPatched) {
+    const realToBuffer = D.Packer.toBuffer.bind(D.Packer);
+    D.Packer.toBlob = async (doc) => {
+      const buf = await realToBuffer(doc);
+      return { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    };
+    D.Packer.__toBufferPatched = true;
+  }
+  const builder = require(path.join(__dirname, '..', 'src', 'modules', 'docx-builder.js')).buildDocxFromStructure;
+  const savedWindow = globalThis.window;
+  globalThis.window = undefined;
+  let xml;
+  try {
+    const blob = await builder([
+      { type: 'paragraph', runs: [{ text: '居中' }], align: 'center' },
+      { type: 'paragraph', runs: [{ text: '右对齐' }], align: 'right' },
+      { type: 'paragraph', runs: [{ text: '两端' }], align: 'justify' },
+      { type: 'paragraph', runs: [{ text: '无对齐' }] },
+      { type: 'paragraph', runs: [{ text: '未知值' }], align: 'foo' },
+      { type: 'table', rows: [] },                      // 空表格：此前整篇导出中止
+      { type: 'table', rows: [{ cells: [] }] },          // 行内无单元格：同上
+      { type: 'paragraph', runs: [{ text: '表格之后的正文' }] },
+    ], {
+      pageWidth: 11906, pageHeight: 16838, marginTop: 1440, marginBottom: 1440, marginLeft: 1800, marginRight: 1800,
+    });
+    const ab = await blob.arrayBuffer();
+    assert.ok(ab.byteLength > 0, '含空表格的文档也应成功构建（不拖垮整篇）');
+    const zip = new JSZip();
+    zip.load(Buffer.from(ab));
+    xml = zip.file('word/document.xml').asText();
+  } finally {
+    globalThis.window = savedWindow;
+  }
+  const jc = (xml.match(/<w:jc w:val="[^"]+"\/>/g) || []).map(s => s.replace(/.*w:val="([^"]+)".*/, '$1'));
+  assert.deepStrictEqual(jc, ['center', 'right', 'both'],
+    '【关键断言】三类 CSS 对齐各落一条 w:jc，且无对齐/未知值不得产出（此前全部丢失）');
+  assert.ok(!xml.includes('<w:tbl>'), '空表格不应产出 <w:tbl>');
+  assert.ok(xml.includes('表格之后的正文'), '空表格被跳过后，后续正文必须仍在（构建未中断）');
+});
+
 // 回归（2026-09-09）：Word/WPS 的东亚排版会把「<w:br/> 软换行结尾的行」按两端对齐强行
 // 拉伸到整行宽（即便全文无一处 w:jc，实测仍拉伸），导出的代码块每行被扯出巨大空隙。
 // 修复：代码块每行一个独立段落 + 显式左对齐——段落末行永不被拉伸；相邻段落

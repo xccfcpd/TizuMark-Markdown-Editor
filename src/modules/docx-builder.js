@@ -64,15 +64,36 @@
     });
   }
 
+  // CSS text-align → docx AlignmentType。
+  // 必须显式映射，不能用 AlignmentType[值] 动态取：AlignmentType 的【属性名是大写、值是小写】
+  //（AlignmentType.CENTER === 'center'），而 CSS 读回来就是小写（el.style.textAlign === 'center'），
+  // 所以原先的 AlignmentType[node.align] 永远取到 undefined → 对齐被【静默丢弃】：
+  // 独立公式的居中、text-align:center/right 的段落在 Word 里全部变成左对齐（2026-09-26 实测，
+  // document.xml 里连 <w:jc> 都没有）。start/end 归一为 left/right：视觉等价且各版 Word 都认。
+  const CSS_ALIGN_TO_KEY = {
+    left: 'LEFT', start: 'LEFT', center: 'CENTER', right: 'RIGHT',
+    end: 'RIGHT', justify: 'JUSTIFIED', justified: 'JUSTIFIED',
+  };
+  function alignmentOf(AlignmentType, align) {
+    if (!AlignmentType || !align) return undefined;
+    const key = CSS_ALIGN_TO_KEY[String(align).trim().toLowerCase()];
+    return key ? AlignmentType[key] : undefined;
+  }
+
   function buildTable(D, node, theme, toChild) {
+    // 空表格（无 <tr> 的 <table>，原始 HTML 里常见）必须在这里挡掉：
+    // docx 的 Table 构造器会算 Array(Math.max(...rows.map(r => r.CellCount)))，rows 为空时
+    // Math.max() 得 -Infinity → 抛 RangeError: Invalid array length，**整篇导出失败**（2026-09-26 实测）。
+    const rowsIn = (node.rows || []).filter(r => r && Array.isArray(r.cells) && r.cells.length);
+    if (!rowsIn.length) return null;
     // 列宽：cell.width 之前传 0 导致 Word 列宽全 0、排版乱。按列数平均分配 100%。
-    const colCount = (node.rows && node.rows[0] && node.rows[0].cells) ? node.rows[0].cells.length : 1;
+    const colCount = rowsIn[0].cells.length;
     const colW = Math.floor(100 / Math.max(1, colCount));
     const borderColor = (theme && theme.border) || 'D4D4D8';
     // 表格单元格行距跟随预览「行高」（theme 即 page 配置），与正文 docDefaults 保持一致；
     // 之前硬编码 line:276（≈1.15 倍），导致表格内行距比正文（1.7）明显更紧。
     const tableLineH = (theme && Number(theme.lineHeight)) ? Number(theme.lineHeight) : 1.7;
-    const rows = (node.rows || []).map(row => new D.TableRow({
+    const rows = rowsIn.map(row => new D.TableRow({
       children: row.cells.map(cell => new D.TableCell({
         children: (cell.paragraphs || []).map(p => new D.Paragraph({
           // 单元格段落优先用 runs（公式/高亮/加粗/上标在里面）；没有 runs 才退回纯文本。
@@ -118,7 +139,9 @@
       } else if (node.type === 'paragraph') {
         // quote 段落（blockquote / alert）：加左缩进 + 左边框，否则与普通段落无视觉区分。
         const opts = { children: (node.runs || []).map(r => toChild(r)) };
-        if (node.align) opts.alignment = AlignmentType[node.align];
+        // 对齐必须走 CSS→枚举映射，不能 AlignmentType[node.align]（键大写/值小写，查不到就静默丢）
+        const align = alignmentOf(AlignmentType, node.align);
+        if (align) opts.alignment = align;
         // 缩进段落（定义列表 <dd> 等）：预览里 dd 有左缩进，Word 里同步
         if (node.indent) opts.indent = node.indent;
         if (node.quote) {
@@ -146,7 +169,9 @@
           children.push(new Paragraph({ children: runs.map(r => toChild(r)), bullet: { level } }));
         }
       } else if (node.type === 'table') {
-        children.push(buildTable(D, node, page, toChild));
+        // buildTable 对「无有效行」的表格返回 null（空 rows 会让 new D.Table 抛 RangeError 中止整篇）
+        const table = buildTable(D, node, page, toChild);
+        if (table) children.push(table);
       } else if (node.type === 'code') {
         // 代码块：灰底 + 边框 + 等宽。每行一个独立段落，行间【不用】<w:br/> 软换行——
         // Word/WPS 的东亚排版会把「软换行结尾的行」按两端对齐强行拉伸到整行宽

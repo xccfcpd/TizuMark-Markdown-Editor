@@ -284,3 +284,33 @@ test('domToDocxStructure: 行内颜色统一归一成 6 位 HEX（命名色 / rg
     }
   }
 });
+
+// 回归（2026-09-26）：<table> 里一条 <tr> 都没有（原始 HTML 很常见，例如只有 <caption>）时，
+// 此前会产出 {type:'table', rows:[]}，而 docx 的 Table 构造器算
+// Array(Math.max(...rows.map(r => r.CellCount)))，空 rows 让 Math.max() 得 -Infinity →
+// 抛 RangeError: Invalid array length，**整篇导出失败**（与颜色那条同族：单点坏输入拖垮全篇）。
+// 现在结构层不再产出空表格，并退化成文本段落把表内文字留住。
+test('domToDocxStructure: 无 <tr> 的表格不产出空表格（否则 docx 构造期抛错中止整篇）', () => {
+  const md = '<div id="root"><table><caption>只有标题没有行</caption></table><p>后续正文</p></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  assert.ok(!structure.some(n => n.type === 'table'), '【关键断言】不得产出空表格节点');
+  assert.ok(structure.some(n => n.type === 'paragraph' && (n.runs || []).some(r => r.text === '只有标题没有行')),
+    '表内文字应退化成段落保留（而不是整块丢失）');
+  assert.ok(structure.some(n => (n.runs || []).some(r => r.text === '后续正文')), '后续正文不受影响');
+});
+
+test('domToDocxStructure: 有 <tr> 的表格仍正常产出（不误伤）', () => {
+  const md = '<div id="root"><table><thead><tr><th>列一</th></tr></thead>'
+    + '<tbody><tr><td>值</td></tr></tbody></table></div>';
+  const dom = new JSDOM(md, { runScripts: 'dangerously' });
+  const w = dom.window;
+  const fn = loadDomModule(w);
+  const structure = fn(w.document.getElementById('root'));
+  const table = structure.find(n => n.type === 'table');
+  assert.ok(table, '正常表格必须仍产出 table 节点');
+  assert.strictEqual(table.rows.length, 2, '两行都要保留');
+  assert.strictEqual(table.rows[0].cells[0].paragraphs[0].text, '列一');
+});

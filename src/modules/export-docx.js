@@ -307,6 +307,14 @@
         }
         rows.push({ cells });
       }
+      // <table> 里一条 <tr> 都没有（原始 HTML 很常见，例如只有 <caption>/<colgroup>）：绝不能
+      // 产出空表格 —— docx 的 Table 构造器算 Array(Math.max(...rows.map(r => r.CellCount)))，
+      // rows 为空时 Math.max() = -Infinity → RangeError: Invalid array length，**整篇导出失败**
+      //（2026-09-26 实测）。退化成文本段落，至少把 <caption> 这类文字留在 Word 里。
+      if (!rows.length) {
+        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        return text ? [{ type: 'paragraph', runs: [{ text }] }] : [];
+      }
       return [{ type: 'table', rows }];
     }
     if (tag === 'img') {
